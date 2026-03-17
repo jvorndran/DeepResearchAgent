@@ -1,0 +1,90 @@
+version: '3.8'
+
+services:
+  # ==========================================
+  # BACKEND API (FastAPI)
+  # ==========================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: deep-research-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=development
+      - DATABASE_URL=sqlite:///./local_dev.db
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+    env_file:
+      - ./backend/.env
+    volumes:
+      - ./backend:/app
+      - backend-data:/app/data
+    depends_on:
+      - db
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    networks:
+      - research-network
+
+  # ==========================================
+  # FRONTEND (Next.js)
+  # ==========================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: deep-research-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    env_file:
+      - ./frontend/.env.local
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    command: npm run dev
+    networks:
+      - research-network
+
+  # ==========================================
+  # DATABASE (PostgreSQL for production-like local)
+  # ==========================================
+  db:
+    image: postgres:15-alpine
+    container_name: deep-research-db
+    environment:
+      - POSTGRES_USER=research_user
+      - POSTGRES_PASSWORD=research_pass
+      - POSTGRES_DB=research_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - research-network
+
+  # ==========================================
+  # SANDBOX EXECUTION CONTAINER
+  # (Built separately, referenced by backend)
+  # ==========================================
+  # sandbox:
+  #   build:
+  #     context: ./backend/sandbox
+  #     dockerfile: Dockerfile
+  #   container_name: deep-research-sandbox
+  #   network_mode: none  # No network access for security
+  #   volumes:
+  #     - sandbox-workspace:/workspace
+
+volumes:
+  postgres-data:
+  backend-data:
+  # sandbox-workspace:
+
+networks:
+  research-network:
+    driver: bridge
