@@ -8,7 +8,7 @@ This system provides institutional-grade, transparent, and mathematically accura
 
 - **Factuality Over Fluency:** Never guessing financial metrics—all insights derived from deterministically executed code
 - **Role-Based Subagents:** Specialized agents (Data Engineer, Quantitative Developer, Technical Writer, Quality Analyst) coordinated by an Orchestrator
-- **Best-in-Class Routing:** OpenAI o1/o3 for code generation, Gemini 2.0 Flash for reasoning and coordination
+- **Best-in-Class Routing:** OpenAI gpt 5 for code generation, Gemini 3.0 Flash for reasoning and coordination
 - **Interactive Data:** Explorable financial data with Recharts visualizations
 - **Observable State:** Complete visibility into agent thought process and execution
 
@@ -106,7 +106,7 @@ make sandbox-build
 
 ### Phase 1: Local Subagent System (Current)
 - ✅ Orchestrator agent (Research Director)
-- ✅ Multi-model routing (OpenAI o1/o3 + Gemini 2.0 Flash)
+- ✅ Multi-model routing (OpenAI gpt 5 + Gemini 3.0 Flash)
 - ✅ Role-based subagents:
   - Data Engineer (data fetching & schema extraction)
   - Quantitative Developer (code generation & execution)

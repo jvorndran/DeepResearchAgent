@@ -27,7 +27,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-from backend.core.report_schema import ResearchReport, DataSource, ReportMetadata
+from core.report_schema import ResearchReport, DataSource, ReportMetadata
 
 
 # =============================================================================
@@ -175,6 +175,17 @@ def write_research_report(
         - word_count: Approximate word count of markdown
         - validation_issues: List of non-blocking warnings (may be empty)
     """
+    # Normalise data_sources — may arrive as JSON string or a single dict instead of list
+    if isinstance(data_sources, str):
+        try:
+            data_sources = json.loads(data_sources)
+        except (json.JSONDecodeError, TypeError):
+            data_sources = []
+    if isinstance(data_sources, dict):
+        data_sources = [data_sources]
+    if not isinstance(data_sources, list):
+        data_sources = []
+
     # -------------------------------------------------------------------------
     # 1. Read full chart definitions from disk
     # -------------------------------------------------------------------------
@@ -186,14 +197,15 @@ def write_research_report(
         charts_on_disk = {}
 
     # Build lightweight summaries for narrative use (no data arrays in LLM context)
-    chart_summaries: dict[str, dict] = {
-        cid: {
+    chart_summaries: dict[str, dict] = {}
+    for cid, cdef in charts_on_disk.items():
+        if not isinstance(cdef, dict):
+            continue
+        chart_summaries[cid] = {
             "id": cid,
             "title": cdef.get("title", cid),
             "description": cdef.get("description", ""),
         }
-        for cid, cdef in charts_on_disk.items()
-    }
 
     # -------------------------------------------------------------------------
     # 2. Parse execution summary
@@ -202,6 +214,8 @@ def write_research_report(
         exec_data: dict = json.loads(execution_summary) if isinstance(execution_summary, str) else execution_summary
     except (json.JSONDecodeError, TypeError):
         exec_data = {"key_finding": str(execution_summary)}
+    if not isinstance(exec_data, dict):
+        exec_data = {"key_finding": str(exec_data)}
 
     # -------------------------------------------------------------------------
     # 3. Parse outline
@@ -209,6 +223,8 @@ def write_research_report(
     try:
         outline_data = json.loads(report_outline) if isinstance(report_outline, str) else report_outline
     except (json.JSONDecodeError, TypeError):
+        outline_data = {"outline": [], "query_type": "custom"}
+    if not isinstance(outline_data, dict):
         outline_data = {"outline": [], "query_type": "custom"}
 
     outline = outline_data.get("outline", [])
@@ -229,6 +245,8 @@ def write_research_report(
     md_sections: list[str] = []
 
     for section in outline:
+        if not isinstance(section, dict):
+            continue
         section_title = section.get("title", "")
         chart_id = section.get("chart_id")
 
@@ -241,13 +259,20 @@ def write_research_report(
         elif section_title == "Data Sources":
             ds_lines = []
             for ds in data_sources:
+                if not isinstance(ds, dict):
+                    continue
                 tickers = ", ".join(ds.get("tickers") or ds.get("series_ids") or [])
                 ticker_str = f" — tickers: {tickers}" if tickers else ""
                 date_range = ds.get("date_range") or {}
-                date_str = (
-                    f" ({date_range.get('start', '')} to {date_range.get('end', '')})"
-                    if date_range else ""
-                )
+                if isinstance(date_range, str):
+                    date_str = f" ({date_range})" if date_range else ""
+                elif isinstance(date_range, dict):
+                    date_str = (
+                        f" ({date_range.get('start', '')} to {date_range.get('end', '')})"
+                        if date_range else ""
+                    )
+                else:
+                    date_str = ""
                 row_count = ds.get("row_count")
                 row_str = f", {row_count} rows" if row_count else ""
                 ds_lines.append(
@@ -438,7 +463,7 @@ You produce `outputs/{job_id}/report.json` — a `ResearchReport` schema v1 obje
 - `charts_json_path`: Path to charts.json on disk (e.g. `outputs/abc123/charts.json`)
 - `execution_summary`: The compact JSON string printed to stdout by the quant developer
 - `data_sources`: Small metadata list (provider, tickers, date ranges, row counts)
-- `original_query` and `job_id`c
+- `original_query` and `job_id`
 
 You do NOT receive chart data arrays through context. You read them from disk yourself.
 
@@ -505,5 +530,5 @@ canonical artifact for this research job.""",
 
     "tools": [plan_report_structure, write_research_report],
 
-    "model": "google-genai:gemini-3-flash-preview"
+    "model": "google_genai:gemini-3-flash-preview"
 }

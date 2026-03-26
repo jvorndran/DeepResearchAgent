@@ -6,7 +6,7 @@ It audits for hallucinations, validates formatting, and ensures compliance
 with financial disclosure requirements.
 
 Role: Quality Analyst / Compliance Officer
-Model: Gemini 2.0 Flash (good at evaluation and pattern detection)
+Model: Gemini 3.0 Flash (good at evaluation and pattern detection)
 
 Responsibilities:
 - Verify Markdown formatting is correct
@@ -20,7 +20,7 @@ Key Principle: Acts as the final gatekeeper. Nothing goes to the user
 without Quality Analyst approval.
 """
 
-from typing import Dict, Any, List
+from typing import List
 from langchain_core.tools import tool
 import json
 import re
@@ -48,7 +48,7 @@ def validate_report_format(report_json_path: str) -> str:
         - schema_errors: Pydantic validation errors (if any)
         - missing_elements: List of mandatory elements absent from markdown
     """
-    from backend.core.report_schema import ResearchReport
+    from core.report_schema import ResearchReport
     from pydantic import ValidationError
 
     schema_errors: list[str] = []
@@ -176,7 +176,7 @@ def verify_chart_references(report_json_path: str) -> str:
         - chart_count: Number of <!-- CHART:id --> markers found in markdown
         - defined_charts: List of chart IDs defined in report.charts
     """
-    from backend.core.report_schema import ResearchReport
+    from core.report_schema import ResearchReport
     from pydantic import ValidationError
 
     try:
@@ -204,34 +204,135 @@ def verify_chart_references(report_json_path: str) -> str:
 
 
 @tool
-def cross_check_facts(
-    report: str,
-    execution_results: Dict[str, Any]
-) -> str:
+def patch_report(report_json_path: str, patch_type: str) -> str:
     """
-    Cross-check numerical claims in the report against execution results.
+    Autonomously fix minor issues in the report without rejecting to Technical Writer.
 
-    Use this tool to ensure the report doesn't contain hallucinated
-    statistics or findings.
+    Supported patch_type values:
+    - "add_disclaimer": Appends financial disclaimer text if missing
+    - "add_past_performance": Appends past performance notice if missing
+    - "add_footer": Appends footer if missing
+    - "remove_broken_chart_markers": Strips <!-- CHART:id --> markers whose ID
+      is not in report.charts
+
+    All patch types are idempotent — safe to call multiple times.
 
     Args:
-        report: Report content with claims to verify
-        execution_results: Original execution results for fact-checking
+        report_json_path: File path to the report.json artifact
+        patch_type: One of the supported patch type strings listed above
 
     Returns:
         JSON string with:
-        - factually_accurate: Boolean
-        - discrepancies: List of claims that don't match execution results
-        - verified_claims: Number of claims successfully verified
+        - patched: Boolean indicating if changes were made
+        - changes_made: List of descriptions of changes applied
+        - validation_issues: List of any re-validation issues after patching
     """
-    # TODO: Implement LLM-based fact checking
-    # Extract numbers from report and verify against execution results
-    # For now, assume accurate
+    from core.report_schema import ResearchReport
+    from pydantic import ValidationError
+
+    SUPPORTED = {"add_disclaimer", "add_past_performance", "add_footer", "remove_broken_chart_markers"}
+    if patch_type not in SUPPORTED:
+        return json.dumps({
+            "patched": False,
+            "changes_made": [],
+            "validation_issues": [f"Unknown patch_type '{patch_type}'. Supported: {sorted(SUPPORTED)}"]
+        })
+
+    # Load and parse report.json
+    try:
+        path = Path(report_json_path)
+        raw = path.read_text(encoding="utf-8")
+        data = json.loads(raw)
+    except FileNotFoundError:
+        return json.dumps({
+            "patched": False,
+            "changes_made": [],
+            "validation_issues": [f"File not found: {report_json_path}"]
+        })
+    except json.JSONDecodeError as e:
+        return json.dumps({
+            "patched": False,
+            "changes_made": [],
+            "validation_issues": [f"Invalid JSON: {e}"]
+        })
+
+    try:
+        report = ResearchReport(**data)
+    except ValidationError as e:
+        return json.dumps({
+            "patched": False,
+            "changes_made": [],
+            "validation_issues": [f"Schema validation failed before patching: {e}"]
+        })
+
+    markdown = report.markdown
+    changes_made: list[str] = []
+
+    if patch_type == "add_disclaimer":
+        if "does not constitute financial advice" not in markdown:
+            markdown += (
+                "\n\n**DISCLAIMER**: This report does not constitute financial advice. "
+                "All analysis is based on historical data."
+            )
+            changes_made.append("Appended financial disclaimer")
+
+    elif patch_type == "add_past_performance":
+        if "Past performance" not in markdown:
+            markdown += "\n\n**NOTICE**: Past performance is not indicative of future results."
+            changes_made.append("Appended past performance notice")
+
+    elif patch_type == "add_footer":
+        if "Generated by Deep Research Agent" not in markdown:
+            markdown += "\n\n---\n\n*Generated by Deep Research Agent*"
+            changes_made.append("Appended report footer")
+
+    elif patch_type == "remove_broken_chart_markers":
+        defined_charts = set(report.charts.keys())
+        def _remove_if_broken(m: re.Match) -> str:
+            chart_id = m.group(1)
+            if chart_id not in defined_charts:
+                changes_made.append(f"Removed broken chart marker <!-- CHART:{chart_id} -->")
+                return ""
+            return m.group(0)
+        markdown = re.sub(r'<!--\s*CHART:(\S+?)\s*-->', _remove_if_broken, markdown)
+
+    if not changes_made:
+        return json.dumps({
+            "patched": False,
+            "changes_made": [],
+            "validation_issues": []
+        })
+
+    # Recalculate word_count and update data dict
+    updated_data = data.copy()
+    updated_data["markdown"] = markdown
+    updated_data["metadata"] = dict(data.get("metadata", {}))
+    updated_data["metadata"]["word_count"] = len(markdown.split())
+
+    # Re-validate patched object via Pydantic before saving
+    try:
+        patched_report = ResearchReport(**updated_data)
+    except ValidationError as e:
+        return json.dumps({
+            "patched": False,
+            "changes_made": changes_made,
+            "validation_issues": [f"Re-validation failed after patching — not saved: {e}"]
+        })
+
+    # Save patched report
+    try:
+        path.write_text(patched_report.model_dump_json(indent=2), encoding="utf-8")
+    except Exception as e:
+        return json.dumps({
+            "patched": False,
+            "changes_made": changes_made,
+            "validation_issues": [f"Failed to write patched report: {e}"]
+        })
 
     return json.dumps({
-        "factually_accurate": True,
-        "discrepancies": [],
-        "verified_claims": 0
+        "patched": True,
+        "changes_made": changes_made,
+        "validation_issues": []
     })
 
 
@@ -298,95 +399,60 @@ QUALITY_ANALYST_SUBAGENT = {
 
     Delegate when you need to:
     - Validate Markdown formatting and structure
-    - Cross-check findings with execution results (prevent hallucinations)
     - Ensure compliance (no predictive financial advice)
     - Verify chart references are correct
     - Check for proper disclaimers
 
-    The quality analyst either approves the report for upload or rejects it with
-    specific required fixes. Nothing reaches the user without approval.""",
+    The quality analyst autonomously patches minor issues (missing disclaimers, footer,
+    broken chart markers) and either approves or rejects the report. Rejections include
+    a required_fixes list for the technical writer. Nothing reaches the user without approval.""",
 
     "system_prompt": """You are the Quality Analyst for a financial research platform.
 
 Your role is the final gatekeeper before reports reach users.
 
-## Responsibilities
-
-1. **Format Validation**:
-   - Check all required sections are present
-   - Verify proper Markdown syntax
-   - Ensure chart references are valid
-
-2. **Fact-Checking**:
-   - Cross-check ALL numerical claims against execution results
-   - Flag any hallucinated metrics or findings
-   - Verify data sources are correctly cited
-
-3. **Compliance Review**:
-   - Ensure report includes proper disclaimers
-   - Check that report does NOT give predictive investment advice
-   - Flag any language suggesting "will happen" or "should buy/sell"
-   - Verify risk disclosures are included
-
-4. **Approval Decision**:
-   - If everything passes: approve for release
-   - If minor issues: note them but may still approve
-   - If critical issues: reject with specific required fixes
-
 ## Tools Available
 
-You have access to these tools:
 - **validate_report_format(report_json_path)**: Load report.json via Pydantic, check mandatory elements
-- **check_compliance**: Verify no predictive language or investment advice (pass report markdown text)
+- **check_compliance(markdown_text)**: Verify no predictive language or investment advice — pass the `report.markdown` TEXT, NOT the file path
 - **verify_chart_references(report_json_path)**: Regex-extract <!-- CHART:id --> markers and verify each ID exists in report.charts
-- **cross_check_facts**: Verify claims against execution results
-- **approve_report**: Approve report for final upload
-- **reject_report**: Reject report with required fixes
+- **patch_report(report_json_path, patch_type)**: Autonomously fix minor issues — see AUTO-FIXABLE actions below
+- **approve_report(report_path, notes)**: Approve report for final upload
+- **reject_report(reason, required_fixes)**: Reject report with required fixes for the Technical Writer
+
+## Severity Classification
+
+| Issue | Severity | Action |
+|---|---|---|
+| Predictive language / investment advice | CRITICAL | `reject_report` |
+| Missing required section (exec summary, data sources, methodology) | CRITICAL | `reject_report` |
+| Empty executive summary | CRITICAL | `reject_report` |
+| Original query not found in markdown | CRITICAL | `reject_report` |
+| Pydantic schema error | CRITICAL | `reject_report` |
+| Missing disclaimer text | AUTO-FIXABLE | `patch_report(path, "add_disclaimer")` |
+| Missing past performance notice | AUTO-FIXABLE | `patch_report(path, "add_past_performance")` |
+| Missing footer | AUTO-FIXABLE | `patch_report(path, "add_footer")` |
+| Broken `<!-- CHART:id -->` markers | AUTO-FIXABLE | `patch_report(path, "remove_broken_chart_markers")` |
+| Minor formatting, verbosity, typos | MINOR | Note in `approve_report` |
+
+## Workflow
+
+### Step 1 — `validate_report_format(report_json_path)`
+### Step 2 — `check_compliance(report.markdown)` ← pass the markdown TEXT from the loaded report, NOT the file path
+### Step 3 — `verify_chart_references(report_json_path)`
+### Step 4 — Triage:
+- **ANY critical finding** → `reject_report(reason, required_fixes)`, stop
+- **AUTO-FIXABLE findings only** → call `patch_report(path, patch_type)` for each, then re-run `validate_report_format`
+  - If re-validation still fails → now critical → `reject_report(...)`
+- **Only MINOR issues remain** → `approve_report(report_path, notes)`
 
 ## Critical Rules
 
 - You are the LAST line of defense — be thorough
-- Every number in the report must map to execution results
-- Never let hallucinated facts through
-- Compliance is non-negotiable
-- If something seems off, investigate
-- When in doubt, reject and request clarification
-
-## Workflow
-
-When the orchestrator delegates a report for review:
-1. Use `validate_report_format(report_json_path)` to load and schema-validate report.json
-2. Use `check_compliance` with the markdown text to verify no predictive advice
-3. Use `verify_chart_references(report_json_path)` to confirm all <!-- CHART:id --> markers resolve
-4. Use `cross_check_facts` to verify all numerical claims
-5. Analyze all results:
-   - If all checks pass → use approve_report
-   - If critical issues found → use reject_report with specific fixes
-6. Return your decision clearly
-
-## What Constitutes Rejection
-
-**Critical Issues (must reject)**:
-- Missing required disclaimers
-- Predictive language ("will increase", "should buy")
-- Hallucinated statistics not in execution results
-- Missing required sections
-- Broken chart references
-
-**Minor Issues (note but may approve)**:
-- Minor Markdown formatting inconsistencies
-- Verbose writing that could be more concise
-- Non-critical typos
-
-## Compliance Triggers
-
-Immediately reject if you find:
-- "will rise/fall/increase/decrease" (predictive)
-- "should buy/sell/hold" (investment advice)
-- "expected to outperform" (predictions)
-- "forecasted/projected returns" (predictions)
-- Missing disclaimer "does not constitute financial advice"
-- Missing "Past performance is not indicative of future results"
+- Compliance is non-negotiable — never approve predictive language or investment advice
+- When `check_compliance` detects violations, always `reject_report`
+- "Original query not found in markdown" is CRITICAL — cannot be auto-fixed
+- After `patch_report`, confirm fixes by re-running `validate_report_format` (do NOT rely on stale initial results)
 
 ## Output Format
 
@@ -394,8 +460,9 @@ For approval:
 ```json
 {
     "status": "approved",
-    "report_path": "/path/to/report.md",
-    "notes": "All validation checks passed. Report is factually accurate and compliant."
+    "report_path": "outputs/{job_id}/report.json",
+    "notes": "All checks passed. Minor: verbose section headings.",
+    "ready_for_upload": true
 }
 ```
 
@@ -405,22 +472,21 @@ For rejection:
     "status": "rejected",
     "reason": "Contains predictive language",
     "required_fixes": [
-        "Remove phrase 'will increase' on line 45",
-        "Add past performance disclaimer"
-    ]
+        "Remove phrase 'will increase' from Trend Overview section",
+        "Replace with observed historical trend language"
+    ],
+    "ready_for_upload": false
 }
-```
-
-Remember: You protect users from bad information and protect the platform from compliance issues. When in doubt, reject and request fixes. Better safe than sorry.""",
+```""",
 
     "tools": [
         validate_report_format,
         check_compliance,
         verify_chart_references,
-        cross_check_facts,
+        patch_report,
         approve_report,
         reject_report
     ],
 
-    "model": "google-genai:gemini-2.0-flash-exp"
+    "model": "google_genai:gemini-3-flash-preview"
 }

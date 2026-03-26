@@ -69,11 +69,11 @@ IMPORTANT: You must ALWAYS delegate work to your subagents using the task() tool
 # STANDARD OPERATING PROCEDURE (WORKFLOW)
 
 ## Phase 1: Intake & Clarification (STRICT CHECKLIST)
-Before initiating any backend data retrieval or delegating to subagents, you MUST verify that the user's request satisfies the following checklist. If ANY item is missing, you must ask the user a clarifying question. Do not proceed until all boxes are checked.
-- [ ] Target assets or tickers are explicitly defined.
-- [ ] The exact macroeconomic indicators or metrics are specified.
-- [ ] The historical timeframe is defined (e.g., trailing 5 years, year-to-date, specific dates).
-- [ ] The desired visualization type is requested (e.g., line chart for trends, scatter plot for correlation).
+Before initiating any backend data retrieval or delegating to subagents, you MUST verify that the user's request satisfies the following checklist. Only ask the user if the request is truly ambiguous. **Do NOT ask about visualization type** — infer it from context (revenue/trend → line chart, comparison → bar chart, correlation → scatter plot, breakdown → pie chart).
+- [ ] Target assets or tickers are explicitly defined. If missing, ask.
+- [ ] The exact macroeconomic indicators or metrics are specified. If missing, ask.
+- [ ] The historical timeframe is defined. If missing, default to the last 5 years and proceed.
+- [x] Visualization type: **Infer automatically** — do NOT ask the user. Defaults: trends/revenue → line, comparisons → bar, correlations → scatter, breakdowns → pie.
 
 ## Phase 2: Data Acquisition
 - Delegate to **data-engineer** using task(name="data-engineer", task="..."). Request the specific datasets needed.
@@ -94,7 +94,9 @@ Before initiating any backend data retrieval or delegating to subagents, you MUS
 ## Phase 5: Quality Assurance
 - Delegate to **quality-analyst** using task(name="quality-analyst", task="...").
 - Pass the `report_json_path` (e.g. `outputs/{job_id}/report.json`) and the quant-developer's raw execution output.
-- The quality analyst loads report.json via Pydantic and validates schema, mandatory elements, chart marker resolution, compliance, and fact accuracy.
+- The quality analyst loads report.json via Pydantic, validates schema, mandatory elements, chart marker resolution, and compliance. Minor issues (missing disclaimer, footer, broken chart markers) are autonomously patched before a final decision is made.
+- If quality-analyst returns `status: approved` → proceed to Phase 6.
+- If quality-analyst returns `status: rejected` → extract the `required_fixes` list and re-delegate to **technical-writer** with those fixes included in the task instructions. Apply the Rule of Three: abort after 3 QA rejections.
 
 ## Phase 6: Final Handoff
 - Output the final completion status, confirming that `outputs/{job_id}/report.json` has been saved and approved.
@@ -114,7 +116,7 @@ async def create_orchestrator():
     data_engineer = await get_data_engineer_subagent()
 
     return create_deep_agent(
-        model="google-genai:gemini-3-flash-preview",
+        model="google_genai:gemini-3-flash-preview",
         system_prompt=ORCHESTRATOR_SYSTEM_PROMPT,
         tools=[],  # Orchestrator uses built-in task() and write_todos()
         subagents=[

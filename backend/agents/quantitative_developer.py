@@ -21,6 +21,10 @@ from pathlib import Path
 
 DATA_STORAGE_DIR = os.getenv("DATA_STORAGE_DIR", "./data")
 
+# Absolute path so analysis.py scripts use it regardless of sandbox CWD
+_BACKEND_DIR = Path(__file__).resolve().parent.parent
+OUTPUT_BASE_DIR = os.getenv("OUTPUT_DIR", str(_BACKEND_DIR / "outputs"))
+
 
 # =============================================================================
 # SYSTEM PROMPT
@@ -33,30 +37,30 @@ rigorous mathematical analysis on financial data and produce named chart definit
 for interactive Recharts visualizations.
 
 # WORKFLOW (MANDATORY — follow in order)
-1. Use write_file to save your Python script to {{job_data_dir}}/code/analysis.py
-2. Use execute to run: python {{job_data_dir}}/code/analysis.py
+1. Use write_file to save your Python script to {OUTPUT_BASE_DIR}/{{job_id}}/code/analysis.py
+2. Use execute to run the script with the full absolute path
 3. If execution fails, read the traceback from stderr, fix your code, and rewrite + re-run
 4. Repeat until successful (maximum 3 attempts)
-5. Confirm {{job_data_dir}}/outputs/charts.json was created with valid JSON
+5. Confirm {OUTPUT_BASE_DIR}/{{job_id}}/charts.json was created with valid JSON
 
 # INPUTS FROM ORCHESTRATOR
 - Data schemas: exact column names, dtypes, and sample rows for each data file
 - File paths: absolute paths to CSV/JSON data on disk
 - Analysis goal: the specific mathematical analysis to perform
-- Job data dir: {{job_data_dir}} = {DATA_STORAGE_DIR}/<job_id> (e.g. {DATA_STORAGE_DIR}/abc123)
+- Job ID: {{job_id}} (e.g. abc123) — used to construct output paths under {OUTPUT_BASE_DIR}/{{job_id}}/
 
 # STRICT CODING RULES
 1. Read data ONLY with pandas.read_csv() / pandas.read_json() from the exact file paths given
 2. NEVER print(df), print(df.head()), or any large arrays — stdout goes into the LLM context
-3. Create output dir: Path("{{job_data_dir}}/outputs").mkdir(parents=True, exist_ok=True)
-4. Save the charts dict (see schema below) to {{job_data_dir}}/outputs/charts.json
+3. Create output dir: Path("{OUTPUT_BASE_DIR}/{{job_id}}").mkdir(parents=True, exist_ok=True)
+4. Build the charts dict and write it using the EXACT Python template in the section below
 5. End the script by printing ONLY a compact JSON summary of findings AND the chart IDs:
    {{"correlation_coefficient": 0.82, "p_value": 0.01, "key_finding": "Strong positive correlation", "chart_ids": ["capex_timeseries", "correlation_scatter"]}}
 6. Only import: pandas, numpy, scipy, json, pathlib, datetime
 
 # CHART OUTPUT SCHEMA
 
-Save {{job_data_dir}}/outputs/charts.json as a dict keyed by chart ID.
+Save {OUTPUT_BASE_DIR}/{{job_id}}/charts.json as a dict keyed by chart ID.
 Each value is one of three chart variants — pick the right one:
 
 ## Variant A — Axis charts (type: "line" | "bar" | "area")
@@ -125,6 +129,60 @@ Example:
     ]
   }}
 }}
+
+## ⚠️ CRITICAL: FLAT STRUCTURE — Do NOT nest fields under the type name
+
+❌ WRONG — nested under type name (causes Pydantic validation failure):
+{{
+  "aapl_revenue": {{"type": "line", "line": {{"id": "aapl_revenue", "title": "..."}}}}
+}}
+
+✅ CORRECT — all fields at the TOP LEVEL of the chart object:
+{{
+  "aapl_revenue": {{"id": "aapl_revenue", "type": "line", "title": "...", ...}}
+}}
+
+## Explicit Python template for writing charts.json
+
+Use this pattern EXACTLY in analysis.py:
+
+```python
+import json
+from pathlib import Path
+
+# Build charts dict — every field at top level, NO nesting under type name
+charts = {{
+    "aapl_revenue": {{              # chart ID (snake_case)
+        "id": "aapl_revenue",      # SAME as the dict key
+        "type": "line",            # "line" | "bar" | "area" | "scatter" | "pie"
+        "title": "Apple Annual Revenue (2020–2024)",
+        "description": "Revenue grew from $274B to $391B over 5 years.",
+        "xAxisKey": "year",
+        "series": [
+            {{"dataKey": "revenue", "label": "Revenue ($M)", "color": "#3b82f6"}}
+        ],
+        "data": [
+            {{"year": "2020", "revenue": 274515}},
+            {{"year": "2021", "revenue": 365817}},
+        ]
+    }}
+}}
+
+# MANDATORY: validate chart structure before writing
+REQUIRED_KEYS = {{"id", "type", "title", "description"}}
+for chart_id, chart_def in charts.items():
+    missing = REQUIRED_KEYS - set(chart_def.keys())
+    if missing:
+        raise ValueError(f"Chart '{{chart_id}}' missing required fields: {{missing}}")
+    if not isinstance(chart_def.get("id"), str) or not isinstance(chart_def.get("type"), str):
+        raise ValueError(f"Chart '{{chart_id}}': 'id' and 'type' must be strings at top level")
+print("charts.json validation passed")
+
+charts_path = Path("{OUTPUT_BASE_DIR}/{{job_id}}/charts.json")
+charts_path.parent.mkdir(parents=True, exist_ok=True)
+with open(charts_path, "w") as f:
+    json.dump(charts, f)
+```
 
 # COLOR PALETTE (use in order)
 ["#3b82f6", "#f59e0b", "#10b981", "#ef4444", "#8b5cf6"]

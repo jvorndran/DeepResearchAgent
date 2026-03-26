@@ -106,6 +106,7 @@ htmlcov/
 
 # Keep claude directory
 !.claude/
+.claude/settings.local.json
 
 # ==========================================
 # GCP / CLOUD
@@ -129,3 +130,4 @@ workspace/
 backend/data/
 data/
 tmpclaude*
+outputs

@@ -1,7 +1,7 @@
 """
 Simple CLI for testing the Deep Research Agent orchestrator.
 
-Run with: python backend/cli.py
+Run with: python cli.py  (from the backend/ directory)
 """
 
 import asyncio
@@ -24,13 +24,16 @@ def check_api_keys():
     if not os.getenv("OPENAI_API_KEY"):
         missing.append("OPENAI_API_KEY")
 
+    if not os.getenv("FMP_ACCESS_TOKEN"):
+        missing.append("FMP_ACCESS_TOKEN")
+
     if missing:
-        print("❌ Missing required API keys:")
+        print("ERROR: Missing required API keys:")
         for key in missing:
             print(f"   - {key}")
-        print("\nSet them in your .env file or export them:")
-        print("   export GOOGLE_API_KEY=your_key")
-        print("   export OPENAI_API_KEY=your_key")
+        print("\nSet them in your .env file:")
+        print("   GOOGLE_API_KEY=your_key")
+        print("   OPENAI_API_KEY=your_key")
         return False
 
     return True
@@ -38,33 +41,32 @@ def check_api_keys():
 
 async def run_query(query: str, job_id: str):
     """Run a query through the orchestrator."""
-    print("\n🤖 Orchestrator is working...\n")
+    print("\n[orchestrator] Working...\n")
 
     result = await run_research(query=query, job_id=job_id)
 
-    print("="*60)
-    if result['status'] == 'completed':
-        print("✅ COMPLETED")
-        print("="*60)
-        print(result.get('response', 'No response'))
+    print("=" * 60)
+    if result["status"] == "completed":
+        print("COMPLETED")
+        print("=" * 60)
+        print(result.get("response", "No response"))
     else:
-        print("❌ FAILED")
-        print("="*60)
+        print("FAILED")
+        print("=" * 60)
         print(f"Error: {result.get('error')}")
-    print("="*60 + "\n")
+    print("=" * 60 + "\n")
 
 
 async def main():
     """Main CLI loop."""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("  Deep Research Agent - Interactive CLI")
-    print("="*60 + "\n")
+    print("=" * 60 + "\n")
 
-    # Check API keys
     if not check_api_keys():
         sys.exit(1)
 
-    print("✅ API keys loaded")
+    print("API keys loaded.")
     print("\nType your research query and press Enter.")
     print("Type 'exit' or 'quit' to stop.\n")
 
@@ -72,30 +74,25 @@ async def main():
 
     while True:
         try:
-            # Get user input
-            query = input("\n💬 Query: ").strip()
+            query = input("\nQuery: ").strip()
 
-            # Check for exit
-            if query.lower() in ['exit', 'quit', 'q']:
-                print("\n👋 Goodbye!\n")
+            if query.lower() in ["exit", "quit", "q"]:
+                print("\nGoodbye!\n")
                 break
 
-            # Skip empty queries
             if not query:
                 continue
 
-            # Generate job ID
             job_id = f"cli-{job_counter:03d}"
             job_counter += 1
 
-            # Run the query
             await run_query(query, job_id)
 
-        except KeyboardInterrupt:
-            print("\n\n👋 Goodbye!\n")
+        except (KeyboardInterrupt, EOFError):
+            print("\n\nGoodbye!\n")
             break
         except Exception as e:
-            print(f"\n❌ Error: {e}\n")
+            print(f"\nError: {e}\n")
 
 
 if __name__ == "__main__":

@@ -63,7 +63,7 @@ The system utilizes an **Asynchronous Orchestration Pattern** deployed on Google
 
 ## 7. Role-Based Subagents
 
-### Orchestrator (Gemini 2.0 Flash)
+### Orchestrator (Gemini 3.0 Flash)
 **Role:** Project Manager / Research Director
 
 The Orchestrator is the main coordinator of the entire workflow.
@@ -76,7 +76,7 @@ The Orchestrator is the main coordinator of the entire workflow.
 * Maintain conversation context across subagent handoffs
 * Return final artifacts to the user
 
-### Data Engineer (Gemini 2.0 Flash)
+### Data Engineer (Gemini 3.0 Flash)
 **Role:** Data Engineer / Data Analyst
 
 The Data Engineer handles all data operations.
@@ -104,7 +104,7 @@ The Quantitative Developer writes and executes Python code for analysis.
 
 **Key Principle:** Schema-based prompts prevent hallucinated column names.
 
-### Technical Writer (Gemini 2.0 Flash)
+### Technical Writer (Gemini 3.0 Flash)
 **Role:** Technical Writer / Research Analyst
 
 The Technical Writer synthesizes the final research report.
@@ -118,7 +118,7 @@ The Technical Writer synthesizes the final research report.
 
 **Key Principle:** Report embeds interactive chart references for frontend rendering.
 
-### Quality Analyst (Gemini 2.0 Flash)
+### Quality Analyst (Gemini 3.0 Flash)
 **Role:** Quality Analyst / Compliance Officer
 
 The Quality Analyst is the final gatekeeper before artifacts are released.
