@@ -2,26 +2,48 @@
 
 ## 1. Executive Summary
 
-The Asynchronous Deep Financial Research Agent is an advanced, orchestration-driven platform designed to answer complex macroeconomic and stock market questions. Moving away from standard synchronous LLM chat interfaces, this product utilizes a long-running, asynchronous backend to fetch massive financial datasets, write custom analytical code, and execute that code in a secure sandbox.
+The Asynchronous Deep Financial Research Agent is a platform for **financial professionals** who need deep answers to complex macroeconomic and equity questions—without waiting at a chat window while heavy work runs. Users ask for research in natural language; the system runs **long-running, asynchronous** jobs that pull trusted market and macro data, perform rigorous analysis, and return **narrative reports with interactive charts** where figures are **traceable** to the underlying computation.
 
-The platform avoids browser timeouts and API rate-limit crashes by decoupling user interaction from the computational workload. This updated MVP focuses on providing hallucination-free financial reports complete with interactive data visualizations, secured by robust authentication, and powered by a best-in-class multi-model AI architecture.
+Behind the scenes, the product uses orchestrated AI and isolated execution so insights are not invented: metrics come from executed analysis, not free-form model guessing. Authentication protects access; deliverables are suitable for **institutional workflows**—source-backed outputs, explorable data, and a clear path from chart to calculation.
+
+**Primary audience (see §3):** All **user-facing** product copy, onboarding, marketing, and in-app messaging must speak to this audience first—outcomes, trust, and research quality—not engineering implementation details.
 
 ## 2. Mission
 
-To provide institutional-grade, transparent, and mathematically accurate financial research by strictly isolating LLM reasoning from raw data processing, while delivering a modern, interactive user experience.
+To provide **institutional-grade**, transparent, and mathematically grounded research for **portfolio managers, analysts, quants, and sophisticated market participants**, by separating narrative synthesis from raw-number work so every reported figure can be tied to deterministic analysis, while delivering a modern, interactive experience.
 
 **Core Principles:**
 
-* **Factuality Over Fluency:** The system must never guess a financial metric; all insights must be derived from deterministically executed code.
-* **Best-in-Class Routing:** Leverage the strongest models for specific tasks (OpenAI for code generation, Gemini for multi-step reasoning and synthesis).
-* **Interactive Data:** Financial data must be explorable; static artifacts are insufficient for deep research.
-* **Observable State:** Every step of the agent's thought process and execution must be logged and visible to the user.
+* **Factuality Over Fluency:** The system must never guess a financial metric; all insights must be derived from executed analysis on real data (see architecture in §6–§7).
+* **Best-in-Class Routing (internal):** Use the strongest models for each task (e.g., code-oriented models for numerical work, reasoning models for orchestration and synthesis)—described to **users** as reliability and quality, not model names.
+* **Interactive Data:** Charts and tables must be explorable; static screenshots alone are insufficient for deep research validation.
+* **Observable Pipeline:** Users can see progress and steps through the research run (appropriate for diligence and trust); describe this as **transparency into your research job**, not as low-level infra jargon in UX copy.
 
 ## 3. Target Users
 
-* **Quantitative Analysts:** Users needing rapid, automated backtesting and correlation matrices across disparate financial data sources.
-* **Software Engineers:** Technical users managing complex agentic AI workflows who require high visibility into the data pipeline and retrieval steps.
-* **Technical Retail Investors:** Users comfortable defining strict macroeconomic parameters to generate custom investment thesis reports.
+**Primary users (who the product is for—and who all messaging assumes):**
+
+* **Investment & research professionals:** Portfolio managers, research analysts, macro strategists, and quantitative analysts who need correlations, back-of-the-envelope stress tests, and multi-source narratives across macro and equities—on **their timeline**, not a synchronous chat timeout.
+* **Institutional and professional context:** Teams that care about **auditability**, **source-backed metrics**, **interactive verification** of charts, and **quality-reviewed** outputs suitable for internal review or client-ready drafts (subject to firm policy and disclaimers).
+
+**Secondary / adjacent users (same product, same UX voice; do not optimize copy for engineers):**
+
+* **Sophisticated professional investors** who can specify tickers, time horizons, and macro parameters clearly and want thesis-grade reports—not day-trading execution tools.
+
+**Not a primary UX persona:** Software engineers integrating or operating the stack may use internal docs and APIs; **they are not the default audience for product messaging.** Technical accuracy in this PRD and in engineering docs remains essential; **customer-facing** language must remain financial-professional first.
+
+### 3.1 Messaging & Voice Guidelines (mandatory for future work)
+
+When writing or reviewing **any** user-visible text (marketing site, hero, empty states, errors, emails, in-app labels):
+
+| Do | Don’t |
+| --- | --- |
+| Lead with outcomes: deep macro and equity research, async runs, interactive charts, figures traceable to analysis | Lead with stack: LangGraph, sandboxes, LLMs, DAGs, “code gen” |
+| Use institutional tone: institutional research, orchestrated end to end, quality-reviewed reports, source-backed metrics | Developer CTAs: “Initialize sandbox,” “View architecture” (unless strictly internal tools) |
+| Emphasize trust: trusted data, clarifying questions before wasted work, compliance-aware synthesis | Imply unchecked AI opinions as facts |
+| Describe the pipeline as transparency into your research job | Expose internal agent role names in primary UX unless useful for power users |
+
+**Reference positioning (keep aligned across surfaces):** Deep macro and equity research on the user’s timeline; ask complex questions; research runs in the background; deliver interactive charts and narrative reports with traceable figures; macro and cross-asset coverage; quality-reviewed outputs.
 
 ## 4. MVP Scope
 
@@ -48,10 +70,10 @@ To provide institutional-grade, transparent, and mathematically accurate financi
 ## 5. User Stories
 
 * **As a quantitative analyst,** I want to ask for the correlation between TSMC's CapEx and silicon wafer shipping volumes, so that I can identify lagging indicators in the semiconductor market.
-* **As a user reading the report,** I want to hover over the generated data charts to see specific data points and dates, so that I can interactively verify the mathematical conclusions.
-* **As a technical user,** I want the agent to ask me clarifying questions about my timeframes and target tickers before it starts executing, so that I don't waste time and compute on the wrong assumptions.
-* **As a developer,** I want the OpenAI Code Gen agent to output structured JSON arrays instead of static images, so that my Next.js `shadcn/ui` components can natively render the visualizations.
-* **As a registered user,** I want to log in securely using Clerk, so that my past research reports are saved and tied exclusively to my account.
+* **As a research reader,** I want to hover over the generated charts to see specific data points and dates, so that I can verify conclusions interactively before relying on them in a memo or committee pack.
+* **As an analyst or PM,** I want the product to ask clarifying questions about timeframes, universes, and tickers before the heavy research run starts, so that I do not waste time on the wrong question.
+* **As a research reader,** I want charts and tables to be live and explorable—not static images—so that I can drill into the same data the narrative is based on.
+* **As a registered professional user,** I want secure sign-in and saved history, so that my past research and artifacts are available only to my account and my firm’s access policy.
 
 ## 6. Core Architecture & Patterns
 

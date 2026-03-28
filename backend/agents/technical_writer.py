@@ -23,11 +23,16 @@ reads those artifacts and assembles the complete report independently.
 from typing import Dict, Any, List
 from langchain_core.tools import tool
 import json
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
 
 from core.report_schema import ResearchReport, DataSource, ReportMetadata
+
+# Absolute output base dir — avoids CWD ambiguity when running as a subagent
+_BACKEND_DIR = Path(__file__).resolve().parent.parent
+_OUTPUT_BASE_DIR = Path(os.getenv("OUTPUT_DIR", str(_BACKEND_DIR / "outputs")))
 
 
 # =============================================================================
@@ -70,7 +75,10 @@ def plan_report_structure(
     try:
         raw = Path(charts_json_path).read_text(encoding="utf-8")
         charts_data = json.loads(raw)
-        chart_ids = list(charts_data.keys())
+        if isinstance(charts_data, list):
+            chart_ids = [item["name"] for item in charts_data if isinstance(item, dict) and "name" in item]
+        else:
+            chart_ids = list(charts_data.keys())
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         chart_ids = []
 
@@ -192,7 +200,11 @@ def write_research_report(
     charts_on_disk: dict = {}
     try:
         raw_charts = Path(charts_json_path).read_text(encoding="utf-8")
-        charts_on_disk = json.loads(raw_charts)
+        parsed = json.loads(raw_charts)
+        if isinstance(parsed, list):
+            charts_on_disk = {item["name"]: item for item in parsed if isinstance(item, dict) and "name" in item}
+        elif isinstance(parsed, dict):
+            charts_on_disk = parsed
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         charts_on_disk = {}
 
@@ -376,7 +388,7 @@ def write_research_report(
     # -------------------------------------------------------------------------
     # 9. Save to disk with pre-write validation
     # -------------------------------------------------------------------------
-    report_path = f"outputs/{job_id}/report.json"
+    report_path = str(_OUTPUT_BASE_DIR / job_id / "report.json")
     validation_issues = _save_report(report, report_path)
 
     return json.dumps({

@@ -23,6 +23,12 @@ Subagents it can delegate to:
 - Quality Analyst: For final review
 """
 
+import logging
+
+# Suppress langchain_google_genai schema-key warnings ($schema, additionalProperties
+# are stripped when converting Pydantic tool schemas for the Gemini API — harmless)
+logging.getLogger("langchain_google_genai._function_utils").setLevel(logging.ERROR)
+
 from typing import Any, Dict, AsyncIterator
 from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
@@ -134,7 +140,11 @@ async def create_orchestrator():
 # PUBLIC API FUNCTIONS
 # =============================================================================
 
-async def run_research(query: str, job_id: str) -> Dict[str, Any]:
+async def run_research(
+    query: str,
+    job_id: str,
+    messages: list[dict] | None = None,
+) -> Dict[str, Any]:
     """
     Run the complete research workflow and return final results.
 
@@ -143,6 +153,8 @@ async def run_research(query: str, job_id: str) -> Dict[str, Any]:
     Args:
         query: The research query from the user
         job_id: Unique identifier for this research job
+        messages: Optional full message history for multi-turn conversations.
+                  When provided, overrides the default single-message format.
 
     Returns:
         Dict containing:
@@ -163,14 +175,10 @@ async def run_research(query: str, job_id: str) -> Dict[str, Any]:
     try:
         agent = await create_orchestrator()
 
-        result = await agent.ainvoke({
-            "messages": [
-                {
-                    "role": "user",
-                    "content": f"Job ID: {job_id}\n\nResearch Query: {query}"
-                }
-            ]
-        })
+        if messages is None:
+            messages = [{"role": "user", "content": f"Job ID: {job_id}\n\nResearch Query: {query}"}]
+
+        result = await agent.ainvoke({"messages": messages})
 
         messages = result.get("messages", [])
         if messages:
@@ -198,7 +206,11 @@ async def run_research(query: str, job_id: str) -> Dict[str, Any]:
         }
 
 
-async def stream_research(query: str, job_id: str) -> AsyncIterator[Dict[str, Any]]:
+async def stream_research(
+    query: str,
+    job_id: str,
+    messages: list[dict] | None = None,
+) -> AsyncIterator[Dict[str, Any]]:
     """
     Stream the research workflow progress in real-time.
 
@@ -208,6 +220,8 @@ async def stream_research(query: str, job_id: str) -> AsyncIterator[Dict[str, An
     Args:
         query: The research query from the user
         job_id: Unique identifier for this research job
+        messages: Optional full message history for multi-turn conversations.
+                  When provided, overrides the default single-message format.
 
     Yields:
         Dict events from the agent execution showing:
@@ -221,14 +235,10 @@ async def stream_research(query: str, job_id: str) -> AsyncIterator[Dict[str, An
     """
     agent = await create_orchestrator()
 
-    async for event in agent.astream({
-        "messages": [
-            {
-                "role": "user",
-                "content": f"Job ID: {job_id}\n\nResearch Query: {query}"
-            }
-        ]
-    }, stream_mode="updates"):
+    if messages is None:
+        messages = [{"role": "user", "content": f"Job ID: {job_id}\n\nResearch Query: {query}"}]
+
+    async for event in agent.astream({"messages": messages}, stream_mode="updates"):
         yield event
 
 

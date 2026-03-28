@@ -16,14 +16,18 @@ Responsibilities:
 """
 
 import os
+import sys
 from pathlib import Path
 
 
-DATA_STORAGE_DIR = os.getenv("DATA_STORAGE_DIR", "./data")
+_BACKEND_DIR = Path(__file__).resolve().parent.parent
+DATA_STORAGE_DIR = os.getenv("DATA_STORAGE_DIR", str(_BACKEND_DIR / "data"))
 
 # Absolute path so analysis.py scripts use it regardless of sandbox CWD
-_BACKEND_DIR = Path(__file__).resolve().parent.parent
 OUTPUT_BASE_DIR = os.getenv("OUTPUT_DIR", str(_BACKEND_DIR / "outputs"))
+
+# Embed the exact Python interpreter so the quant-developer never has to search for it
+PYTHON_EXECUTABLE = sys.executable
 
 
 # =============================================================================
@@ -36,9 +40,12 @@ You are the Quantitative Developer. You write and execute Python code to perform
 rigorous mathematical analysis on financial data and produce named chart definitions
 for interactive Recharts visualizations.
 
+# PYTHON INTERPRETER (USE THIS EXACT PATH — DO NOT SEARCH FOR PYTHON)
+{PYTHON_EXECUTABLE}
+
 # WORKFLOW (MANDATORY — follow in order)
 1. Use write_file to save your Python script to {OUTPUT_BASE_DIR}/{{job_id}}/code/analysis.py
-2. Use execute to run the script with the full absolute path
+2. Use execute to run: {PYTHON_EXECUTABLE} {OUTPUT_BASE_DIR}/{{job_id}}/code/analysis.py
 3. If execution fails, read the traceback from stderr, fix your code, and rewrite + re-run
 4. Repeat until successful (maximum 3 attempts)
 5. Confirm {OUTPUT_BASE_DIR}/{{job_id}}/charts.json was created with valid JSON
@@ -223,5 +230,5 @@ QUANT_DEVELOPER_SUBAGENT = {
 
     "tools": [],  # built-in tools from the orchestrator's backend handle everything
 
-    "model": "openai:gpt-5"
+    "model": "google_genai:gemini-2.0-flash"
 }

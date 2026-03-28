@@ -36,8 +36,9 @@ from mcp_clients.fred_mcp_client import create_fred_mcp_client
 # DATA ENGINEER TOOLS
 # =============================================================================
 
-# Storage directory for fetched data
-DATA_STORAGE_DIR = Path(os.getenv("DATA_STORAGE_DIR", "./data"))
+# Storage directory for fetched data — use absolute path to avoid CWD ambiguity
+_BACKEND_DIR = Path(__file__).resolve().parent.parent
+DATA_STORAGE_DIR = Path(os.getenv("DATA_STORAGE_DIR", str(_BACKEND_DIR / "data")))
 
 
 def _run_async(coro):
