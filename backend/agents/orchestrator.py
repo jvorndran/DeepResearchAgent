@@ -34,7 +34,7 @@ from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
 
 # Import subagent configurations from separate files
-from .data_engineer import get_data_engineer_subagent
+from .data_engineer import get_data_engineer_subagent, MCPTimeoutError
 from .quantitative_developer import QUANT_DEVELOPER_SUBAGENT
 from .technical_writer import TECHNICAL_WRITER_SUBAGENT
 from .quality_analyst import QUALITY_ANALYST_SUBAGENT
@@ -93,9 +93,17 @@ Before initiating any backend data retrieval or delegating to subagents, you MUS
 
 ## Phase 4: Report Synthesis
 - Delegate to **technical-writer** using task(name="technical-writer", task="...").
-- Pass ONLY: `charts_json_path` (e.g. `outputs/{job_id}/charts.json`), `execution_summary` (the compact stdout JSON from the quant developer), `data_sources` metadata (provider, tickers, date range, row count — small), `original_query`, and `job_id`.
+- Pass ONLY: `charts_json_path` (e.g. `outputs/{job_id}/charts.json`), `execution_summary` (the compact stdout JSON from the quant developer), `data_sources` metadata, `original_query`, and `job_id`.
 - Do NOT pass chart data arrays or chart summaries — the technical writer reads charts.json directly from disk.
 - The technical writer calls `plan_report_structure` then `write_research_report` and produces `outputs/{job_id}/report.json`.
+- **`data_sources` MUST be a JSON list — populate every field from the data-engineer's output:**
+  ```json
+  [{"provider": "FMP MCP Server", "description": "Annual income statement for AAPL", "tickers": ["AAPL"], "date_range": {"start": "2021", "end": "2025"}, "row_count": 5}]
+  ```
+  - `tickers`: list of ticker symbols fetched (from the data-engineer's `data_files` keys)
+  - `row_count`: integer row count (from the data-engineer's `row_counts` dict)
+  - `date_range`: `{"start": "<earliest year>", "end": "<latest year>"}` — infer from the fiscal years in the data
+  - Never leave these fields as `null` — always populate from what the data-engineer returned
 
 ## Phase 5: Quality Assurance
 - Delegate to **quality-analyst** using task(name="quality-analyst", task="...").
@@ -198,6 +206,12 @@ async def run_research(
             "result": result
         }
 
+    except MCPTimeoutError as e:
+        return {
+            "status": "failed",
+            "job_id": job_id,
+            "error": f"MCP timeout: {e}"
+        }
     except Exception as e:
         return {
             "status": "failed",
@@ -238,8 +252,16 @@ async def stream_research(
     if messages is None:
         messages = [{"role": "user", "content": f"Job ID: {job_id}\n\nResearch Query: {query}"}]
 
-    async for event in agent.astream({"messages": messages}, stream_mode="updates"):
-        yield event
+    try:
+        async for event in agent.astream(
+            {"messages": messages},
+            stream_mode=["updates", "messages", "custom"],
+            subgraphs=True,
+            version="v2",
+        ):
+            yield event
+    except MCPTimeoutError as e:
+        yield {"error": {"type": "mcp_timeout", "message": str(e)}}
 
 
 __all__ = ["create_orchestrator", "run_research", "stream_research"]

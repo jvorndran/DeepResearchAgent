@@ -188,7 +188,7 @@ async def llm_judge_and_answer(
     from langchain_google_genai import ChatGoogleGenerativeAI
     from langchain_core.messages import HumanMessage
 
-    llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", temperature=0)
+    llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
 
     prompt = f"""You are evaluating whether an AI research orchestrator asked the right clarifying question.
 

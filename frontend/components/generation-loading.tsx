@@ -16,14 +16,8 @@ interface GenerationLoadingProps {
 
 export function GenerationLoading({
   onComplete,
-  durationMs = 4500,
 }: GenerationLoadingProps) {
   const workflow = useMemo(() => createGeneratingWorkflowState(), [])
-
-  useEffect(() => {
-    const t = window.setTimeout(() => onComplete(), durationMs)
-    return () => window.clearTimeout(t)
-  }, [onComplete, durationMs])
 
   return (
     <div className="flex h-full w-full flex-col overflow-auto bg-background">

@@ -26,8 +26,10 @@ DATA_STORAGE_DIR = os.getenv("DATA_STORAGE_DIR", str(_BACKEND_DIR / "data"))
 # Absolute path so analysis.py scripts use it regardless of sandbox CWD
 OUTPUT_BASE_DIR = os.getenv("OUTPUT_DIR", str(_BACKEND_DIR / "outputs"))
 
-# Embed the exact Python interpreter so the quant-developer never has to search for it
-PYTHON_EXECUTABLE = sys.executable
+# Prefer the venv Python (has pandas/numpy/scipy) over the bare system interpreter.
+# The venv is always at backend/.venv/Scripts/python.exe on Windows.
+_VENV_PYTHON = _BACKEND_DIR / ".venv" / "Scripts" / "python.exe"
+PYTHON_EXECUTABLE = str(_VENV_PYTHON) if _VENV_PYTHON.exists() else sys.executable
 
 
 # =============================================================================
@@ -230,5 +232,5 @@ QUANT_DEVELOPER_SUBAGENT = {
 
     "tools": [],  # built-in tools from the orchestrator's backend handle everything
 
-    "model": "google_genai:gemini-2.0-flash"
+    "model": "openai:gpt-5.1"
 }

@@ -35,7 +35,10 @@ def get_fred_mcp_config(server_url: Optional[str] = None) -> Dict[str, Any]:
             "headers": {
                 "Content-Type": "application/json",
                 "Accept": "application/json, text/event-stream"
-            }
+            },
+            "timeout": 10,          # local server — fail fast if unreachable (seconds)
+            "sse_read_timeout": 60, # FRED API calls are faster than FMP (seconds)
+            "terminate_on_close": False, # Prevents 400 errors on session close
         }
     }
 

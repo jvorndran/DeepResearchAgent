@@ -252,7 +252,28 @@ def write_research_report(
     )
 
     # -------------------------------------------------------------------------
-    # 5. Build markdown body section by section
+    # 5. Pre-build a content queue from exec_data for generic sections.
+    #    Each key becomes one content piece; pieces are consumed in order so
+    #    successive sections each get distinct material instead of all falling
+    #    back to key_finding.
+    # -------------------------------------------------------------------------
+    _skip_keys = {"key_finding", "title", "executive_summary", "chart_ids"}
+    _content_queue: list[str] = []
+    for _k, _v in exec_data.items():
+        if _k in _skip_keys:
+            continue
+        _label = _k.replace("_", " ").title()
+        if isinstance(_v, dict) and _v:
+            _rows = "\n".join(f"  - **{yr}**: {val}" for yr, val in sorted(_v.items()))
+            _content_queue.append(f"**{_label}**:\n\n{_rows}")
+        elif isinstance(_v, list) and _v:
+            _content_queue.append(f"**{_label}**: {', '.join(str(x) for x in _v)}")
+        elif _v is not None and str(_v).strip():
+            _content_queue.append(f"**{_label}**: {_v}")
+    _queue_idx = 0
+
+    # -------------------------------------------------------------------------
+    # 6. Build markdown body section by section
     # -------------------------------------------------------------------------
     md_sections: list[str] = []
 
@@ -323,9 +344,18 @@ def write_research_report(
             )
 
         else:
-            # Generic content section — pull relevant findings from exec_data
+            # Generic content section.
+            # 1. Try an exact key match in exec_data.
+            # 2. Fall back to the next unconsumed piece from the content queue.
+            # 3. Final fallback: key_finding or a generic placeholder.
             key = section_title.lower().replace(" ", "_")
-            findings = exec_data.get(key, exec_data.get("key_finding", "See charts and data sources for details."))
+            if key in exec_data and exec_data[key] is not None:
+                findings = str(exec_data[key])
+            elif _queue_idx < len(_content_queue):
+                findings = _content_queue[_queue_idx]
+                _queue_idx += 1
+            else:
+                findings = exec_data.get("key_finding", "See charts and data sources for details.")
 
             content = f"## {section_title}\n\n{findings}"
 
@@ -339,7 +369,7 @@ def write_research_report(
             md_sections.append(content)
 
     # -------------------------------------------------------------------------
-    # 6. Append footer
+    # 7. Append footer
     # -------------------------------------------------------------------------
     footer = (
         "\n\n---\n\n"
@@ -350,7 +380,7 @@ def write_research_report(
     markdown = "\n\n".join(md_sections) + footer
 
     # -------------------------------------------------------------------------
-    # 7. Build DataSource objects
+    # 8. Build DataSource objects
     # -------------------------------------------------------------------------
     ds_objects: list[DataSource] = []
     for ds in data_sources:
@@ -363,7 +393,7 @@ def write_research_report(
             ))
 
     # -------------------------------------------------------------------------
-    # 8. Assemble and validate ResearchReport (Pydantic validates chart shapes)
+    # 9. Assemble and validate ResearchReport (Pydantic validates chart shapes)
     # -------------------------------------------------------------------------
     chart_ids_in_markdown = re.findall(r'<!--\s*CHART:(\S+?)\s*-->', markdown)
     metadata = ReportMetadata(
@@ -386,7 +416,7 @@ def write_research_report(
     )
 
     # -------------------------------------------------------------------------
-    # 9. Save to disk with pre-write validation
+    # 10. Save to disk with pre-write validation
     # -------------------------------------------------------------------------
     report_path = str(_OUTPUT_BASE_DIR / job_id / "report.json")
     validation_issues = _save_report(report, report_path)

@@ -61,7 +61,13 @@ def get_fmp_mcp_config(
 
     # mcp-client-id is required for session persistence on the hosted server.
     # Without it each request is anonymous (not cached) → "Session not found" errors.
-    cid = client_id or str(uuid.uuid4())
+    # We use a single stable ID per process to avoid creating a new session for every request
+    # which causes the server to spawn many tool definitions and eventually rate limit or fail
+    global _fmp_client_id
+    if '_fmp_client_id' not in globals():
+        _fmp_client_id = str(uuid.uuid4())
+        
+    cid = client_id or _fmp_client_id
 
     return {
         "fmp": {
@@ -71,7 +77,10 @@ def get_fmp_mcp_config(
                 "Content-Type": "application/json",
                 "Accept": "application/json, text/event-stream",
                 "mcp-client-id": cid,
-            }
+            },
+            "timeout": 30,          # connection + request timeout (seconds)
+            "sse_read_timeout": 30, # max wait for a single tool response (seconds)
+            "terminate_on_close": False, # Prevents the 400 error on session close
         }
     }
 

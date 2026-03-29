@@ -33,6 +33,47 @@ from mcp_clients.fred_mcp_client import create_fred_mcp_client
 
 
 # =============================================================================
+# MCP TIMEOUT HANDLING
+# =============================================================================
+
+# Inherits from BaseException (not Exception) so LangGraph's ToolNode — which
+# catches `except Exception` — cannot swallow it.  The exception propagates
+# straight through the subagent graph and out of stream_research / run_research,
+# where it is caught and turned into a clean error response.
+class MCPTimeoutError(BaseException):
+    """Raised when an FMP or FRED MCP tool call exceeds its timeout."""
+
+_FMP_TIMEOUT = 30   # seconds per tool call (FMP is a hosted remote API)
+_FRED_TIMEOUT = 30  # seconds per tool call (FRED local server)
+
+
+def _with_timeout(mcp_tool, timeout_secs: float):
+    """
+    Wrap an MCP BaseTool so any call exceeding *timeout_secs* raises
+    MCPTimeoutError instead of hanging indefinitely.
+
+    MCPTimeoutError(BaseException) bypasses LangGraph's ToolNode error
+    handler and aborts the entire agent workflow immediately.
+    """
+    original_arun = mcp_tool._arun
+
+    async def _arun_with_timeout(*args, **kwargs):
+        try:
+            return await asyncio.wait_for(
+                original_arun(*args, **kwargs),
+                timeout=timeout_secs,
+            )
+        except asyncio.TimeoutError:
+            raise MCPTimeoutError(
+                f"MCP tool '{mcp_tool.name}' did not respond within {timeout_secs}s. "
+                "The MCP server is unresponsive — aborting workflow."
+            )
+
+    mcp_tool._arun = _arun_with_timeout
+    return mcp_tool
+
+
+# =============================================================================
 # DATA ENGINEER TOOLS
 # =============================================================================
 
@@ -368,14 +409,23 @@ async def get_data_engineer_subagent():
     # LLM turn — eliminates the 3-turn discovery loop (list_toolsets→enable→list_tools).
     enable_tool = next((t for t in fmp_tools if getattr(t, "name", "") == "enable_toolset"), None)
     if enable_tool:
-        await enable_tool.ainvoke({"name": "statements"})
+        await asyncio.wait_for(
+            enable_tool.ainvoke({"name": "statements"}),
+            timeout=_FMP_TIMEOUT,
+        )
         fmp_tools = await fmp_client.get_tools()  # re-fetch with statements tools included
+
+    # Wrap all FMP tools so any single call that hangs raises MCPTimeoutError
+    fmp_tools = [_with_timeout(t, _FMP_TIMEOUT) for t in fmp_tools]
 
     # FRED (optional, local server)
     fred_tools = []
     try:
         fred_client = await create_fred_mcp_client()
-        fred_tools = await fred_client.get_tools()
+        fred_tools = await asyncio.wait_for(
+            fred_client.get_tools(),
+            timeout=_FRED_TIMEOUT,
+        )
 
         # Validate the FRED MCP server can actually call FRED by invoking fred_get_series.
         # get_tools() only fetches tool definitions; it does NOT verify the API key works.
@@ -386,7 +436,10 @@ async def get_data_engineer_subagent():
         )
         if probe_tool:
             try:
-                await probe_tool.ainvoke({"series_id": "GDP"})
+                await asyncio.wait_for(
+                    probe_tool.ainvoke({"series_id": "GDP"}),
+                    timeout=_FRED_TIMEOUT,
+                )
             except Exception as probe_err:
                 logger.warning(
                     "FRED MCP server probe failed — FRED tools not loaded. "
@@ -400,6 +453,9 @@ async def get_data_engineer_subagent():
             "Start with: node build/index.js --http\nError: %s",
             os.getenv("FRED_MCP_URL", "http://localhost:3000/mcp"), e
         )
+
+    # Wrap all FRED tools the same way
+    fred_tools = [_with_timeout(t, _FRED_TIMEOUT) for t in fred_tools]
 
     fred_available = len(fred_tools) > 0
 

@@ -19,8 +19,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-# Script lives at .claude/skills/test-agent/ — repo root is 4 levels up
-_REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+# Script lives at .claude/skills/test-agent/scripts/ — repo root is 5 levels up
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent
 _BACKEND = _REPO_ROOT / "backend"
 sys.path.insert(0, str(_BACKEND))
 
