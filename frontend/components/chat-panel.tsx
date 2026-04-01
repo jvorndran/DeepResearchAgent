@@ -5,6 +5,7 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { Button } from "@/components/ui/button"
 import { Paperclip, Sparkles, User, Mic, ArrowUp, FlaskConical } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { ChatLoader } from "@/components/chat-loader"
 
 export interface ChatMessage {
   role: "user" | "assistant"
@@ -20,6 +21,7 @@ interface ChatPanelProps {
   onBeginResearch: () => void
   /** Enable after at least one assistant turn (e.g. scope discussion). */
   canBeginResearch?: boolean
+  isLoading?: boolean
 }
 
 function MessageBubble({
@@ -85,6 +87,7 @@ export function ChatPanel({
   onSendMessage,
   onBeginResearch,
   canBeginResearch = false,
+  isLoading = false,
 }: ChatPanelProps) {
   const [inputValue, setInputValue] = useState("")
   const [isFocused, setIsFocused] = useState(false)
@@ -97,6 +100,17 @@ export function ChatPanel({
         Math.min(textareaRef.current.scrollHeight, 120) + "px"
     }
   }, [inputValue])
+
+  // Auto-scroll to bottom when messages change or loading state changes
+  const scrollAreaRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (scrollAreaRef.current) {
+      const scrollContainer = scrollAreaRef.current.querySelector('[data-radix-scroll-area-viewport]')
+      if (scrollContainer) {
+        scrollContainer.scrollTop = scrollContainer.scrollHeight
+      }
+    }
+  }, [messages, isLoading])
 
   const send = () => {
     const t = inputValue.trim()
@@ -149,8 +163,9 @@ export function ChatPanel({
       </div>
 
       <div className="min-h-0 flex-1 overflow-hidden">
-        <ScrollArea className="h-full w-full">
+        <ScrollArea className="h-full w-full" ref={scrollAreaRef}>
           <div
+            data-testid="chat-messages"
             className={cn(
               "space-y-4 px-4 py-5",
               isCentered && "px-2 sm:px-4",
@@ -159,6 +174,7 @@ export function ChatPanel({
             {messages.map((message, index) => (
               <MessageBubble key={index} message={message} index={index} />
             ))}
+            {isLoading && <ChatLoader />}
           </div>
         </ScrollArea>
       </div>
@@ -182,6 +198,7 @@ export function ChatPanel({
             className="shrink-0 gap-2"
             disabled={!canBeginResearch}
             onClick={onBeginResearch}
+            data-testid="begin-research-btn"
           >
             <FlaskConical className="h-4 w-4" />
             Begin research
@@ -218,6 +235,7 @@ export function ChatPanel({
               onKeyDown={onKeyDown}
               placeholder="Ask a follow-up question..."
               rows={1}
+              data-testid="chat-input"
               className="max-h-[120px] min-h-[36px] flex-1 resize-none bg-transparent py-2 text-sm text-foreground placeholder:text-muted-foreground/60 focus:outline-none"
             />
 

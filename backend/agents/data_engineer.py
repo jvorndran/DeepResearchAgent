@@ -23,6 +23,8 @@ technical indicators, and much more.
 
 from typing import Dict, Any, List, Optional, Union
 from langchain_core.tools import tool
+from langchain_core.runnables import RunnableConfig
+from langchain_core.callbacks import AsyncCallbackManagerForToolRun
 import pandas as pd
 import os
 import json
@@ -47,20 +49,83 @@ _FMP_TIMEOUT = 30   # seconds per tool call (FMP is a hosted remote API)
 _FRED_TIMEOUT = 30  # seconds per tool call (FRED local server)
 
 
+# FMP statement tools that accept a `period` parameter.
+# The API only accepts these exact values — reject anything else at the call site
+# so the LLM sees the error immediately and retries with the correct value.
+_VALID_FMP_PERIODS = {"FY", "Q1", "Q2", "Q3", "Q4"}
+_PERIOD_ALIASES = {
+    "annual": "FY",
+    "yearly": "FY",
+    "fy": "FY",
+    "quarter": "Q1",   # best-effort: map generic "quarter" to Q1 so the call succeeds
+    "quarterly": "Q1",
+    "q1": "Q1", "q2": "Q2", "q3": "Q3", "q4": "Q4",
+}
+_STATEMENT_TOOLS = {
+    "getIncomeStatement", "getBalanceSheetStatement",
+    "getCashFlowStatement", "getKeyMetrics", "getRatios",
+    # AsReported variants also accept a period param (though they need premium tier)
+    "getIncomeStatementAsReported", "getBalanceSheetStatementAsReported",
+    "getCashFlowStatementAsReported",
+}
+
+import logging as _logging
+_de_logger = _logging.getLogger(__name__)
+
+
 def _with_timeout(mcp_tool, timeout_secs: float):
     """
     Wrap an MCP BaseTool so any call exceeding *timeout_secs* raises
     MCPTimeoutError instead of hanging indefinitely.
 
+    Also normalises the `period` kwarg for FMP statement tools — the FMP MCP
+    server only accepts "FY"|"Q1"|"Q2"|"Q3"|"Q4"; the LLM sometimes passes
+    "annual" or "quarter" which causes a -32602 validation error.
+
     MCPTimeoutError(BaseException) bypasses LangGraph's ToolNode error
     handler and aborts the entire agent workflow immediately.
     """
     original_arun = mcp_tool._arun
+    tool_name = getattr(mcp_tool, "name", "")
 
-    async def _arun_with_timeout(*args, **kwargs):
+    async def _arun_with_timeout(
+        *args,
+        config: RunnableConfig,
+        run_manager: AsyncCallbackManagerForToolRun | None = None,
+        **kwargs,
+    ):
+        # Normalise period param for statement tools before hitting the API.
+        # The period may arrive in three different locations depending on how
+        # LangChain/LangGraph invokes the tool:
+        #   - kwargs['period']          direct keyword arg
+        #   - kwargs['input']['period'] dict packed under 'input' kwarg
+        #   - args[0]['period']         dict passed as first positional arg
+        if tool_name in _STATEMENT_TOOLS:
+            def _fix(d: dict) -> tuple[dict, bool]:
+                raw = str(d.get("period", ""))
+                if raw and raw not in _VALID_FMP_PERIODS:
+                    corrected = _PERIOD_ALIASES.get(raw.lower(), "FY")
+                    _de_logger.warning(
+                        "FMP tool '%s': invalid period=%r — correcting to %r",
+                        tool_name, raw, corrected,
+                    )
+                    return {**d, "period": corrected}, True
+                return d, False
+
+            if "period" in kwargs:
+                kwargs, _ = _fix(kwargs)
+            elif isinstance(kwargs.get("input"), dict) and "period" in kwargs["input"]:
+                fixed, changed = _fix(kwargs["input"])
+                if changed:
+                    kwargs = {**kwargs, "input": fixed}
+            elif args and isinstance(args[0], dict) and "period" in args[0]:
+                fixed, changed = _fix(args[0])
+                if changed:
+                    args = (fixed,) + args[1:]
+
         try:
             return await asyncio.wait_for(
-                original_arun(*args, **kwargs),
+                original_arun(*args, config=config, run_manager=run_manager, **kwargs),
                 timeout=timeout_secs,
             )
         except asyncio.TimeoutError:
@@ -279,7 +344,10 @@ FMP tools (like `getIncomeStatement`, `getHistoricalPrice`, etc.) are **direct t
 calls** — NOT shell commands. Call them exactly like any other tool by their function name.
 
 ✅ CORRECT — call the tool directly as a function:
-  getIncomeStatement(symbol="AAPL", period="annual", limit=10)
+  getIncomeStatement(symbol="AAPL", period="FY", limit=5)
+
+  Valid period values: "FY" (full fiscal year), "Q1", "Q2", "Q3", "Q4" (quarterly).
+  NEVER use "annual", "quarter", "yearly", or any other value — the API will reject them.
 
 ❌ WRONG — never use shell/execute for FMP data:
   execute("fmp getIncomeStatement --symbol AAPL")   ← fmp is NOT a CLI program

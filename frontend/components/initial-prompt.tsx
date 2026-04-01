@@ -68,6 +68,7 @@ export function InitialPrompt({ onSubmit }: InitialPromptProps) {
               onKeyDown={onKeyDown}
               placeholder="e.g. Compare AAPL revenue growth to sector peers over the last 8 quarters…"
               rows={3}
+              data-testid="initial-prompt-textarea"
               className="min-h-[100px] w-full resize-none bg-transparent px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground/60 focus:outline-none"
             />
             <div className="flex items-center justify-end gap-2 border-t border-border/40 px-3 py-2">
@@ -76,6 +77,7 @@ export function InitialPrompt({ onSubmit }: InitialPromptProps) {
                 disabled={!value.trim()}
                 className="gap-1.5 rounded-xl"
                 onClick={handleSubmit}
+                data-testid="initial-prompt-submit"
               >
                 <span>Start</span>
                 <ArrowUp className="h-4 w-4" />

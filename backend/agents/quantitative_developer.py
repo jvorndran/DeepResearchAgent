@@ -26,6 +26,13 @@ DATA_STORAGE_DIR = os.getenv("DATA_STORAGE_DIR", str(_BACKEND_DIR / "data"))
 # Absolute path so analysis.py scripts use it regardless of sandbox CWD
 OUTPUT_BASE_DIR = os.getenv("OUTPUT_DIR", str(_BACKEND_DIR / "outputs"))
 
+# LocalShellBackend virtual path: strip drive letter so C:\foo\bar → /foo/bar.
+# write_file / read_file / ls / glob / grep REQUIRE virtual paths starting with /.
+# execute uses real Windows paths because it spawns a subprocess.
+import re as _re
+OUTPUT_BASE_VIRTUAL = _re.sub(r'^[A-Za-z]:[/\\]', '/', OUTPUT_BASE_DIR).replace('\\', '/')
+DATA_STORAGE_VIRTUAL = _re.sub(r'^[A-Za-z]:[/\\]', '/', DATA_STORAGE_DIR).replace('\\', '/')
+
 # Prefer the venv Python (has pandas/numpy/scipy) over the bare system interpreter.
 # The venv is always at backend/.venv/Scripts/python.exe on Windows.
 _VENV_PYTHON = _BACKEND_DIR / ".venv" / "Scripts" / "python.exe"
@@ -45,23 +52,41 @@ for interactive Recharts visualizations.
 # PYTHON INTERPRETER (USE THIS EXACT PATH — DO NOT SEARCH FOR PYTHON)
 {PYTHON_EXECUTABLE}
 
+# ⚠️ CRITICAL: TWO PATH SYSTEMS — READ CAREFULLY
+
+The sandbox has TWO path systems. Using the wrong one causes immediate errors.
+
+| Tool | Path format | Example |
+|------|-------------|---------|
+| write_file, read_file, ls, glob, grep | **Virtual path** — starts with `/`, NO drive letter | `/projects/DeepResearchAgent/backend/outputs/{{job_id}}/code/analysis.py` |
+| execute | **Windows path** — starts with `C:\\` | `{PYTHON_EXECUTABLE} {OUTPUT_BASE_DIR}\\{{job_id}}\\code\\analysis.py` |
+
+Virtual path rule: strip the drive letter and colon from the Windows path.
+  `{OUTPUT_BASE_DIR}\\{{job_id}}` → `{OUTPUT_BASE_VIRTUAL}/{{job_id}}`
+
+Data files from the data-engineer arrive as Windows paths. To read them with read_file:
+  strip `C:` → use `/projects/...`
+To read them inside analysis.py (via pandas.read_csv) → use the Windows path as-is.
+
 # WORKFLOW (MANDATORY — follow in order)
-1. Use write_file to save your Python script to {OUTPUT_BASE_DIR}/{{job_id}}/code/analysis.py
-2. Use execute to run: {PYTHON_EXECUTABLE} {OUTPUT_BASE_DIR}/{{job_id}}/code/analysis.py
-3. If execution fails, read the traceback from stderr, fix your code, and rewrite + re-run
+1. Use write_file to save your Python script:
+   file_path = `{OUTPUT_BASE_VIRTUAL}/{{job_id}}/code/analysis.py`  ← VIRTUAL PATH
+2. Use execute to run it:
+   command = `{PYTHON_EXECUTABLE} {OUTPUT_BASE_DIR}\\{{job_id}}\\code\\analysis.py`  ← WINDOWS PATH
+3. If execution fails, read stderr, fix your code with edit_file (preferred) or write_file
 4. Repeat until successful (maximum 3 attempts)
-5. Confirm {OUTPUT_BASE_DIR}/{{job_id}}/charts.json was created with valid JSON
+5. Confirm `{OUTPUT_BASE_VIRTUAL}/{{job_id}}/charts.json` exists with valid JSON (use read_file)
 
 # INPUTS FROM ORCHESTRATOR
 - Data schemas: exact column names, dtypes, and sample rows for each data file
-- File paths: absolute paths to CSV/JSON data on disk
+- File paths: Windows absolute paths to CSV/JSON data on disk (use as-is in pandas.read_csv)
 - Analysis goal: the specific mathematical analysis to perform
-- Job ID: {{job_id}} (e.g. abc123) — used to construct output paths under {OUTPUT_BASE_DIR}/{{job_id}}/
+- Job ID: {{job_id}} (e.g. abc123) — used to construct output paths
 
 # STRICT CODING RULES
-1. Read data ONLY with pandas.read_csv() / pandas.read_json() from the exact file paths given
+1. Read data ONLY with pandas.read_csv() / pandas.read_json() using the exact Windows paths given
 2. NEVER print(df), print(df.head()), or any large arrays — stdout goes into the LLM context
-3. Create output dir: Path("{OUTPUT_BASE_DIR}/{{job_id}}").mkdir(parents=True, exist_ok=True)
+3. Create output dir: Path(r"{OUTPUT_BASE_DIR}\\{{job_id}}").mkdir(parents=True, exist_ok=True)
 4. Build the charts dict and write it using the EXACT Python template in the section below
 5. End the script by printing ONLY a compact JSON summary of findings AND the chart IDs:
    {{"correlation_coefficient": 0.82, "p_value": 0.01, "key_finding": "Strong positive correlation", "chart_ids": ["capex_timeseries", "correlation_scatter"]}}
@@ -187,7 +212,7 @@ for chart_id, chart_def in charts.items():
         raise ValueError(f"Chart '{{chart_id}}': 'id' and 'type' must be strings at top level")
 print("charts.json validation passed")
 
-charts_path = Path("{OUTPUT_BASE_DIR}/{{job_id}}/charts.json")
+charts_path = Path(r"{OUTPUT_BASE_DIR}") / "{{job_id}}" / "charts.json"
 charts_path.parent.mkdir(parents=True, exist_ok=True)
 with open(charts_path, "w") as f:
     json.dump(charts, f)

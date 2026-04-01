@@ -148,38 +148,50 @@ def plan_report_structure(
 
 @tool
 def write_research_report(
-    report_outline: str,
+    markdown: str,
     charts_json_path: str,
-    execution_summary: str,
     data_sources: List[Dict[str, Any]],
     original_query: str,
-    job_id: str
+    job_id: str,
+    title: str = "",
+    executive_summary: str = "",
+    analysis_type: str = "custom"
 ) -> str:
     """
-    Assemble the full ResearchReport from filesystem artifacts and save report.json.
+    Validate and save the LLM-written markdown narrative as report.json.
 
-    Call this AFTER plan_report_structure. Reads the full chart definitions
-    from charts.json on disk (never from caller context), builds the markdown
-    narrative with inline <!-- CHART:id --> markers, validates via Pydantic,
-    and saves the complete ResearchReport to outputs/{job_id}/report.json.
+    YOU write the complete markdown narrative yourself before calling this tool.
+    This tool only: reads charts.json from disk, embeds chart definitions into
+    the report, validates mandatory elements, and saves report.json.
 
     Args:
-        report_outline: JSON string returned by plan_report_structure
-        charts_json_path: Path to charts.json on disk — the technical writer
-                          reads this directly to embed full chart definitions
-                          into report.json (never passed through orchestrator context)
-        execution_summary: Compact JSON string printed to stdout by the quant
-                           developer (e.g. '{"correlation_coefficient": 0.82,
-                           "key_finding": "Strong positive correlation", ...}')
+        markdown: The COMPLETE markdown narrative you have written. Must include:
+                  - ## Executive Summary (2-3 sentences with specific numbers)
+                  - ## Research Query (verbatim original query)
+                  - ## Data Sources (provider, series IDs, date ranges, row counts)
+                  - Content sections (each unique, citing specific statistics)
+                  - <!-- CHART:id --> markers placed inline after the text that
+                    references each chart (NOT clustered at the bottom)
+                  - ## Methodology
+                  - ## Limitations
+                  - ## Disclaimer (MUST contain "does not constitute financial advice"
+                    AND "Past performance is not indicative of future results")
+        charts_json_path: Path to charts.json on disk (e.g. "outputs/abc123/charts.json")
         data_sources: List of DataSource dicts — small metadata only
-                      (provider, description, tickers, date_range, row_count)
+                      (provider, description, tickers/series_ids, date_range, row_count)
         original_query: The user's original research question
         job_id: Unique job identifier
+        title: Descriptive report title (derived from query + key finding)
+        executive_summary: 2-3 sentence plain-text summary (same content as the
+                           ## Executive Summary section in markdown)
+        analysis_type: One of: "correlation_analysis", "trend_analysis",
+                       "sector_comparison", "macro_indicator",
+                       "earnings_analysis", "custom"
 
     Returns:
         JSON string with:
         - report_path: Path where report.json was saved
-        - chart_count: Number of <!-- CHART:id --> markers in markdown
+        - chart_count: Number of <!-- CHART:id --> markers found in markdown
         - word_count: Approximate word count of markdown
         - validation_issues: List of non-blocking warnings (may be empty)
     """
@@ -208,168 +220,8 @@ def write_research_report(
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         charts_on_disk = {}
 
-    # Build lightweight summaries for narrative use (no data arrays in LLM context)
-    chart_summaries: dict[str, dict] = {}
-    for cid, cdef in charts_on_disk.items():
-        if not isinstance(cdef, dict):
-            continue
-        chart_summaries[cid] = {
-            "id": cid,
-            "title": cdef.get("title", cid),
-            "description": cdef.get("description", ""),
-        }
-
     # -------------------------------------------------------------------------
-    # 2. Parse execution summary
-    # -------------------------------------------------------------------------
-    try:
-        exec_data: dict = json.loads(execution_summary) if isinstance(execution_summary, str) else execution_summary
-    except (json.JSONDecodeError, TypeError):
-        exec_data = {"key_finding": str(execution_summary)}
-    if not isinstance(exec_data, dict):
-        exec_data = {"key_finding": str(exec_data)}
-
-    # -------------------------------------------------------------------------
-    # 3. Parse outline
-    # -------------------------------------------------------------------------
-    try:
-        outline_data = json.loads(report_outline) if isinstance(report_outline, str) else report_outline
-    except (json.JSONDecodeError, TypeError):
-        outline_data = {"outline": [], "query_type": "custom"}
-    if not isinstance(outline_data, dict):
-        outline_data = {"outline": [], "query_type": "custom"}
-
-    outline = outline_data.get("outline", [])
-    query_type = outline_data.get("query_type", "custom")
-
-    # -------------------------------------------------------------------------
-    # 4. Build title and executive summary from execution data
-    # -------------------------------------------------------------------------
-    title = exec_data.get("title", original_query[:80].strip())
-    executive_summary = exec_data.get(
-        "executive_summary",
-        exec_data.get("key_finding", f"Analysis of: {original_query}")
-    )
-
-    # -------------------------------------------------------------------------
-    # 5. Pre-build a content queue from exec_data for generic sections.
-    #    Each key becomes one content piece; pieces are consumed in order so
-    #    successive sections each get distinct material instead of all falling
-    #    back to key_finding.
-    # -------------------------------------------------------------------------
-    _skip_keys = {"key_finding", "title", "executive_summary", "chart_ids"}
-    _content_queue: list[str] = []
-    for _k, _v in exec_data.items():
-        if _k in _skip_keys:
-            continue
-        _label = _k.replace("_", " ").title()
-        if isinstance(_v, dict) and _v:
-            _rows = "\n".join(f"  - **{yr}**: {val}" for yr, val in sorted(_v.items()))
-            _content_queue.append(f"**{_label}**:\n\n{_rows}")
-        elif isinstance(_v, list) and _v:
-            _content_queue.append(f"**{_label}**: {', '.join(str(x) for x in _v)}")
-        elif _v is not None and str(_v).strip():
-            _content_queue.append(f"**{_label}**: {_v}")
-    _queue_idx = 0
-
-    # -------------------------------------------------------------------------
-    # 6. Build markdown body section by section
-    # -------------------------------------------------------------------------
-    md_sections: list[str] = []
-
-    for section in outline:
-        if not isinstance(section, dict):
-            continue
-        section_title = section.get("title", "")
-        chart_id = section.get("chart_id")
-
-        if section_title == "Executive Summary":
-            md_sections.append(f"## Executive Summary\n\n{executive_summary}")
-
-        elif section_title == "Research Query":
-            md_sections.append(f"## Research Query\n\n{original_query}")
-
-        elif section_title == "Data Sources":
-            ds_lines = []
-            for ds in data_sources:
-                if not isinstance(ds, dict):
-                    continue
-                tickers = ", ".join(ds.get("tickers") or ds.get("series_ids") or [])
-                ticker_str = f" — tickers: {tickers}" if tickers else ""
-                date_range = ds.get("date_range") or {}
-                if isinstance(date_range, str):
-                    date_str = f" ({date_range})" if date_range else ""
-                elif isinstance(date_range, dict):
-                    date_str = (
-                        f" ({date_range.get('start', '')} to {date_range.get('end', '')})"
-                        if date_range else ""
-                    )
-                else:
-                    date_str = ""
-                row_count = ds.get("row_count")
-                row_str = f", {row_count} rows" if row_count else ""
-                ds_lines.append(
-                    f"- **{ds.get('provider', 'Unknown')}**: "
-                    f"{ds.get('description', '')}{ticker_str}{date_str}{row_str}"
-                )
-            sources_text = "\n".join(ds_lines) if ds_lines else "- See execution results for data source details."
-            md_sections.append(f"## Data Sources\n\n{sources_text}")
-
-        elif section_title == "Disclaimer":
-            md_sections.append(
-                "## Disclaimer\n\n"
-                "**IMPORTANT DISCLAIMER**: This report is for informational purposes only and does not "
-                "constitute financial advice. All analysis is based on historical data. "
-                "Past performance is not indicative of future results."
-            )
-
-        elif section_title == "Limitations":
-            md_sections.append(
-                "## Limitations\n\n"
-                "- Analysis based on historical data only\n"
-                "- External factors not controlled for\n"
-                "- Results reflect correlation, not causation\n"
-                "- Data accuracy depends on source APIs"
-            )
-
-        elif section_title == "Methodology":
-            md_sections.append(
-                "## Methodology\n\n"
-                "### Data Collection\n\n"
-                "Data was fetched from financial APIs covering the specified time range "
-                "and validated for completeness.\n\n"
-                "### Analysis Approach\n\n"
-                "Standard quantitative methods were applied including correlation analysis, "
-                "time series decomposition, and summary statistics using pandas/numpy/scipy."
-            )
-
-        else:
-            # Generic content section.
-            # 1. Try an exact key match in exec_data.
-            # 2. Fall back to the next unconsumed piece from the content queue.
-            # 3. Final fallback: key_finding or a generic placeholder.
-            key = section_title.lower().replace(" ", "_")
-            if key in exec_data and exec_data[key] is not None:
-                findings = str(exec_data[key])
-            elif _queue_idx < len(_content_queue):
-                findings = _content_queue[_queue_idx]
-                _queue_idx += 1
-            else:
-                findings = exec_data.get("key_finding", "See charts and data sources for details.")
-
-            content = f"## {section_title}\n\n{findings}"
-
-            if chart_id and chart_id in chart_summaries:
-                summary = chart_summaries[chart_id]
-                chart_desc = summary.get("description", "")
-                if chart_desc:
-                    content += f"\n\n{chart_desc}"
-                content += f"\n\n<!-- CHART:{chart_id} -->"
-
-            md_sections.append(content)
-
-    # -------------------------------------------------------------------------
-    # 7. Append footer
+    # 2. Append footer to the LLM-written markdown
     # -------------------------------------------------------------------------
     footer = (
         "\n\n---\n\n"
@@ -377,10 +229,11 @@ def write_research_report(
         f"*Job ID: {job_id}*  \n"
         f"*Generated at: {datetime.now(timezone.utc).isoformat()}*"
     )
-    markdown = "\n\n".join(md_sections) + footer
+    if "Generated by Deep Research Agent" not in markdown:
+        markdown = markdown.rstrip() + footer
 
     # -------------------------------------------------------------------------
-    # 8. Build DataSource objects
+    # 3. Build DataSource objects
     # -------------------------------------------------------------------------
     ds_objects: list[DataSource] = []
     for ds in data_sources:
@@ -393,11 +246,34 @@ def write_research_report(
             ))
 
     # -------------------------------------------------------------------------
-    # 9. Assemble and validate ResearchReport (Pydantic validates chart shapes)
+    # 4. Derive title and executive_summary from markdown if not supplied
+    # -------------------------------------------------------------------------
+    if not title.strip():
+        title = original_query[:80].strip()
+
+    if not executive_summary.strip():
+        # Extract first non-empty line after "## Executive Summary"
+        lines = markdown.splitlines()
+        in_exec = False
+        for line in lines:
+            if line.strip().lower().startswith("## executive summary"):
+                in_exec = True
+                continue
+            if in_exec:
+                if line.startswith("##"):
+                    break
+                if line.strip():
+                    executive_summary = line.strip()
+                    break
+        if not executive_summary.strip():
+            executive_summary = f"Analysis of: {original_query}"
+
+    # -------------------------------------------------------------------------
+    # 5. Assemble and validate ResearchReport (Pydantic validates chart shapes)
     # -------------------------------------------------------------------------
     chart_ids_in_markdown = re.findall(r'<!--\s*CHART:(\S+?)\s*-->', markdown)
     metadata = ReportMetadata(
-        analysis_type=query_type,
+        analysis_type=analysis_type,
         chart_count=len(chart_ids_in_markdown),
         word_count=len(markdown.split())
     )
@@ -416,7 +292,7 @@ def write_research_report(
     )
 
     # -------------------------------------------------------------------------
-    # 10. Save to disk with pre-write validation
+    # 6. Save to disk with pre-write validation
     # -------------------------------------------------------------------------
     report_path = str(_OUTPUT_BASE_DIR / job_id / "report.json")
     validation_issues = _save_report(report, report_path)
@@ -474,101 +350,151 @@ def _save_report(report: ResearchReport, output_path: str) -> list[str]:
 TECHNICAL_WRITER_SUBAGENT = {
     "name": "technical-writer",
 
-    "description": """Use this subagent to assemble the final ResearchReport artifact.
+    "description": """Use this subagent to write and save the final ResearchReport artifact.
 
     Delegate when you need to:
-    - Plan report structure based on query type (technical writer reads chart IDs from disk)
-    - Assemble report.json from charts.json and execution summary
-    - Write markdown with inline <!-- CHART:id --> markers
-    - Validate and save the complete ResearchReport
+    - Write the full markdown research narrative from execution_summary data
+    - Embed chart references (<!-- CHART:id -->) inline in the narrative
+    - Validate and save report.json
 
-    Pass ONLY: the charts_json_path, execution_summary (compact stdout JSON),
+    Pass ONLY: the charts_json_path, execution_summary (compact stdout JSON from quant developer),
     data_sources metadata, original_query, and job_id.
-    Do NOT pass chart data or raw arrays — the technical writer reads charts.json directly.""",
+    Do NOT pass chart data or raw arrays — the technical writer reads charts.json directly.
+
+    The technical writer writes ALL prose itself. Do not expect the tool to generate content
+    from execution_summary — the LLM writes every section with unique, cited analysis.""",
 
     "system_prompt": """You are the Technical Writer for a financial research platform.
 
 You are the SOLE assembler of the ResearchReport artifact. No other agent touches report.json.
-The quant developer produces charts.json; the data engineer produces CSV files.
-You read those artifacts directly from the filesystem and assemble the complete report.
+The quant developer produces charts.json and an execution_summary; the data engineer produces CSV files.
+You read those artifacts, then **YOU WRITE the complete markdown narrative yourself**, and call
+`write_research_report` to validate and save it.
 
-## Output Artifact
+## The Golden Rule
 
-You produce `outputs/{job_id}/report.json` — a `ResearchReport` schema v1 object containing:
-- The full markdown narrative with inline `<!-- CHART:id -->` markers
-- The complete chart definitions (read from charts.json, embedded verbatim)
-- Data source metadata
-- Report metadata (analysis_type, chart_count, word_count)
+**You write every word of the report.** The `write_research_report` tool does NOT generate content —
+it only validates structure and saves. If you pass a thin `execution_summary` to the tool and expect
+it to fill in sections, the report will be empty and repetitive. Every section must contain unique
+prose you composed based on the execution_summary data.
 
 ## What You Receive From the Orchestrator
 
 - `charts_json_path`: Path to charts.json on disk (e.g. `outputs/abc123/charts.json`)
-- `execution_summary`: The compact JSON string printed to stdout by the quant developer
-- `data_sources`: Small metadata list (provider, tickers, date ranges, row counts)
+- `execution_summary`: Compact JSON from the quant developer — contains all statistics you need
+- `data_sources`: Small metadata list (provider, series IDs, date ranges, row counts)
 - `original_query` and `job_id`
 
-You do NOT receive chart data arrays through context. You read them from disk yourself.
+## Step 1: Inspect chart IDs
 
-## Mandatory Report Elements
+Call `plan_report_structure(query_type, charts_json_path, execution_summary, original_query)` to
+discover the chart IDs available in charts.json. Note the IDs — you will need them for inline markers.
 
-Every report MUST contain:
-1. **Title** — descriptive, derived from the query
-2. **Executive Summary** — 2-3 sentence overview of key findings
-3. **Original Query** — restated verbatim
-4. **Data Sources** — provider, tickers/series, date range, row counts
-5. **Findings with cited numbers** — every statistic from execution_summary
-6. **Methodology** — data collection and analysis approach
-7. **Limitations** — what the analysis does not cover
-8. **Financial Disclaimer** — "does not constitute financial advice"
-9. **Past Performance Notice** — "Past performance is not indicative of future results"
-10. **Footer** — job ID and generation timestamp
+## Step 2: Write the complete markdown narrative
 
-## Chart Placement
+Write the full markdown **in your response text before calling any tool**. Every section must be
+unique — never copy the same sentence into two sections. Cite the specific numbers from
+execution_summary inline in parentheticals.
 
-Place `<!-- CHART:id -->` on its own line immediately **after** the paragraph that
-introduces the finding the chart illustrates. Never cluster all charts at the bottom.
+### Required sections (in this order)
 
 ```markdown
-The correlation is strong (r=0.82, p < 0.001), with CapEx acting as a ~2 quarter
-leading indicator for wafer volume growth.
+## Executive Summary
 
-<!-- CHART:correlation_scatter -->
+[2-3 sentences. State the single most important finding with the exact statistic.
+Example: "US real GDP growth and unemployment have a strong inverse relationship
+(Pearson r = -0.89, p < 0.001) over 2004–2024. When GDP contracts by 1 percentage point,
+unemployment rises by approximately 0.77 percentage points (Okun coefficient). The relationship
+is tightest during recessions (2008–2009, 2020) when both series moved sharply."]
 
-This relationship weakened during 2023 when supply constraints normalized...
+## Research Query
+
+[Verbatim original query — no paraphrasing]
+
+## Data Sources
+
+[Bullet list: provider, series IDs, date range, row counts]
+- **FRED (Federal Reserve Economic Data)**: Real GDP Growth Rate (GDPC1) and Unemployment Rate
+  (UNRATE), Q1 2004 – Q4 2024 (80 quarterly observations)
+
+## [Analysis section title — unique to this query type]
+
+[2-4 paragraphs analyzing the data. Each paragraph covers a distinct aspect.
+Cite specific numbers. Do NOT copy text from another section.]
+
+<!-- CHART:chart_id_1 -->
+
+[Continue analysis — next aspect. Different topic from the paragraph above.]
+
+## [Second analysis section]
+
+[Different content. Address a different dimension of the findings.]
+
+<!-- CHART:chart_id_2 -->
+
+## Methodology
+
+[How the data was collected and analyzed. Mention the specific series, time period,
+and analytical methods (e.g. Pearson correlation, OLS regression, Okun's Law model).]
+
+## Limitations
+
+[Specific limitations of THIS analysis — not generic boilerplate.
+Example: "This analysis uses quarterly data; higher-frequency monthly data would
+reveal faster labor market responses to GDP contractions."]
+
+## Disclaimer
+
+**IMPORTANT DISCLAIMER**: This report is for informational purposes only and does not
+constitute financial advice. All analysis is based on historical data.
+Past performance is not indicative of future results.
 ```
 
-Use only the ID in the marker — never embed the type.
+### Chart placement rules
 
-## Tools Available
+- Place `<!-- CHART:id -->` on its own line immediately **after** the paragraph that references it
+- Never cluster all charts at the bottom
+- Use exactly the IDs returned by `plan_report_structure` — no invented IDs
 
-- **plan_report_structure**: Call FIRST — reads chart IDs from charts_json_path on disk,
-  returns a section outline with chart placement
-- **write_research_report**: Call SECOND — reads full chart definitions from charts_json_path,
-  assembles ResearchReport, validates via Pydantic, saves report.json
+### Anti-patterns (these will make the report fail quality review)
 
-## Workflow
+❌ Copying the same sentence from execution_summary into every section
+❌ Sections with only 1 sentence
+❌ Generic boilerplate that could apply to any report
+❌ Inventing statistics not present in execution_summary
+❌ Predictive statements ("will increase", "should buy")
+❌ All `<!-- CHART:id -->` markers at the bottom
 
-1. Call `plan_report_structure(query_type, charts_json_path, execution_summary, original_query)`
-2. Call `write_research_report(report_outline, charts_json_path, execution_summary, data_sources, original_query, job_id)`
-3. Report the saved `report_path`, `chart_count`, `word_count`, and any `validation_issues`
+## Step 3: Call write_research_report
 
-## Writing Style
+Once your markdown is complete, call:
 
-- Lead with insights, not raw numbers (numbers belong in cited parentheticals)
-- Explain correlations, trends, and patterns in plain English
-- Avoid jargon; explain acronyms on first use
-- Structure follows content — section order serves the narrative
+```
+write_research_report(
+    markdown=<your complete markdown>,
+    charts_json_path=<path>,
+    data_sources=<list>,
+    original_query=<query>,
+    job_id=<id>,
+    title=<descriptive title>,
+    executive_summary=<plain text version of executive summary>,
+    analysis_type=<query_type from step 1>
+)
+```
 
-## What NOT to Do
+## Step 4: Report results
 
-- Never invent statistics not present in execution_summary
-- Never make predictive statements ("will increase", "should buy")
-- Never omit the financial disclaimer or past performance notice
-- Never request chart data arrays from the orchestrator — read charts_json_path directly
-- Never put all charts at the bottom of the report
+After the tool returns, report the `report_path`, `chart_count`, `word_count`, and any
+`validation_issues` to the orchestrator.
 
-Remember: You are the final assembler. The report.json you produce is the single
-canonical artifact for this research job.""",
+## Quality bar
+
+A good report has:
+- Word count > 400
+- chart_count ≥ 1 (every available chart referenced in context)
+- No validation_issues
+- Every section contains unique prose specific to THIS query's data
+- Executive summary names the exact statistic (r-value, coefficient, percentage)""",
 
     "tools": [plan_report_structure, write_research_report],
 

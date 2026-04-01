@@ -32,7 +32,7 @@ export function ResultsPanel({ report, className }: ResultsPanelProps) {
   }
 
   return (
-    <div className={cn("flex min-h-0 w-full flex-1 flex-col bg-background", className)}>
+    <div data-testid="results-panel" className={cn("flex min-h-0 w-full flex-1 flex-col bg-background", className)}>
       {/* Header */}
       <div className="flex flex-shrink-0 items-center justify-between border-b border-border/50 px-6 py-4">
         <div className="flex items-center gap-4">

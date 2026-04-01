@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useCallback, useMemo, useEffect } from "react"
+import { useState, useCallback, useMemo, useEffect, useRef } from "react"
 import { useChat } from "@ai-sdk/react"
 import { DefaultChatTransport } from "ai"
 import { SidebarInset, SidebarTrigger } from "@/components/ui/sidebar"
@@ -20,12 +20,6 @@ function formatNow() {
   })
 }
 
-const ASSISTANT_WELCOME =
-  "Thanks for the details. Ask follow-up questions to refine tickers, time range, or metrics. When you're ready, click **Begin research** to run the full agent pipeline (you'll see a progress screen, then the final report)."
-
-const ASSISTANT_ACK =
-  "Noted — I'll fold that into the plan. Anything else before we run the pipeline?"
-
 export default function DashboardPage() {
   const [phase, setPhase] = useState<Phase>("initial")
   const [reports, setReports] = useState<ReportHistoryItem[]>([
@@ -37,8 +31,14 @@ export default function DashboardPage() {
   ])
   const [activeReportId, setActiveReportId] = useState<string | null>(null)
   const [sessionTitle, setSessionTitle] = useState("")
+  const [hasSubagentActivity, setHasSubagentActivity] = useState(false)
+  const [streamError, setStreamError] = useState<string | null>(null)
+  const [initialQuery, setInitialQuery] = useState<string | null>(null)
+  const completionCalledRef = useRef(false)
 
   const handleGenerationComplete = useCallback(() => {
+    if (completionCalledRef.current) return
+    completionCalledRef.current = true
     const id = `report-${Date.now()}`
     const title = sessionTitle || "Latest research"
     setReports((prev) => [
@@ -53,37 +53,61 @@ export default function DashboardPage() {
     setPhase("completed")
   }, [sessionTitle])
 
-  const { messages, data, isLoading, setMessages, sendMessage } = useChat({
+  const { messages, status, setMessages, sendMessage } = useChat({
     transport: new DefaultChatTransport({
       api: 'http://localhost:8000/api/chat/stream'
     }),
-    onFinish: () => {
-      if (phase === "generating") {
-        handleGenerationComplete()
+    onData: (dataPart: any) => {
+      console.log("[onData]", JSON.stringify(dataPart).slice(0, 200))
+      // Auto-transition to generating when pipeline subagents start
+      // dataPart is the full data-* chunk; payload is in dataPart.data
+      const payload = dataPart?.data ?? dataPart
+      if (payload?.type === "update" && Array.isArray(payload?.ns) && payload.ns.length > 0 && (payload.ns[0] as string).startsWith("tools:")) {
+        setHasSubagentActivity(true)
       }
-    }
+    },
   })
 
+  // Debug: log status and messages changes
   useEffect(() => {
-    if (data && data.length > 0) {
-      const hasSubagentUpdate = data.some((item: any) => 
-        item.type === "update" && item.ns && item.ns.length > 0 && item.ns[0].startsWith("tools:")
-      )
-      
-      if (hasSubagentUpdate && phase === "chatting") {
-        setPhase("generating")
-      }
-    }
-  }, [data, phase])
+    console.log(`[chat] status=${status} phase=${phase} messages=${messages.length} hasSubagent=${hasSubagentActivity}`)
+  }, [status, phase, messages.length, hasSubagentActivity])
 
+  // Auto-transition chatting → generating when subagent pipeline starts immediately
   useEffect(() => {
-    if (!isLoading && phase === "generating") {
-      handleGenerationComplete()
+    if (hasSubagentActivity && phase === "chatting") {
+      setPhase("generating")
     }
-  }, [isLoading, phase, handleGenerationComplete])
+  }, [hasSubagentActivity, phase])
+
+  // Complete when stream finishes in generating phase; surface errors
+  useEffect(() => {
+    if (phase !== "generating") return
+    if (status === "ready") {
+      setStreamError(null)
+      handleGenerationComplete()
+    } else if (status === "error") {
+      setStreamError("The pipeline encountered an error. Retrying…")
+    } else {
+      // Recovered from error (status back to streaming/submitted)
+      setStreamError(null)
+    }
+  }, [status, phase, handleGenerationComplete])
 
   const mappedMessages = useMemo(() => {
-    return messages.map((m) => {
+    const result: ChatMessage[] = []
+    
+    // Add initial query as first message if present
+    if (initialQuery && phase !== "initial") {
+      result.push({
+        role: "user",
+        content: initialQuery,
+        timestamp: formatNow(),
+      })
+    }
+    
+    // Add backend messages
+    messages.forEach((m) => {
       // Extract text from parts if available, otherwise fallback to content (for backwards compatibility)
       let textContent = "";
       if (m.parts && Array.isArray(m.parts)) {
@@ -95,35 +119,26 @@ export default function DashboardPage() {
         textContent = (m as any).content;
       }
 
-      return {
+      result.push({
         role: m.role as "user" | "assistant",
         content: textContent,
         timestamp: (m as any).createdAt ? (m as any).createdAt.toLocaleTimeString("en-US", {
           hour: "numeric",
           minute: "2-digit",
         }) : undefined,
-      };
+      });
     })
-  }, [messages])
+    
+    return result
+  }, [messages, initialQuery, phase])
 
   const handleInitialSubmit = useCallback(async (query: string) => {
     const title =
       query.length > 48 ? `${query.slice(0, 47).trimEnd()}…` : query
     setSessionTitle(title)
-    
+    setInitialQuery(query)
     setPhase("chatting")
-    
-    // We need to wait for the phase change to render before appending
-    setTimeout(() => {
-      if (sendMessage) {
-        sendMessage({
-          text: query
-        }, {
-          data: { jobId: `job_${Date.now()}` }
-        } as any)
-      }
-    }, 50)
-  }, [sendMessage])
+  }, [])
 
   const handleSendMessage = useCallback((text: string) => {
     if (sendMessage) {
@@ -134,19 +149,25 @@ export default function DashboardPage() {
   }, [sendMessage])
 
   const handleBeginResearch = useCallback(() => {
-    if (sendMessage) {
+    if (sendMessage && initialQuery) {
       sendMessage({
-        text: "I am ready. Please begin the research."
-      })
+        text: initialQuery
+      }, {
+        data: { jobId: `job_${Date.now()}`, beginResearch: true }
+      } as any)
     }
     setPhase("generating")
-  }, [sendMessage])
+  }, [sendMessage, initialQuery])
 
   const handleNewResearch = useCallback(() => {
     setPhase("initial")
     setMessages([])
     setActiveReportId(null)
     setSessionTitle("")
+    setHasSubagentActivity(false)
+    setStreamError(null)
+    setInitialQuery(null)
+    completionCalledRef.current = false
   }, [setMessages])
 
   const handleSelectReport = useCallback((id: string) => {
@@ -154,8 +175,7 @@ export default function DashboardPage() {
     setPhase("completed")
   }, [])
 
-  const canBeginResearch =
-    messages.filter((m) => m.role === "assistant").length >= 1
+  const canBeginResearch = initialQuery !== null
 
   const headerTitle = useMemo(() => {
     switch (phase) {
@@ -201,11 +221,12 @@ export default function DashboardPage() {
                 onSendMessage={handleSendMessage}
                 onBeginResearch={handleBeginResearch}
                 canBeginResearch={canBeginResearch}
+                isLoading={status === "submitted" || (status === "streaming" && mappedMessages.length > 0 && mappedMessages[mappedMessages.length - 1].role === "user")}
               />
             </div>
           )}
           {phase === "generating" && (
-            <GenerationLoading onComplete={handleGenerationComplete} />
+            <GenerationLoading onComplete={handleGenerationComplete} errorMessage={streamError} />
           )}
           {phase === "completed" && (
             <ResultsPanel className="h-full min-h-0" />

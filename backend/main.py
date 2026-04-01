@@ -8,6 +8,7 @@ import json
 import uuid
 import logging
 import os
+from contextlib import asynccontextmanager
 from typing import List, Dict, Any, Optional
 
 from dotenv import load_dotenv
@@ -25,16 +26,26 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from agents.orchestrator import stream_research
+from agents.orchestrator import create_orchestrator, stream_research
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("Initializing orchestrator agent (MCP connections, tool registration)...")
+    app.state.agent = await create_orchestrator()
+    logger.info("Orchestrator ready.")
+    yield
+
+
 app = FastAPI(
     title="Deep Financial Research Agent API",
     description="API for the Deep Financial Research Agent",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 # Configure CORS
@@ -73,7 +84,7 @@ def serialize_data(data: Any) -> Any:
         return str(data)
 
 @app.post("/api/chat/stream")
-async def chat_stream(request: ChatRequest):
+async def chat_stream(request: ChatRequest, req: Request):
     job_id = request.job_id or f"job_{uuid.uuid4().hex[:8]}"
     
     # Convert Pydantic messages to dicts for LangGraph
@@ -95,48 +106,51 @@ async def chat_stream(request: ChatRequest):
             break
             
     async def event_generator():
+        text_id = "text-1"
+        text_started = False
         try:
-            async for chunk in stream_research(query=query, job_id=job_id, messages=messages_dict):
+            # AI SDK v6: send start event
+            yield f'data: {json.dumps({"type": "start", "messageId": f"msg-{job_id}"})}\n\n'
+
+            async for chunk in stream_research(query=query, job_id=job_id, messages=messages_dict, agent=req.app.state.agent):
                 chunk_type = chunk.get("type")
-                
+
                 if chunk_type == "messages":
                     token, _ = chunk.get("data", (None, None))
                     if token and hasattr(token, "content") and token.content:
-                        # Vercel AI SDK Text format: 0:"text"\n
-                        text = token.content
-                        yield f'0:{json.dumps(text)}\n'
-                        
-                elif chunk_type == "updates":
+                        content = token.content
+                        # content may be a plain string or a list of content blocks
+                        if isinstance(content, str):
+                            text = content
+                        elif isinstance(content, list):
+                            text = "".join(
+                                part.get("text", "") for part in content
+                                if isinstance(part, dict) and part.get("type") == "text"
+                            )
+                        else:
+                            text = str(content)
+                        if text:
+                            if not text_started:
+                                yield f'data: {json.dumps({"type": "text-start", "id": text_id})}\n\n'
+                                text_started = True
+                            yield f'data: {json.dumps({"type": "text-delta", "id": text_id, "delta": text})}\n\n'
+
+                elif chunk_type in ("updates", "custom"):
                     ns = chunk.get("ns", [])
                     data = chunk.get("data", {})
-                    
-                    # Serialize data to ensure it's JSON serializable
                     serialized_data = serialize_data(data)
-                    
-                    update_data = {
-                        "type": "update",
-                        "ns": ns,
-                        "data": serialized_data
-                    }
-                    
-                    yield f'2:[{json.dumps(update_data)}]\n'
-                    
-                elif chunk_type == "custom":
-                    ns = chunk.get("ns", [])
-                    data = chunk.get("data", {})
-                    
-                    custom_data = {
-                        "type": "custom",
-                        "ns": ns,
-                        "data": serialize_data(data)
-                    }
-                    
-                    yield f'2:[{json.dumps(custom_data)}]\n'
-                    
-        except Exception as e:
+                    # Use data-* prefix type so AI SDK v6 routes it to onData callback
+                    yield f'data: {json.dumps({"type": "data-pipeline-update", "transient": True, "data": {"type": "update", "ns": ns, "data": serialized_data}})}\n\n'
+
+            if text_started:
+                yield f'data: {json.dumps({"type": "text-end", "id": text_id})}\n\n'
+            yield f'data: {json.dumps({"type": "finish", "finishReason": "stop"})}\n\n'
+            yield 'data: [DONE]\n\n'
+
+        except BaseException as e:
             logger.error(f"Error in stream: {e}")
-            # Vercel AI SDK Error format: 3:"error message"\n
-            yield f'3:{json.dumps(str(e))}\n'
+            yield f'data: {json.dumps({"type": "error", "errorText": str(e)})}\n\n'
+            yield 'data: [DONE]\n\n'
 
     return StreamingResponse(
         event_generator(),
@@ -150,4 +164,10 @@ async def chat_stream(request: ChatRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+        reload_excludes=["outputs/*", "outputs/**/*"],
+    )

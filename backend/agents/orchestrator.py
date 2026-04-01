@@ -152,6 +152,7 @@ async def run_research(
     query: str,
     job_id: str,
     messages: list[dict] | None = None,
+    agent: Any | None = None,
 ) -> Dict[str, Any]:
     """
     Run the complete research workflow and return final results.
@@ -181,7 +182,8 @@ async def run_research(
         'completed'
     """
     try:
-        agent = await create_orchestrator()
+        if agent is None:
+            agent = await create_orchestrator()
 
         if messages is None:
             messages = [{"role": "user", "content": f"Job ID: {job_id}\n\nResearch Query: {query}"}]
@@ -224,6 +226,7 @@ async def stream_research(
     query: str,
     job_id: str,
     messages: list[dict] | None = None,
+    agent: Any | None = None,
 ) -> AsyncIterator[Dict[str, Any]]:
     """
     Stream the research workflow progress in real-time.
@@ -247,7 +250,8 @@ async def stream_research(
         >>> async for event in stream_research(query="...", job_id="abc123"):
         ...     print(event)
     """
-    agent = await create_orchestrator()
+    if agent is None:
+        agent = await create_orchestrator()
 
     if messages is None:
         messages = [{"role": "user", "content": f"Job ID: {job_id}\n\nResearch Query: {query}"}]
