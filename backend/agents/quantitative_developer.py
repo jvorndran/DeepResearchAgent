@@ -77,6 +77,20 @@ To read them inside analysis.py (via pandas.read_csv) → use the Windows path a
 4. Repeat until successful (maximum 3 attempts)
 5. Confirm `{OUTPUT_BASE_VIRTUAL}/{{job_id}}/charts.json` exists with valid JSON (use read_file)
 
+# DATA FORMAT FROM DATA-ENGINEER
+
+CSV files produced by the data-engineer have one of two layouts:
+
+**FRED / time-series data** (e.g. GDPC1, UNRATE):
+- Columns: `date` (YYYY-MM-DD string), `value` (float), plus metadata columns (`series_id`, `title`, `units`, `frequency`, etc.)
+- Read directly: `df = pd.read_csv(r"C:\\...\\file.csv")`
+- Parse dates: `df["date"] = pd.to_datetime(df["date"])`
+- **Do NOT attempt json.loads() on any column** — data is already in tabular rows
+
+**FMP financial statement data**:
+- Columns vary by type (date, revenue, netIncome, etc.)
+- Read directly: `df = pd.read_csv(r"C:\\...\\file.csv")`
+
 # INPUTS FROM ORCHESTRATOR
 - Data schemas: exact column names, dtypes, and sample rows for each data file
 - File paths: Windows absolute paths to CSV/JSON data on disk (use as-is in pandas.read_csv)

@@ -181,7 +181,18 @@ async def _save_data_to_storage(data: Any, file_path: Path) -> dict:
 
     # Convert data to DataFrame if needed
     if isinstance(data, dict):
-        df = pd.DataFrame([data])
+        # FRED / FMP time-series format: {"series_id": "GDP", ..., "data": [{date, value}, ...]}
+        # Expand the nested records list into proper rows so quant-developer can read the file
+        # with a plain pd.read_csv() — no JSON parsing needed downstream.
+        if "data" in data and isinstance(data["data"], list) and data["data"]:
+            records = data["data"]
+            meta = {k: v for k, v in data.items()
+                    if k != "data" and not isinstance(v, (list, dict))}
+            df = pd.DataFrame(records)
+            for key, val in meta.items():
+                df[key] = val
+        else:
+            df = pd.DataFrame([data])
     elif isinstance(data, list):
         df = pd.DataFrame(data)
     elif isinstance(data, pd.DataFrame):
@@ -194,7 +205,7 @@ async def _save_data_to_storage(data: Any, file_path: Path) -> dict:
 
     # Return metadata
     return {
-        "storage_path": str(file_path),
+        "storage_path": file_path.relative_to(Path.cwd()).as_posix(),
         "row_count": len(df),
         "columns": df.columns.tolist(),
         "size_bytes": file_path.stat().st_size
@@ -241,6 +252,10 @@ def save_fmp_data(
 
     try:
         result = _run_async(_save())
+        # Convert path to forward slashes to avoid escaping issues
+        if "storage_path" in result:
+            result["storage_path"] = result["storage_path"].replace("\\", "/")
+            
         return json.dumps({
             "status": "success",
             "ticker": ticker,
@@ -281,15 +296,17 @@ def extract_schema(file_paths: List[str]) -> str:
 
     for file_path in file_paths:
         try:
-            df = pd.read_csv(file_path)
+            # Convert any backslashes to forward slashes
+            clean_path = file_path.replace("\\", "/")
+            df = pd.read_csv(clean_path)
             schema = {
-                "file_path": file_path,
+                "file_path": clean_path,
                 "columns": df.columns.tolist(),
                 "dtypes": {col: str(dtype) for col, dtype in df.dtypes.items()},
                 "sample_rows": df.head(2).to_dict('records'),
                 "shape": list(df.shape)
             }
-            schemas[file_path] = schema
+            schemas[clean_path] = schema
 
         except Exception as e:
             schemas[file_path] = {

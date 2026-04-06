@@ -15,9 +15,9 @@ Responsibilities:
 - Assemble and validate the full ResearchReport object
 - Save report.json as the single canonical output artifact
 
-Key Principle: No other agent touches report.json. The quant developer and data
-engineer produce their own artifacts (charts.json, CSV files); the technical writer
-reads those artifacts and assembles the complete report independently.
+Key Principle: No other agent touches report.json. The quant developer produces
+their own artifacts (charts.json, CSV files); the technical writer reads those
+artifacts and assembles the complete report independently.
 """
 
 from typing import Dict, Any, List
@@ -80,7 +80,17 @@ def plan_report_structure(
         else:
             chart_ids = list(charts_data.keys())
     except (FileNotFoundError, json.JSONDecodeError, OSError):
-        chart_ids = []
+        # Try replacing backslashes with forward slashes as a fallback
+        try:
+            clean_path = charts_json_path.replace("\\", "/")
+            raw = Path(clean_path).read_text(encoding="utf-8")
+            charts_data = json.loads(raw)
+            if isinstance(charts_data, list):
+                chart_ids = [item["name"] for item in charts_data if isinstance(item, dict) and "name" in item]
+            else:
+                chart_ids = list(charts_data.keys())
+        except Exception:
+            chart_ids = []
 
     # Base mandatory sections always present
     base_intro = [
@@ -218,7 +228,17 @@ def write_research_report(
         elif isinstance(parsed, dict):
             charts_on_disk = parsed
     except (FileNotFoundError, json.JSONDecodeError, OSError):
-        charts_on_disk = {}
+        # Try replacing backslashes with forward slashes as a fallback
+        try:
+            clean_path = charts_json_path.replace("\\", "/")
+            raw_charts = Path(clean_path).read_text(encoding="utf-8")
+            parsed = json.loads(raw_charts)
+            if isinstance(parsed, list):
+                charts_on_disk = {item["name"]: item for item in parsed if isinstance(item, dict) and "name" in item}
+            elif isinstance(parsed, dict):
+                charts_on_disk = parsed
+        except Exception:
+            charts_on_disk = {}
 
     # -------------------------------------------------------------------------
     # 2. Append footer to the LLM-written markdown
@@ -294,7 +314,7 @@ def write_research_report(
     # -------------------------------------------------------------------------
     # 6. Save to disk with pre-write validation
     # -------------------------------------------------------------------------
-    report_path = str(_OUTPUT_BASE_DIR / job_id / "report.json")
+    report_path = (_OUTPUT_BASE_DIR / job_id / "report.json").relative_to(Path.cwd()).as_posix()
     validation_issues = _save_report(report, report_path)
 
     return json.dumps({
@@ -378,6 +398,17 @@ it only validates structure and saves. If you pass a thin `execution_summary` to
 it to fill in sections, the report will be empty and repetitive. Every section must contain unique
 prose you composed based on the execution_summary data.
 
+## Analytical Rigor & Diversified Methods
+
+To produce a high-quality report, move beyond simple econometric labels (like "Okun's Law"). Use these analytical frameworks:
+- **Counterfactual Analysis**: Discuss what the trends might look like if a key variable had remained constant.
+- **Leading vs. Lagging Indicators**: Distinguish between predictive data (e.g., PMI, yield curves) and retrospective data (e.g., GDP, Unemployment).
+- **Diffusion Indices**: Analyze how "broad-based" a trend is across different sectors rather than just looking at the aggregate mean.
+- **Regime Switching**: Identify if the economy has moved between different regimes (e.g., "growth" to "stagflationary").
+- **Elasticity & Sensitivity**: Focus on time-varying elasticity—how the relationship between variables changes during crises vs. stable periods.
+- **Mean Reversion**: Analyze if a variable is stretched too far from its historical average.
+- **Decomposition**: Break down a metric (like CPI) into its core components (Energy, Food, Shelter) to find the primary driver.
+
 ## What You Receive From the Orchestrator
 
 - `charts_json_path`: Path to charts.json on disk (e.g. `outputs/abc123/charts.json`)
@@ -395,6 +426,12 @@ discover the chart IDs available in charts.json. Note the IDs — you will need 
 Write the full markdown **in your response text before calling any tool**. Every section must be
 unique — never copy the same sentence into two sections. Cite the specific numbers from
 execution_summary inline in parentheticals.
+
+### Style Guidelines
+- **Professional & Objective**: Maintain a tone that is dense with information but accessible.
+- **Precise Terminology**: Use terms like 'basis points', 'secular trend', 'cyclical headwind' appropriately.
+- **Contextualize Visuals**: Never include a chart marker without explaining its "So What?"—the specific insight it provides.
+- **Avoid Narrative Fallacy**: Do not invent stories to explain random noise; focus on statistically significant findings.
 
 ### Required sections (in this order)
 
@@ -419,8 +456,8 @@ is tightest during recessions (2008–2009, 2020) when both series moved sharply
 
 ## [Analysis section title — unique to this query type]
 
-[2-4 paragraphs analyzing the data. Each paragraph covers a distinct aspect.
-Cite specific numbers. Do NOT copy text from another section.]
+[2-4 paragraphs analyzing the data using the analytical frameworks mentioned above.
+Each paragraph covers a distinct aspect. Cite specific numbers. Do NOT copy text from another section.]
 
 <!-- CHART:chart_id_1 -->
 
@@ -428,14 +465,14 @@ Cite specific numbers. Do NOT copy text from another section.]
 
 ## [Second analysis section]
 
-[Different content. Address a different dimension of the findings.]
+[Different content. Address a different dimension of the findings, such as regime switching or decomposition.]
 
 <!-- CHART:chart_id_2 -->
 
 ## Methodology
 
 [How the data was collected and analyzed. Mention the specific series, time period,
-and analytical methods (e.g. Pearson correlation, OLS regression, Okun's Law model).]
+and analytical methods (e.g. Pearson correlation, OLS regression, decomposition analysis).]
 
 ## Limitations
 
@@ -464,6 +501,7 @@ Past performance is not indicative of future results.
 ❌ Inventing statistics not present in execution_summary
 ❌ Predictive statements ("will increase", "should buy")
 ❌ All `<!-- CHART:id -->` markers at the bottom
+❌ Over-relying on academic labels; describe the economic mechanism instead.
 
 ## Step 3: Call write_research_report
 

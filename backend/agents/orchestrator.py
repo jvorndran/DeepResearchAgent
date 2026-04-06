@@ -57,9 +57,9 @@ IMPORTANT: You must ALWAYS delegate work to your subagents using the task() tool
 
 # SUBAGENT ROSTER
 1. **data-engineer:** Fetches raw data from FMP/FRED APIs. Returns ONLY storage paths and deterministic pure-Python data schemas.
-2. **quant-developer:** Writes and executes Python code in a secure sandbox. Receives schemas and paths, outputs mathematical findings and Recharts-compatible JSON. Uses OpenAI o1.
+2. **quant-developer:** Writes and executes Python code in a secure sandbox. Receives schemas and paths, outputs mathematical findings and Recharts-compatible JSON.
 3. **technical-writer:** Synthesizes the final Markdown report using the quant-developer's outputs and references the generated JSON charts.
-4. **quality-analyst:** Validates the final report for hallucinations and compliance.
+4. **quality-analyst:** Validates the final report for formatting and compliance.
 
 # STRICT OPERATING RULES
 
@@ -107,7 +107,7 @@ Before initiating any backend data retrieval or delegating to subagents, you MUS
 
 ## Phase 5: Quality Assurance
 - Delegate to **quality-analyst** using task(name="quality-analyst", task="...").
-- Pass the `report_json_path` (e.g. `outputs/{job_id}/report.json`) and the quant-developer's raw execution output.
+- Pass the `report_json_path` (e.g. `outputs/{job_id}/report.json`).
 - The quality analyst loads report.json via Pydantic, validates schema, mandatory elements, chart marker resolution, and compliance. Minor issues (missing disclaimer, footer, broken chart markers) are autonomously patched before a final decision is made.
 - If quality-analyst returns `status: approved` → proceed to Phase 6.
 - If quality-analyst returns `status: rejected` → extract the `required_fixes` list and re-delegate to **technical-writer** with those fixes included in the task instructions. Apply the Rule of Three: abort after 3 QA rejections.
@@ -187,6 +187,12 @@ async def run_research(
 
         if messages is None:
             messages = [{"role": "user", "content": f"Job ID: {job_id}\n\nResearch Query: {query}"}]
+        else:
+            # Inject the job_id into the last user message so the orchestrator knows it
+            for msg in reversed(messages):
+                if msg["role"] == "user":
+                    msg["content"] = f"Job ID: {job_id}\n\n{msg['content']}"
+                    break
 
         result = await agent.ainvoke({"messages": messages})
 
@@ -255,6 +261,12 @@ async def stream_research(
 
     if messages is None:
         messages = [{"role": "user", "content": f"Job ID: {job_id}\n\nResearch Query: {query}"}]
+    else:
+        # Inject the job_id into the last user message so the orchestrator knows it
+        for msg in reversed(messages):
+            if msg["role"] == "user":
+                msg["content"] = f"Job ID: {job_id}\n\n{msg['content']}"
+                break
 
     try:
         async for event in agent.astream(

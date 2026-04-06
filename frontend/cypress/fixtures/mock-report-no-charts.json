@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "job_id": "test-job-no-charts",
+  "created_at": "2026-04-06T12:00:00Z",
+  "query": "What is the P/E ratio of Apple?",
+  "title": "Apple P/E Ratio Analysis",
+  "executive_summary": "Apple's trailing P/E ratio as of Q1 2026 is approximately 28x, in line with large-cap technology peers.",
+  "markdown": "## Analysis\n\nApple trades at a P/E of 28x based on trailing twelve-month earnings.\n\n## Methodology\n\nP/E calculated as market cap divided by net income.",
+  "charts": {},
+  "data_sources": [
+    {
+      "provider": "FMP",
+      "description": "Apple income statement and market data",
+      "tickers": ["AAPL"],
+      "series_ids": null,
+      "date_range": { "start": "2025-01-01", "end": "2026-03-31" },
+      "row_count": 4
+    }
+  ],
+  "metadata": {
+    "analysis_type": "valuation",
+    "chart_count": 0,
+    "word_count": 52
+  }
+}

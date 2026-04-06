@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "job_id": "test-job-many-sources",
+  "created_at": "2026-04-06T12:00:00Z",
+  "query": "Compare GDP growth vs. S&P 500 returns across multiple geographies",
+  "title": "GDP Growth vs. Equity Returns: Multi-Geography Analysis",
+  "executive_summary": "Across five major economies, equity market returns have diverged significantly from underlying GDP growth since 2020.",
+  "markdown": "## Analysis\n\nA cross-country comparison reveals that US markets outpaced GDP growth by 3x, while European markets tracked GDP more closely.",
+  "charts": {},
+  "data_sources": [
+    {
+      "provider": "FRED",
+      "description": "US GDP quarterly data",
+      "tickers": null,
+      "series_ids": ["GDP"],
+      "date_range": { "start": "2020-01-01", "end": "2025-12-31" },
+      "row_count": 24
+    },
+    {
+      "provider": "FRED",
+      "description": "EU GDP quarterly data",
+      "tickers": null,
+      "series_ids": ["CLVMNACSCAB1GQEU272020"],
+      "date_range": { "start": "2020-01-01", "end": "2025-12-31" },
+      "row_count": 24
+    },
+    {
+      "provider": "FMP",
+      "description": "S&P 500 historical price data",
+      "tickers": ["SPY"],
+      "series_ids": null,
+      "date_range": { "start": "2020-01-01", "end": "2025-12-31" },
+      "row_count": 1500
+    },
+    {
+      "provider": "FMP",
+      "description": "Euro Stoxx 50 ETF price data",
+      "tickers": ["FEZ"],
+      "series_ids": null,
+      "date_range": { "start": "2020-01-01", "end": "2025-12-31" },
+      "row_count": 1500
+    },
+    {
+      "provider": "FMP",
+      "description": "Nikkei 225 ETF price data",
+      "tickers": ["EWJ"],
+      "series_ids": null,
+      "date_range": { "start": "2020-01-01", "end": "2025-12-31" },
+      "row_count": 1500
+    }
+  ],
+  "metadata": {
+    "analysis_type": "macro_comparison",
+    "chart_count": 0,
+    "word_count": 68
+  }
+}

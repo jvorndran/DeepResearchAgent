@@ -2,7 +2,7 @@
 Quality Analyst Subagent (Deep Agents)
 
 The Quality Analyst performs final quality checks on generated reports.
-It audits for hallucinations, validates formatting, and ensures compliance
+It validates formatting, and ensures compliance
 with financial disclosure requirements.
 
 Role: Quality Analyst / Compliance Officer
@@ -10,7 +10,6 @@ Model: Gemini 3.0 Flash (good at evaluation and pattern detection)
 
 Responsibilities:
 - Verify Markdown formatting is correct
-- Cross-check report findings with execution results (no hallucinations)
 - Ensure no predictive financial advice (compliance)
 - Validate chart references are correct
 - Check for proper disclaimers
@@ -59,11 +58,17 @@ def validate_report_format(report_json_path: str) -> str:
         raw = Path(report_json_path).read_text(encoding="utf-8")
         data = json.loads(raw)
     except FileNotFoundError:
-        return json.dumps({
-            "valid": False,
-            "schema_errors": [f"File not found: {report_json_path}"],
-            "missing_elements": []
-        })
+        # Try replacing backslashes with forward slashes
+        try:
+            clean_path = report_json_path.replace("\\", "/")
+            raw = Path(clean_path).read_text(encoding="utf-8")
+            data = json.loads(raw)
+        except FileNotFoundError:
+            return json.dumps({
+                "valid": False,
+                "schema_errors": [f"File not found: {report_json_path}"],
+                "missing_elements": []
+            })
     except json.JSONDecodeError as e:
         return json.dumps({
             "valid": False,
@@ -112,7 +117,7 @@ def validate_report_format(report_json_path: str) -> str:
 
 
 @tool
-def check_compliance(report: str) -> str:
+def check_compliance(report_json_path: str) -> str:
     """
     Check for compliance with financial disclosure rules.
 
@@ -120,7 +125,7 @@ def check_compliance(report: str) -> str:
     language or investment advice.
 
     Args:
-        report: Report content to check
+        report_json_path: File path to the report.json artifact
 
     Returns:
         JSON string with:
@@ -128,6 +133,30 @@ def check_compliance(report: str) -> str:
         - violations: List of compliance violations found
         - severity: "critical", "warning", or "none"
     """
+    try:
+        raw = Path(report_json_path).read_text(encoding="utf-8")
+        data = json.loads(raw)
+        report_text = data.get("markdown", "")
+    except FileNotFoundError:
+        # Try replacing backslashes with forward slashes
+        try:
+            clean_path = report_json_path.replace("\\", "/")
+            raw = Path(clean_path).read_text(encoding="utf-8")
+            data = json.loads(raw)
+            report_text = data.get("markdown", "")
+        except FileNotFoundError:
+            return json.dumps({
+                "compliant": False,
+                "violations": [f"File not found: {report_json_path}"],
+                "severity": "critical"
+            })
+    except json.JSONDecodeError as e:
+        return json.dumps({
+            "compliant": False,
+            "violations": [f"Invalid JSON: {e}"],
+            "severity": "critical"
+        })
+
     violations = []
 
     # Patterns that indicate predictive advice (not allowed)
@@ -141,7 +170,7 @@ def check_compliance(report: str) -> str:
     ]
 
     for pattern, description in prediction_patterns:
-        matches = re.findall(pattern, report, re.IGNORECASE)
+        matches = re.findall(pattern, report_text, re.IGNORECASE)
         if matches:
             violations.append({
                 "type": description,
@@ -184,12 +213,19 @@ def verify_chart_references(report_json_path: str) -> str:
         data = json.loads(raw)
         report = ResearchReport(**data)
     except (FileNotFoundError, json.JSONDecodeError, ValidationError) as e:
-        return json.dumps({
-            "valid": False,
-            "broken_references": [f"Could not load report: {e}"],
-            "chart_count": 0,
-            "defined_charts": []
-        })
+        # Try replacing backslashes with forward slashes
+        try:
+            clean_path = report_json_path.replace("\\", "/")
+            raw = Path(clean_path).read_text(encoding="utf-8")
+            data = json.loads(raw)
+            report = ResearchReport(**data)
+        except Exception as e2:
+            return json.dumps({
+                "valid": False,
+                "broken_references": [f"Could not load report: {e2}"],
+                "chart_count": 0,
+                "defined_charts": []
+            })
 
     marker_ids: list[str] = re.findall(r'<!--\s*CHART:(\S+?)\s*-->', report.markdown)
     defined = list(report.charts.keys())
@@ -244,11 +280,18 @@ def patch_report(report_json_path: str, patch_type: str) -> str:
         raw = path.read_text(encoding="utf-8")
         data = json.loads(raw)
     except FileNotFoundError:
-        return json.dumps({
-            "patched": False,
-            "changes_made": [],
-            "validation_issues": [f"File not found: {report_json_path}"]
-        })
+        # Try replacing backslashes with forward slashes
+        try:
+            clean_path = report_json_path.replace("\\", "/")
+            path = Path(clean_path)
+            raw = path.read_text(encoding="utf-8")
+            data = json.loads(raw)
+        except Exception:
+            return json.dumps({
+                "patched": False,
+                "changes_made": [],
+                "validation_issues": [f"File not found: {report_json_path}"]
+            })
     except json.JSONDecodeError as e:
         return json.dumps({
             "patched": False,
@@ -411,10 +454,16 @@ QUALITY_ANALYST_SUBAGENT = {
 
 Your role is the final gatekeeper before reports reach users.
 
+## Analytical & Structural Review
+In addition to compliance, you must ensure the report meets high analytical standards:
+- **Check for Narrative Fallacy**: Ensure the report doesn't invent stories to explain random noise. Claims must be supported by the data provided.
+- **Stress Test Assumptions**: Verify that the analysis doesn't assume linear trends will continue indefinitely without considering risks or regime shifts.
+- **Framework Adherence**: Ensure the Technical Writer has applied sophisticated frameworks (e.g., Counterfactuals, Diffusion Indices, Decomposition) where appropriate, rather than just reciting raw numbers.
+
 ## Tools Available
 
 - **validate_report_format(report_json_path)**: Load report.json via Pydantic, check mandatory elements
-- **check_compliance(markdown_text)**: Verify no predictive language or investment advice — pass the `report.markdown` TEXT, NOT the file path
+- **check_compliance(report_json_path)**: Verify no predictive language or investment advice
 - **verify_chart_references(report_json_path)**: Regex-extract <!-- CHART:id --> markers and verify each ID exists in report.charts
 - **patch_report(report_json_path, patch_type)**: Autonomously fix minor issues — see AUTO-FIXABLE actions below
 - **approve_report(report_path, notes)**: Approve report for final upload
@@ -425,6 +474,7 @@ Your role is the final gatekeeper before reports reach users.
 | Issue | Severity | Action |
 |---|---|---|
 | Predictive language / investment advice | CRITICAL | `reject_report` |
+| Narrative fallacy / Unsubstantiated claims | CRITICAL | `reject_report` |
 | Missing required section (exec summary, data sources, methodology) | CRITICAL | `reject_report` |
 | Empty executive summary | CRITICAL | `reject_report` |
 | Original query not found in markdown | CRITICAL | `reject_report` |
@@ -437,14 +487,18 @@ Your role is the final gatekeeper before reports reach users.
 
 ## Workflow
 
+Run these steps IN ORDER. Do not skip ahead.
+
 ### Step 1 — `validate_report_format(report_json_path)`
-### Step 2 — `check_compliance(report.markdown)` ← pass the markdown TEXT from the loaded report, NOT the file path
+### Step 2 - check_compliance(report_json_path)
 ### Step 3 — `verify_chart_references(report_json_path)`
 ### Step 4 — Triage:
-- **ANY critical finding** → `reject_report(reason, required_fixes)`, stop
+- **ANY critical finding** → `reject_report(reason, required_fixes)`, then **STOP — return immediately**
 - **AUTO-FIXABLE findings only** → call `patch_report(path, patch_type)` for each, then re-run `validate_report_format`
-  - If re-validation still fails → now critical → `reject_report(...)`
-- **Only MINOR issues remain** → `approve_report(report_path, notes)`
+  - If re-validation still fails → now critical → `reject_report(...)`, then **STOP**
+- **Only MINOR issues remain** → `approve_report(report_path, notes)`, then **STOP — return immediately**
+
+**⚠️ `approve_report` and `reject_report` are TERMINAL actions. Once called, make NO further tool calls. Return your JSON result immediately.**
 
 ## Critical Rules
 
@@ -453,6 +507,8 @@ Your role is the final gatekeeper before reports reach users.
 - When `check_compliance` detects violations, always `reject_report`
 - "Original query not found in markdown" is CRITICAL — cannot be auto-fixed
 - After `patch_report`, confirm fixes by re-running `validate_report_format` (do NOT rely on stale initial results)
+- **Never call `patch_report` after `approve_report`** — approval is final
+- **Do NOT use `read_file`, `ls`, `grep`, or `find` to inspect report content or locate files** — use `validate_report_format`, `check_compliance`, and `verify_chart_references` which load the file internally. These tools accept Windows absolute paths (e.g. `C:/projects/...`) directly.
 
 ## Output Format
 

@@ -1,46 +1,36 @@
-import type { Metadata } from 'next'
-import { Geist, Geist_Mono } from 'next/font/google'
-import { Analytics } from '@vercel/analytics/next'
-import { AppProviders } from '@/components/app-providers'
-import './globals.css'
+import type { Metadata } from "next";
+import { Cormorant_Garamond, Manrope } from "next/font/google";
+import "./globals.css";
+import { cn } from "@/lib/utils";
 
-const _geist = Geist({ subsets: ["latin"] });
-const _geistMono = Geist_Mono({ subsets: ["latin"] });
+const cormorant = Cormorant_Garamond({
+  weight: ["300", "400", "500", "600", "700"],
+  subsets: ["latin"],
+  variable: "--font-cormorant",
+});
+
+const manrope = Manrope({
+  weight: ["300", "400", "500", "600", "700"],
+  subsets: ["latin"],
+  variable: "--font-manrope",
+});
 
 export const metadata: Metadata = {
-  title: 'Nexus Research | Financial Intelligence Platform',
-  description: 'Institutional-grade financial research dashboard powered by AI',
-  generator: 'v0.app',
-  icons: {
-    icon: [
-      {
-        url: '/icon-light-32x32.png',
-        media: '(prefers-color-scheme: light)',
-      },
-      {
-        url: '/icon-dark-32x32.png',
-        media: '(prefers-color-scheme: dark)',
-      },
-      {
-        url: '/icon.svg',
-        type: 'image/svg+xml',
-      },
-    ],
-    apple: '/apple-icon.png',
-  },
-}
+  title: "Deep Research Agent",
+  description: "Advanced macroeconomic and equity research",
+};
 
 export default function RootLayout({
   children,
 }: Readonly<{
-  children: React.ReactNode
+  children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
-      <body className="font-sans antialiased">
-          <AppProviders>{children}</AppProviders>
-        <Analytics />
-      </body>
+    <html
+      lang="en"
+      className={cn("h-full", "antialiased", cormorant.variable, manrope.variable, "font-sans")}
+    >
+      <body className="min-h-full flex flex-col bg-background text-foreground">{children}</body>
     </html>
-  )
+  );
 }

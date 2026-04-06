@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "job_id": "test-job-123",
+  "created_at": "2026-04-06T12:00:00Z",
+  "query": "What is the revenue CAGR for NVIDIA from 2020–2024?",
+  "title": "NVIDIA Revenue CAGR Analysis (2020–2024)",
+  "executive_summary": "NVIDIA achieved a revenue CAGR of 42.3% between 2020 and 2024, driven primarily by accelerating demand for data center GPUs.",
+  "markdown": "## Analysis\n\nNVIDIA's revenue grew from $10.9B in FY2020 to $60.9B in FY2024.\n\n<!-- CHART:revenue_cagr -->\n\n## Methodology\n\nCAGR calculated as `(end/start)^(1/n) - 1`.\n\n*This report is for informational purposes only and does not constitute financial advice.*",
+  "charts": {
+    "revenue_cagr": {
+      "id": "revenue_cagr",
+      "type": "bar",
+      "title": "NVIDIA Annual Revenue (FY2020–FY2024)",
+      "description": "Revenue in USD billions",
+      "xAxisKey": "year",
+      "series": [{ "dataKey": "revenue", "label": "Revenue ($B)", "color": "#76b900" }],
+      "data": [
+        { "year": "FY2020", "revenue": 10.9 },
+        { "year": "FY2021", "revenue": 16.7 },
+        { "year": "FY2022", "revenue": 26.9 },
+        { "year": "FY2023", "revenue": 26.9 },
+        { "year": "FY2024", "revenue": 60.9 }
+      ]
+    }
+  },
+  "data_sources": [
+    {
+      "provider": "FMP",
+      "description": "NVIDIA income statement data",
+      "tickers": ["NVDA"],
+      "series_ids": null,
+      "date_range": { "start": "2020-01-01", "end": "2024-12-31" },
+      "row_count": 5
+    }
+  ],
+  "metadata": {
+    "analysis_type": "revenue_cagr",
+    "chart_count": 1,
+    "word_count": 87
+  }
+}

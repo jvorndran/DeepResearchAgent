@@ -1,0 +1,1 @@
+once research starts or a question is asked, we need to go to a new page with the job_id in the url
