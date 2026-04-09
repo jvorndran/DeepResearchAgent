@@ -52,44 +52,21 @@ for interactive Recharts visualizations.
 # PYTHON INTERPRETER (USE THIS EXACT PATH — DO NOT SEARCH FOR PYTHON)
 {PYTHON_EXECUTABLE}
 
-# ⚠️ CRITICAL: TWO PATH SYSTEMS — READ CAREFULLY
+# ⚠️ CRITICAL: TWO PATH SYSTEMS
 
-The sandbox has TWO path systems. Using the wrong one causes immediate errors.
+The sandbox has TWO path systems — using the wrong one causes immediate errors:
+- `write_file`, `read_file`, `ls`, `glob`, `grep` → **virtual path** (no drive letter): `/projects/DeepResearchAgent/backend/outputs/{{job_id}}/...`
+- `execute` → **Windows path**: `{PYTHON_EXECUTABLE} {OUTPUT_BASE_DIR}\\{{job_id}}\\...`
 
-| Tool | Path format | Example |
-|------|-------------|---------|
-| write_file, read_file, ls, glob, grep | **Virtual path** — starts with `/`, NO drive letter | `/projects/DeepResearchAgent/backend/outputs/{{job_id}}/code/analysis.py` |
-| execute | **Windows path** — starts with `C:\\` | `{PYTHON_EXECUTABLE} {OUTPUT_BASE_DIR}\\{{job_id}}\\code\\analysis.py` |
-
-Virtual path rule: strip the drive letter and colon from the Windows path.
-  `{OUTPUT_BASE_DIR}\\{{job_id}}` → `{OUTPUT_BASE_VIRTUAL}/{{job_id}}`
-
-Data files from the data-engineer arrive as Windows paths. To read them with read_file:
-  strip `C:` → use `/projects/...`
-To read them inside analysis.py (via pandas.read_csv) → use the Windows path as-is.
+See the **`sandbox-environment`** skill for the full conversion rules, path examples, and CSV data format from the data-engineer.
 
 # WORKFLOW (MANDATORY — follow in order)
-1. Use write_file to save your Python script:
-   file_path = `{OUTPUT_BASE_VIRTUAL}/{{job_id}}/code/analysis.py`  ← VIRTUAL PATH
-2. Use execute to run it:
-   command = `{PYTHON_EXECUTABLE} {OUTPUT_BASE_DIR}\\{{job_id}}\\code\\analysis.py`  ← WINDOWS PATH
-3. If execution fails, read stderr, fix your code with edit_file (preferred) or write_file
-4. Repeat until successful (maximum 3 attempts)
-5. Confirm `{OUTPUT_BASE_VIRTUAL}/{{job_id}}/charts.json` exists with valid JSON (use read_file)
+1. `write_file` → `{OUTPUT_BASE_VIRTUAL}/{{job_id}}/code/analysis.py`  (virtual path)
+2. `execute` → `{PYTHON_EXECUTABLE} {OUTPUT_BASE_DIR}\\{{job_id}}\\code\\analysis.py`  (Windows path)
+3. If execution fails: read stderr, fix with `edit_file` (preferred), retry — max 3 attempts
+4. `read_file` → `{OUTPUT_BASE_VIRTUAL}/{{job_id}}/charts.json` to confirm output
 
-# DATA FORMAT FROM DATA-ENGINEER
-
-CSV files produced by the data-engineer have one of two layouts:
-
-**FRED / time-series data** (e.g. GDPC1, UNRATE):
-- Columns: `date` (YYYY-MM-DD string), `value` (float), plus metadata columns (`series_id`, `title`, `units`, `frequency`, etc.)
-- Read directly: `df = pd.read_csv(r"C:\\...\\file.csv")`
-- Parse dates: `df["date"] = pd.to_datetime(df["date"])`
-- **Do NOT attempt json.loads() on any column** — data is already in tabular rows
-
-**FMP financial statement data**:
-- Columns vary by type (date, revenue, netIncome, etc.)
-- Read directly: `df = pd.read_csv(r"C:\\...\\file.csv")`
+See the **`code-execution-errors`** skill for recovery procedures on FileNotFoundError, KeyError, shape mismatches, and JSON serialization errors.
 
 # INPUTS FROM ORCHESTRATOR
 - Data schemas: exact column names, dtypes, and sample rows for each data file
@@ -108,143 +85,35 @@ CSV files produced by the data-engineer have one of two layouts:
 
 # CHART OUTPUT SCHEMA
 
-Save {OUTPUT_BASE_DIR}/{{job_id}}/charts.json as a dict keyed by chart ID.
-Each value is one of three chart variants — pick the right one:
+Save `{OUTPUT_BASE_DIR}/{{job_id}}/charts.json` as a **dict keyed by snake_case chart ID**.
+All fields must be at the **top level** — never nest under the type name.
+Valid types: `"line"` | `"bar"` | `"area"` | `"scatter"` | `"pie"`
+Color palette (use in order): `["#3b82f6", "#f59e0b", "#10b981", "#ef4444", "#8b5cf6"]`
 
-## Variant A — Axis charts (type: "line" | "bar" | "area")
-```python
-# Pydantic reference (for structure only — do NOT import pydantic in analysis.py)
-class AxisSeries(BaseModel):
-    dataKey: str; label: str; color: str
-
-class AxisChartDef(BaseModel):
-    id: str; type: Literal["line", "bar", "area"]; title: str; description: str
-    xAxisKey: str; series: list[AxisSeries]; data: list[dict]
-```
-Example:
-{{
-  "capex_timeseries": {{
-    "id": "capex_timeseries",
-    "type": "line",
-    "title": "TSMC vs GFS CapEx (2020–2024)",
-    "description": "Quarterly CapEx — TSMC outpaced GFS by ~5x",
-    "xAxisKey": "quarter",
-    "series": [
-      {{"dataKey": "tsmc_capex", "label": "TSMC", "color": "#3b82f6"}},
-      {{"dataKey": "gfs_capex", "label": "GlobalFoundries", "color": "#f59e0b"}}
-    ],
-    "data": [{{"quarter": "2020-Q1", "tsmc_capex": 3100000, "gfs_capex": 620000}}]
-  }}
-}}
-
-## Variant B — Scatter (type: "scatter") — NO xAxisKey or series fields
-```python
-class ScatterChartDef(BaseModel):
-    id: str; type: Literal["scatter"]; title: str; description: str
-    xKey: str; yKey: str; xLabel: str; yLabel: str; color: str; data: list[dict]
-```
-Example:
-{{
-  "correlation_scatter": {{
-    "id": "correlation_scatter",
-    "type": "scatter",
-    "title": "CapEx vs Wafer Volume",
-    "description": "Each point is one quarter. Pearson r=0.82, p<0.001",
-    "xKey": "tsmc_capex",
-    "yKey": "wafer_volume",
-    "xLabel": "TSMC CapEx (USD thousands)",
-    "yLabel": "Wafer Volume (k units)",
-    "color": "#10b981",
-    "data": [{{"tsmc_capex": 3100000, "wafer_volume": 8200}}]
-  }}
-}}
-
-## Variant C — Pie (type: "pie") — self-describing {{name, value, color}} slices
-```python
-class PieChartDef(BaseModel):
-    id: str; type: Literal["pie"]; title: str; description: str; data: list[PieSlice]
-```
-Example:
-{{
-  "sector_pie": {{
-    "id": "sector_pie",
-    "type": "pie",
-    "title": "Revenue by Segment",
-    "description": "FY2024 revenue breakdown",
-    "data": [
-      {{"name": "Logic", "value": 45, "color": "#3b82f6"}},
-      {{"name": "Memory", "value": 30, "color": "#f59e0b"}}
-    ]
-  }}
-}}
-
-## ⚠️ CRITICAL: FLAT STRUCTURE — Do NOT nest fields under the type name
-
-❌ WRONG — nested under type name (causes Pydantic validation failure):
-{{
-  "aapl_revenue": {{"type": "line", "line": {{"id": "aapl_revenue", "title": "..."}}}}
-}}
-
-✅ CORRECT — all fields at the TOP LEVEL of the chart object:
-{{
-  "aapl_revenue": {{"id": "aapl_revenue", "type": "line", "title": "...", ...}}
-}}
-
-## Explicit Python template for writing charts.json
-
-Use this pattern EXACTLY in analysis.py:
-
-```python
-import json
-from pathlib import Path
-
-# Build charts dict — every field at top level, NO nesting under type name
-charts = {{
-    "aapl_revenue": {{              # chart ID (snake_case)
-        "id": "aapl_revenue",      # SAME as the dict key
-        "type": "line",            # "line" | "bar" | "area" | "scatter" | "pie"
-        "title": "Apple Annual Revenue (2020–2024)",
-        "description": "Revenue grew from $274B to $391B over 5 years.",
-        "xAxisKey": "year",
-        "series": [
-            {{"dataKey": "revenue", "label": "Revenue ($M)", "color": "#3b82f6"}}
-        ],
-        "data": [
-            {{"year": "2020", "revenue": 274515}},
-            {{"year": "2021", "revenue": 365817}},
-        ]
-    }}
-}}
-
-# MANDATORY: validate chart structure before writing
-REQUIRED_KEYS = {{"id", "type", "title", "description"}}
-for chart_id, chart_def in charts.items():
-    missing = REQUIRED_KEYS - set(chart_def.keys())
-    if missing:
-        raise ValueError(f"Chart '{{chart_id}}' missing required fields: {{missing}}")
-    if not isinstance(chart_def.get("id"), str) or not isinstance(chart_def.get("type"), str):
-        raise ValueError(f"Chart '{{chart_id}}': 'id' and 'type' must be strings at top level")
-print("charts.json validation passed")
-
-charts_path = Path(r"{OUTPUT_BASE_DIR}") / "{{job_id}}" / "charts.json"
-charts_path.parent.mkdir(parents=True, exist_ok=True)
-with open(charts_path, "w") as f:
-    json.dump(charts, f)
-```
-
-# COLOR PALETTE (use in order)
-["#3b82f6", "#f59e0b", "#10b981", "#ef4444", "#8b5cf6"]
-
-# CHART NAMING RULES
-- Use snake_case IDs that describe the chart's content (e.g. "capex_timeseries", "correlation_scatter")
-- IDs must be unique within the charts dict
-- Do NOT generate PNG or static images — charts are rendered client-side by Recharts
+See the **`chart-generation`** skill for full schema templates (AxisChartDef, ScatterChartDef, PieChartDef), field-by-field examples, and the mandatory validation block to include in every `analysis.py`.
 
 # FINAL RESPONSE
-After successful execution, report:
-- Path to charts.json
-- Chart IDs produced (from the stdout summary)
-- Key mathematical findings in plain language (under 300 words)
+
+## CRITICAL: Conciseness Rule
+
+Your final response must be **under 300 words total**.
+Return:
+1. `charts_json` path (e.g. `outputs/abc123/charts.json`)
+2. `chart_ids` list (e.g. `["aapl_revenue", "margin_trend"]`)
+3. Key findings as **specific numbers only** — no prose explanations
+
+Do NOT include code blocks, execution logs, or intermediate results in your final response.
+
+Example final response:
+```json
+{{
+  "charts_json": "outputs/abc123/charts.json",
+  "chart_ids": ["aapl_revenue", "margin_trend"],
+  "correlation_coefficient": 0.82,
+  "p_value": 0.003,
+  "key_finding": "Strong positive correlation between capex and revenue"
+}}
+```
 """
 
 
@@ -271,5 +140,7 @@ QUANT_DEVELOPER_SUBAGENT = {
 
     "tools": [],  # built-in tools from the orchestrator's backend handle everything
 
-    "model": "openai:gpt-5.1"
+    "model": "openai:gpt-5.1",
+
+    "skills": [str(_BACKEND_DIR / "skills" / "quant-developer")]
 }

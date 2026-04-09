@@ -11,14 +11,21 @@ export default function Home() {
   const router = useRouter();
   const [messages, setMessages] = useState<Message[]>([]);
   const [submittedMessages, setSubmittedMessages] = useState<Message[]>([]);
+  const [pendingApprovalJobId, setPendingApprovalJobId] = useState<string | null>(null);
   const [inputValue, setInputValue] = useState("");
+  /** Same id as backend LangGraph thread — set from first SSE `start` so resume/Commence hits the same checkpoint. */
+  const [sessionJobId, setSessionJobId] = useState("");
 
   const { isStreamingChat, orchestratorText } = useResearchStream({
-    jobId: "",
+    jobId: sessionJobId,
     messages: submittedMessages,
-    onNavigate: (id) => {
-      sessionStorage.setItem("pending_messages", JSON.stringify(submittedMessages));
-      router.push(`/chat/${id}`);
+    streamTelemetry: false,
+    onJobId: setSessionJobId,
+    onApprovalRequired: (id) => {
+      setPendingApprovalJobId(id);
+    },
+    onResearchExecutionStarted: () => {
+      setPendingApprovalJobId(null);
     },
     onConversationalFinish: (text) => {
       setMessages((prev) => [...prev, { role: "assistant", content: text }]);
@@ -27,6 +34,14 @@ export default function Home() {
 
   const handleSend = (forceResearch = false) => {
     if (!forceResearch && !inputValue.trim()) return;
+    if (forceResearch && pendingApprovalJobId) {
+      // Save resume payload for the chat page, then navigate immediately.
+      // The chat page opens the SSE connection so research streams there.
+      const resume = { decisions: [{ type: "approve" as const }] };
+      sessionStorage.setItem("pending_resume", JSON.stringify(resume));
+      router.push(`/chat/${sessionJobId}`);
+      return;
+    }
     const userMsg = forceResearch
       ? "Please begin the research now with the parameters discussed."
       : inputValue.trim();
@@ -37,9 +52,9 @@ export default function Home() {
   };
 
   return (
-    <div className="flex flex-col h-screen bg-background">
+    <div className="flex min-h-0 h-screen flex-col bg-background">
       <AppHeader />
-      <main className="flex-1 overflow-hidden flex flex-col">
+      <main className="flex min-h-0 flex-1 flex-col">
         <ChatInterface
           messages={messages}
           isStreamingChat={isStreamingChat}

@@ -24,20 +24,38 @@ Subagents it can delegate to:
 """
 
 import logging
+import warnings
+from pathlib import Path
 
 # Suppress langchain_google_genai schema-key warnings ($schema, additionalProperties
 # are stripped when converting Pydantic tool schemas for the Gemini API — harmless)
 logging.getLogger("langchain_google_genai._function_utils").setLevel(logging.ERROR)
 
+# Suppress Pydantic serialization warning for ResearchContext passed as graph context.
+# The deepagents SDK types the 'context' field as None in its state schema; passing
+# a ResearchContext object triggers a noisy UserWarning but causes no runtime error.
+warnings.filterwarnings(
+    "ignore",
+    message=r"Pydantic serializer warnings",
+    category=UserWarning,
+)
+
 from typing import Any, Dict, AsyncIterator
 from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.types import Command
 
 # Import subagent configurations from separate files
 from .data_engineer import get_data_engineer_subagent, MCPTimeoutError
 from .quantitative_developer import QUANT_DEVELOPER_SUBAGENT
 from .technical_writer import TECHNICAL_WRITER_SUBAGENT
 from .quality_analyst import QUALITY_ANALYST_SUBAGENT
+from .chat_surface_tool import emit_chat_message
+from core.context import ResearchContext
+
+_BACKEND_DIR = Path(__file__).resolve().parent.parent
+_CHECKPOINTER = MemorySaver()
 
 
 # =============================================================================
@@ -50,10 +68,21 @@ You are the **Orchestrator (Research Director)** for an Asynchronous Deep Financ
 
 Your primary directive is to coordinate end-to-end macroeconomic and stock market research. You do not analyze data yourself; you plan, delegate, monitor, and synthesize.
 
-IMPORTANT: You must ALWAYS delegate work to your subagents using the task() tool. Never attempt to do the work yourself. Your job is to:
-1. Break down the user's request into actionable tasks
-2. Delegate each task to the appropriate subagent via task()
+## User-visible chat (`emit_chat_message`) — mandatory
+The web UI renders **only** this markdown — not your raw model stream. Call **`emit_chat_message(markdown=...)` exactly once** per assistant turn that speaks to the user.
+
+- **Clarifying (questions only):** Short intro + markdown bullet questions. **Do not** call `task()` on this turn — no data fetch yet.
+- **Ready to run research (intake complete):** After the user has answered your questions **or** the first user message was fully specified, you must:
+  1. Call `emit_chat_message` with a brief acknowledgment AND a **final sentence** that tells them to click **Commence Deep Research** below to approve starting data collection. Use this pattern (adapt wording to context):  
+     *I now have what I need to proceed. Please click **Commence Deep Research** below to approve and begin pulling data.*
+  2. **Immediately after** that tool call, call `task(...)` to delegate to **data-engineer** (first pipeline step). Human-in-the-loop approval runs **before** any subagent executes — the user’s button click approves that `task()` call. **Do not** call `task()` before `emit_chat_message` on this turn.
+
+IMPORTANT: After **Phase 1 — Intake** is complete, you must delegate all substantive work to your subagents using the `task()` tool. Never substitute your own analysis for sandbox-backed outputs. Your job is to:
+1. Run intake (mandatory structure below): clarify when needed, or confirm a **fully specified** request
+2. Break the request into actionable tasks and delegate each via `task()`
 3. Coordinate results and report back to the user
+
+**Clarification exception:** On the **first** user turn of a job, you **must not** call `task()` until intake is done. If the request is **not** fully specified, your first turn is **questions only** (`emit_chat_message`) — **no** `task()`. If the request **is** fully specified (rubric below), one assistant turn may run `emit_chat_message` (with the Commence Deep Research line) and then `task()` as above. When the user’s latest message **answers your intake questions**, treat intake as complete: run **`emit_chat_message` (with Commence line) then `task()`** in that turn — do not re-run full intake.
 
 # SUBAGENT ROSTER
 1. **data-engineer:** Fetches raw data from FMP/FRED APIs. Returns ONLY storage paths and deterministic pure-Python data schemas.
@@ -74,12 +103,17 @@ IMPORTANT: You must ALWAYS delegate work to your subagents using the task() tool
 
 # STANDARD OPERATING PROCEDURE (WORKFLOW)
 
-## Phase 1: Intake & Clarification (STRICT CHECKLIST)
-Before initiating any backend data retrieval or delegating to subagents, you MUST verify that the user's request satisfies the following checklist. Only ask the user if the request is truly ambiguous. **Do NOT ask about visualization type** — infer it from context (revenue/trend → line chart, comparison → bar chart, correlation → scatter plot, breakdown → pie chart).
-- [ ] Target assets or tickers are explicitly defined. If missing, ask.
-- [ ] The exact macroeconomic indicators or metrics are specified. If missing, ask.
-- [ ] The historical timeframe is defined. If missing, default to the last 5 years and proceed.
-- [x] Visualization type: **Infer automatically** — do NOT ask the user. Defaults: trends/revenue → line, comparisons → bar, correlations → scatter, breakdowns → pie.
+## Phase 1: Intake & Clarification (MANDATORY FIRST)
+
+First user message of a job: output the **Intake block** before any `task()`. Prefer asking over guessing: do not invent tickers, FRED series, or dates. If the horizon is missing, ask (e.g. offer "last 5 calendar years?" as an option). **Do not ask chart type** — infer: trend→line, compare→bar, correlation→scatter, breakdown→pie.
+
+**Fully specified** — the only case where **Questions** may be a single line `None — proceeding to execution per rubric below.` — means the user **explicitly** stated all of: **(1)** tickers or unambiguous macro/FRED IDs, **(2)** concrete metric(s)/indicator(s), **(3)** a definite horizon (named years, "last N years", from–to, as-of). Vague scope ("tech stocks", "the market", "recently") → ask; no `task()` on that turn until they answer.
+
+**Intake (internal):** Track tickers/FRED, metric, horizon, assumptions — prefer asking over guessing. For **chat**, put only the concise questions (or none-line) inside `emit_chat_message`, not the full internal checklist.
+
+**Examples:** "AAPL annual revenue, last 5 years" → `emit_chat_message` confirming scope, then `task()`. "Tech stocks" or "MSFT operating margin" with no period → ask via `emit_chat_message` only.
+
+**User replied to your questions:** follow the “Ready to run research” two-step (`emit_chat_message` with Commence line, then `task()`).
 
 ## Phase 2: Data Acquisition
 - Delegate to **data-engineer** using task(name="data-engineer", task="..."). Request the specific datasets needed.
@@ -87,30 +121,27 @@ Before initiating any backend data retrieval or delegating to subagents, you MUS
 
 ## Phase 3: Quantitative Analysis & Chart Generation
 - Delegate to **quant-developer** using task(name="quant-developer", task="...").
-- Pass the schemas, storage paths, and exact instructions on the math to perform.
-- **CRITICAL CHARTING INSTRUCTION:** Command the quant-developer to save a named chart dict to `outputs/charts.json` (not a flat array). Each key is a snake_case chart ID; each value is a chart definition matching one of three Pydantic variants (AxisChartDef, ScatterChartDef, or PieChartDef). The quant-developer must print the chart IDs in its stdout summary so you can pass them forward.
-- Extract the list of chart IDs from the quant-developer's stdout summary and store them in your state.
+- Pass: schemas, Windows file paths, analysis goal, and job_id.
+- The quant-developer saves `outputs/{job_id}/charts.json` (dict keyed by snake_case chart ID) and prints chart IDs in its stdout summary.
+- Store the chart IDs from the stdout summary in your state.
+
+See the query-type workflow skills (`macro-correlation-workflow`, `equity-earnings-workflow`, `sector-comparison-workflow`) for specific analysis instructions and chart type recommendations per query type.
 
 ## Phase 4: Report Synthesis
 - Delegate to **technical-writer** using task(name="technical-writer", task="...").
-- Pass ONLY: `charts_json_path` (e.g. `outputs/{job_id}/charts.json`), `execution_summary` (the compact stdout JSON from the quant developer), `data_sources` metadata, `original_query`, and `job_id`.
-- Do NOT pass chart data arrays or chart summaries — the technical writer reads charts.json directly from disk.
-- The technical writer calls `plan_report_structure` then `write_research_report` and produces `outputs/{job_id}/report.json`.
-- **`data_sources` MUST be a JSON list — populate every field from the data-engineer's output:**
+- Pass ONLY: `charts_json_path`, `execution_summary` (quant stdout JSON), `data_sources` (JSON list), `original_query`, `job_id`.
+- Do NOT pass chart data — the technical writer reads charts.json directly from disk.
+- `data_sources` must be a populated JSON list — never leave fields as null:
   ```json
-  [{"provider": "FMP MCP Server", "description": "Annual income statement for AAPL", "tickers": ["AAPL"], "date_range": {"start": "2021", "end": "2025"}, "row_count": 5}]
+  [{"provider": "FMP MCP Server", "description": "Annual income for AAPL", "tickers": ["AAPL"], "date_range": {"start": "2021", "end": "2025"}, "row_count": 5}]
   ```
-  - `tickers`: list of ticker symbols fetched (from the data-engineer's `data_files` keys)
-  - `row_count`: integer row count (from the data-engineer's `row_counts` dict)
-  - `date_range`: `{"start": "<earliest year>", "end": "<latest year>"}` — infer from the fiscal years in the data
-  - Never leave these fields as `null` — always populate from what the data-engineer returned
+- `job_id` is in your initial message. Always pass it explicitly in task() instructions — subagents use it to construct output paths.
 
 ## Phase 5: Quality Assurance
 - Delegate to **quality-analyst** using task(name="quality-analyst", task="...").
 - Pass the `report_json_path` (e.g. `outputs/{job_id}/report.json`).
-- The quality analyst loads report.json via Pydantic, validates schema, mandatory elements, chart marker resolution, and compliance. Minor issues (missing disclaimer, footer, broken chart markers) are autonomously patched before a final decision is made.
-- If quality-analyst returns `status: approved` → proceed to Phase 6.
-- If quality-analyst returns `status: rejected` → extract the `required_fixes` list and re-delegate to **technical-writer** with those fixes included in the task instructions. Apply the Rule of Three: abort after 3 QA rejections.
+- If `status: approved` → proceed to Phase 6.
+- If `status: rejected` → see the **`qa-rejection-recovery`** skill for re-delegation instructions and Rule of Three enforcement.
 
 ## Phase 6: Final Handoff
 - Output the final completion status, confirming that `outputs/{job_id}/report.json` has been saved and approved.
@@ -132,7 +163,7 @@ async def create_orchestrator():
     return create_deep_agent(
         model="google_genai:gemini-3-flash-preview",
         system_prompt=ORCHESTRATOR_SYSTEM_PROMPT,
-        tools=[],  # Orchestrator uses built-in task() and write_todos()
+        tools=[emit_chat_message],
         subagents=[
             data_engineer,
             QUANT_DEVELOPER_SUBAGENT,
@@ -140,6 +171,13 @@ async def create_orchestrator():
             QUALITY_ANALYST_SUBAGENT
         ],
         backend=LocalShellBackend(),  # gives subagents write_file, execute, read_file, ls, glob, grep
+        context_schema=ResearchContext,
+        checkpointer=_CHECKPOINTER,
+        interrupt_on={
+            "task": {"allowed_decisions": ["approve", "reject"]},
+        },
+        memory=[str(_BACKEND_DIR / "AGENTS.md")],
+        skills=[str(_BACKEND_DIR / "skills" / "orchestrator")],
         name="orchestrator"
     )
 
@@ -187,14 +225,14 @@ async def run_research(
 
         if messages is None:
             messages = [{"role": "user", "content": f"Job ID: {job_id}\n\nResearch Query: {query}"}]
-        else:
-            # Inject the job_id into the last user message so the orchestrator knows it
-            for msg in reversed(messages):
-                if msg["role"] == "user":
-                    msg["content"] = f"Job ID: {job_id}\n\n{msg['content']}"
-                    break
 
-        result = await agent.ainvoke({"messages": messages})
+        ctx = ResearchContext(
+            job_id=job_id,
+            output_dir=str(_BACKEND_DIR / "outputs" / job_id),
+            data_dir=str(_BACKEND_DIR / "data" / job_id),
+        )
+
+        result = await agent.ainvoke({"messages": messages}, context=ctx)
 
         messages = result.get("messages", [])
         if messages:
@@ -232,6 +270,7 @@ async def stream_research(
     query: str,
     job_id: str,
     messages: list[dict] | None = None,
+    resume: Dict[str, Any] | None = None,
     agent: Any | None = None,
 ) -> AsyncIterator[Dict[str, Any]]:
     """
@@ -261,16 +300,25 @@ async def stream_research(
 
     if messages is None:
         messages = [{"role": "user", "content": f"Job ID: {job_id}\n\nResearch Query: {query}"}]
-    else:
-        # Inject the job_id into the last user message so the orchestrator knows it
-        for msg in reversed(messages):
-            if msg["role"] == "user":
-                msg["content"] = f"Job ID: {job_id}\n\n{msg['content']}"
-                break
+
+    ctx = ResearchContext(
+        job_id=job_id,
+        output_dir=str(_BACKEND_DIR / "outputs" / job_id),
+        data_dir=str(_BACKEND_DIR / "data" / job_id),
+    )
 
     try:
+        config = {"configurable": {"thread_id": job_id}}
+        graph_input: Dict[str, Any] | Command
+        if resume is not None:
+            graph_input = Command(resume=resume)
+        else:
+            graph_input = {"messages": messages}
+
         async for event in agent.astream(
-            {"messages": messages},
+            graph_input,
+            context=ctx,
+            config=config,
             stream_mode=["updates", "messages", "custom"],
             subgraphs=True,
             version="v2",

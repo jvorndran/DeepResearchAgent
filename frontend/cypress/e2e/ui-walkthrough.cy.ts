@@ -7,17 +7,20 @@
  * the hook fetches /api/mock-stream directly (same-origin, real streaming, no proxy).
  * No cy.intercept needed — the browser talks straight to the Next.js mock route.
  */
+export {};
 
-const JOB_ID = 'test-job-123';
+const JOB_ID = 'gdp_unemployment_20yr';
 
 const CONVERSATIONAL_SSE = [
-  `data: {"type":"text","delta":"To tailor this research, what time period and data frequency are you targeting?"}`,
+  `data: {"type":"start","job_id":"${JOB_ID}"}`,
+  `data: {"type":"user_message","markdown":"### Clarifying questions\\n\\n- What specific time period should I cover?\\n- Which metrics should I prioritize?"}`,
+  `data: {"type":"approval_required","job_id":"${JOB_ID}","action_requests":[],"review_configs":[]}`,
   `data: {"type":"finish","report_ready":false}`,
   `data: [DONE]`,
 ].join('\n') + '\n';
 
 /** Visit the chat page directly, bypassing the home-page "Begin Research" flow */
-function visitChatPage(scenario: string, message = 'What is the revenue CAGR for NVIDIA from 2020–2024?') {
+function visitChatPage(scenario: string, message = 'When US GDP contracts, what happens to unemployment? Analyze the historical relationship between US real GDP growth and the unemployment rate over the last 20 years.') {
   cy.visit(`/chat/${JOB_ID}`, {
     onBeforeLoad(win) {
       win.sessionStorage.setItem('pending_messages', JSON.stringify([{ role: 'user', content: message }]));
@@ -78,7 +81,7 @@ it('Stage 3 — Chat: Pipeline agents streaming (watch agent cards appear)', () 
 it('Stage 4 — Chat: Full report with chart', () => {
   // Hook fetches /api/mock-stream?scenario=research — full pipeline + finish:report_ready:true
   cy.intercept('GET', `http://localhost:8000/api/reports/${JOB_ID}`, {
-    fixture: 'mock-report.json',
+    fixture: 'gdp_unemployment_20yr/report.json',
   }).as('getReport');
 
   visitChatPage('research');

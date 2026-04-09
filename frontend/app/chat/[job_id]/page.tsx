@@ -18,9 +18,17 @@ export default function ChatPage({ params }: { params: Promise<{ job_id: string 
     return stored ? (JSON.parse(stored) as Message[]) : [];
   });
 
+  const [resume] = useState<{ decisions: Array<{ type: "approve" | "reject" }> } | null>(() => {
+    if (typeof window === "undefined") return null;
+    const stored = sessionStorage.getItem("pending_resume");
+    sessionStorage.removeItem("pending_resume");
+    return stored ? JSON.parse(stored) : null;
+  });
+
   const { status, orchestratorText, pipelineSteps, report, errorText } = useResearchStream({
     jobId: job_id,
     messages,
+    resume,
   });
 
   return (

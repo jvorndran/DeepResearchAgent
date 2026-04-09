@@ -240,6 +240,11 @@ def write_research_report(
         except Exception:
             charts_on_disk = {}
 
+    # Normalise: inject missing 'id' from dict key (quant-developer occasionally omits it)
+    for _ckey, _cval in charts_on_disk.items():
+        if isinstance(_cval, dict) and "id" not in _cval:
+            _cval["id"] = _ckey
+
     # -------------------------------------------------------------------------
     # 2. Append footer to the LLM-written markdown
     # -------------------------------------------------------------------------
@@ -391,6 +396,12 @@ The quant developer produces charts.json and an execution_summary; the data engi
 You read those artifacts, then **YOU WRITE the complete markdown narrative yourself**, and call
 `write_research_report` to validate and save it.
 
+## CRITICAL: Use ONLY Your Two Custom Tools
+
+**Do NOT call** `read_file`, `write_file`, `ls`, `glob`, `grep`, or `execute` — ever.
+You have exactly two custom tools: `plan_report_structure` and `write_research_report`.
+Use those and nothing else. The orchestrator always gives you a valid `charts_json_path` — pass it as-is to your tools; they handle all file I/O internally.
+
 ## The Golden Rule
 
 **You write every word of the report.** The `write_research_report` tool does NOT generate content —
@@ -398,16 +409,9 @@ it only validates structure and saves. If you pass a thin `execution_summary` to
 it to fill in sections, the report will be empty and repetitive. Every section must contain unique
 prose you composed based on the execution_summary data.
 
-## Analytical Rigor & Diversified Methods
+## Analytical Rigor
 
-To produce a high-quality report, move beyond simple econometric labels (like "Okun's Law"). Use these analytical frameworks:
-- **Counterfactual Analysis**: Discuss what the trends might look like if a key variable had remained constant.
-- **Leading vs. Lagging Indicators**: Distinguish between predictive data (e.g., PMI, yield curves) and retrospective data (e.g., GDP, Unemployment).
-- **Diffusion Indices**: Analyze how "broad-based" a trend is across different sectors rather than just looking at the aggregate mean.
-- **Regime Switching**: Identify if the economy has moved between different regimes (e.g., "growth" to "stagflationary").
-- **Elasticity & Sensitivity**: Focus on time-varying elasticity—how the relationship between variables changes during crises vs. stable periods.
-- **Mean Reversion**: Analyze if a variable is stretched too far from its historical average.
-- **Decomposition**: Break down a metric (like CPI) into its core components (Energy, Food, Shelter) to find the primary driver.
+Move beyond simple labels. Use frameworks like counterfactual analysis, regime switching, decomposition, leading vs. lagging indicators, and mean reversion. See the **`report-writing`** skill for the full framework reference table with examples and when to apply each.
 
 ## What You Receive From the Orchestrator
 
@@ -435,73 +439,11 @@ execution_summary inline in parentheticals.
 
 ### Required sections (in this order)
 
-```markdown
-## Executive Summary
+Executive Summary → Research Query → Data Sources → [Analysis sections with inline `<!-- CHART:id -->` markers] → Methodology → Limitations → Disclaimer
 
-[2-3 sentences. State the single most important finding with the exact statistic.
-Example: "US real GDP growth and unemployment have a strong inverse relationship
-(Pearson r = -0.89, p < 0.001) over 2004–2024. When GDP contracts by 1 percentage point,
-unemployment rises by approximately 0.77 percentage points (Okun coefficient). The relationship
-is tightest during recessions (2008–2009, 2020) when both series moved sharply."]
+The Disclaimer **must** contain: `"does not constitute financial advice"` and `"Past performance is not indicative of future results"`.
 
-## Research Query
-
-[Verbatim original query — no paraphrasing]
-
-## Data Sources
-
-[Bullet list: provider, series IDs, date range, row counts]
-- **FRED (Federal Reserve Economic Data)**: Real GDP Growth Rate (GDPC1) and Unemployment Rate
-  (UNRATE), Q1 2004 – Q4 2024 (80 quarterly observations)
-
-## [Analysis section title — unique to this query type]
-
-[2-4 paragraphs analyzing the data using the analytical frameworks mentioned above.
-Each paragraph covers a distinct aspect. Cite specific numbers. Do NOT copy text from another section.]
-
-<!-- CHART:chart_id_1 -->
-
-[Continue analysis — next aspect. Different topic from the paragraph above.]
-
-## [Second analysis section]
-
-[Different content. Address a different dimension of the findings, such as regime switching or decomposition.]
-
-<!-- CHART:chart_id_2 -->
-
-## Methodology
-
-[How the data was collected and analyzed. Mention the specific series, time period,
-and analytical methods (e.g. Pearson correlation, OLS regression, decomposition analysis).]
-
-## Limitations
-
-[Specific limitations of THIS analysis — not generic boilerplate.
-Example: "This analysis uses quarterly data; higher-frequency monthly data would
-reveal faster labor market responses to GDP contractions."]
-
-## Disclaimer
-
-**IMPORTANT DISCLAIMER**: This report is for informational purposes only and does not
-constitute financial advice. All analysis is based on historical data.
-Past performance is not indicative of future results.
-```
-
-### Chart placement rules
-
-- Place `<!-- CHART:id -->` on its own line immediately **after** the paragraph that references it
-- Never cluster all charts at the bottom
-- Use exactly the IDs returned by `plan_report_structure` — no invented IDs
-
-### Anti-patterns (these will make the report fail quality review)
-
-❌ Copying the same sentence from execution_summary into every section
-❌ Sections with only 1 sentence
-❌ Generic boilerplate that could apply to any report
-❌ Inventing statistics not present in execution_summary
-❌ Predictive statements ("will increase", "should buy")
-❌ All `<!-- CHART:id -->` markers at the bottom
-❌ Over-relying on academic labels; describe the economic mechanism instead.
+See the **`report-writing`** skill for the full section template with examples, chart placement rules, and QA anti-patterns.
 
 ## Step 3: Call write_research_report
 
@@ -523,18 +465,11 @@ write_research_report(
 ## Step 4: Report results
 
 After the tool returns, report the `report_path`, `chart_count`, `word_count`, and any
-`validation_issues` to the orchestrator.
-
-## Quality bar
-
-A good report has:
-- Word count > 400
-- chart_count ≥ 1 (every available chart referenced in context)
-- No validation_issues
-- Every section contains unique prose specific to THIS query's data
-- Executive summary names the exact statistic (r-value, coefficient, percentage)""",
+`validation_issues` to the orchestrator. A passing report has word count > 400, chart_count ≥ 1, and no validation_issues.""",
 
     "tools": [plan_report_structure, write_research_report],
 
-    "model": "google_genai:gemini-3-flash-preview"
+    "model": "google_genai:gemini-3-flash-preview",
+
+    "skills": [str(_BACKEND_DIR / "skills" / "technical-writer")]
 }

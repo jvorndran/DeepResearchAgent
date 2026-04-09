@@ -6,7 +6,16 @@ import type { ResearchStatus, Message, PipelineStep, ResearchReport } from "@/li
 export interface UseResearchStreamOptions {
   jobId: string;
   messages: Message[];
+  resume?: { decisions: Array<{ type: "approve" | "reject" }> } | null;
+  requestNonce?: number;
+  /** When false (home intake chat), raw model `text` tokens are omitted server-side; use `user_message` SSE only. */
+  streamTelemetry?: boolean;
   onNavigate?: (jobId: string) => void;
+  /** First `start` SSE in a session — persist and send as `job_id` on every later request (required for resume / same thread). */
+  onJobId?: (jobId: string) => void;
+  onApprovalRequired?: (jobId: string) => void;
+  /** Fires when pipeline execution actually starts (after user approves Commence Deep Research). */
+  onResearchExecutionStarted?: () => void;
   onConversationalFinish?: (assistantText: string) => void;
 }
 
@@ -22,7 +31,13 @@ export interface UseResearchStreamResult {
 export function useResearchStream({
   jobId,
   messages,
+  resume,
+  requestNonce = 0,
+  streamTelemetry = true,
   onNavigate,
+  onJobId,
+  onApprovalRequired,
+  onResearchExecutionStarted,
   onConversationalFinish,
 }: UseResearchStreamOptions): UseResearchStreamResult {
   const [status, setStatus] = useState<ResearchStatus>("idle");
@@ -35,6 +50,12 @@ export function useResearchStream({
   // Keep callbacks in refs so they don't trigger effect re-runs
   const onNavigateRef = useRef(onNavigate);
   onNavigateRef.current = onNavigate;
+  const onJobIdRef = useRef(onJobId);
+  onJobIdRef.current = onJobId;
+  const onApprovalRequiredRef = useRef(onApprovalRequired);
+  onApprovalRequiredRef.current = onApprovalRequired;
+  const onResearchExecutionStartedRef = useRef(onResearchExecutionStarted);
+  onResearchExecutionStartedRef.current = onResearchExecutionStarted;
   const onConversationalFinishRef = useRef(onConversationalFinish);
   onConversationalFinishRef.current = onConversationalFinish;
 
@@ -42,21 +63,37 @@ export function useResearchStream({
   const currentJobIdRef = useRef(jobId);
 
   useEffect(() => {
-    // Refresh case: no messages but we have a job_id — try to load existing report
-    if (messages.length === 0 && jobId) {
+    // No messages and no resume — either poll for an existing report or do nothing
+    if (messages.length === 0 && !resume) {
+      if (!jobId) return;
+      // Refresh case: poll until report is ready
+      let cancelled = false;
+      const poll = async (delay = 0): Promise<void> => {
+        if (delay) await new Promise<void>((r) => setTimeout(r, delay));
+        if (cancelled) return;
+        try {
+          const res = await fetch(`http://localhost:8000/api/reports/${jobId}`);
+          if (res.status === 202 || res.status === 404) { poll(5000); return; }
+          if (!res.ok) throw new Error(`${res.status}`);
+          const data = await res.json();
+          if (!cancelled) { setReport(data); setStatus("report_ready"); }
+        } catch (error: unknown) {
+          if (!cancelled) {
+            setStatus("error");
+            setErrorText(error instanceof Error ? error.message : `Could not load report for job ${jobId}.`);
+          }
+        }
+      };
       setStatus("idle");
-      fetch(`http://localhost:8000/api/reports/${jobId}`)
-        .then((res) => { if (!res.ok) throw new Error(`${res.status}`); return res.json(); })
-        .then((data) => { setReport(data); setStatus("report_ready"); })
-        .catch(() => { setStatus("error"); setErrorText(`Could not load report for job ${jobId}.`); });
-      return;
+      poll();
+      return () => { cancelled = true; };
     }
-
-    if (messages.length === 0) return;
 
     let cancelled = false;
     let currentOrchestratorText = "";
     let hasStartedResearch = false;
+    let pendingNavigationJobId: string | null = null;
+    let lastUserMessageMarkdown = "";
     currentJobIdRef.current = jobId;
     hasNavigatedRef.current = false;
 
@@ -87,6 +124,8 @@ export function useResearchStream({
       try {
         const body: Record<string, unknown> = { messages };
         if (jobId) body.job_id = jobId;
+        if (resume) body.resume = resume;
+        if (streamTelemetry === false) body.stream_telemetry = false;
 
         const mockScenario = typeof window !== "undefined" && window.localStorage.getItem("__cypress_stream_scenario__");
         const streamUrl = mockScenario
@@ -105,39 +144,56 @@ export function useResearchStream({
         const decoder = new TextDecoder();
         let buffer = "";
 
-        try {
-          while (true) {
-            if (cancelled) { reader.cancel().catch(() => {}); break; }
-            const { done, value } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
+        const dispatchSseJson = async (raw: string) => {
+          if (raw === "[DONE]") return;
+          if (!raw) return;
 
-            const lines = buffer.split("\n");
-            buffer = lines.pop() || "";
-
-            for (const line of lines) {
-              if (!line.startsWith("data: ")) continue;
-              const raw = line.slice(6).trim();
-              if (raw === "[DONE]") break;
-              if (!raw) continue;
-
-              try {
-                const event = JSON.parse(raw);
-                switch (event.type) {
+          try {
+            const event = JSON.parse(raw);
+            switch (event.type) {
                   case "start":
                     currentJobIdRef.current = event.job_id;
-                    if (!hasNavigatedRef.current && onNavigateRef.current) {
-                      hasNavigatedRef.current = true;
-                      onNavigateRef.current(event.job_id);
+                    pendingNavigationJobId = event.job_id;
+                    if (event.job_id) {
+                      onJobIdRef.current?.(event.job_id);
                     }
                     break;
+                  case "execution_started":
+                    hasStartedResearch = true;
+                    onResearchExecutionStartedRef.current?.();
+                    if (!hasNavigatedRef.current && onNavigateRef.current) {
+                      hasNavigatedRef.current = true;
+                      onNavigateRef.current(event.job_id ?? pendingNavigationJobId ?? currentJobIdRef.current);
+                    }
+                    setStatus("streaming");
+                    setIsStreamingChat(false);
+                    break;
                   case "text":
-                    currentOrchestratorText += event.delta;
-                    setOrchestratorText(currentOrchestratorText);
+                    if (streamTelemetry) {
+                      currentOrchestratorText += event.delta;
+                      setOrchestratorText(currentOrchestratorText);
+                    }
+                    break;
+                  case "user_message": {
+                    const md = typeof event.markdown === "string" ? event.markdown : "";
+                    lastUserMessageMarkdown = md;
+                    if (streamTelemetry === false) {
+                      currentOrchestratorText = md;
+                      setOrchestratorText(md);
+                    }
+                    break;
+                  }
+                  case "approval_required":
+                    setIsStreamingChat(false);
+                    onApprovalRequiredRef.current?.(event.job_id ?? pendingNavigationJobId ?? currentJobIdRef.current);
                     break;
                   case "agent_start":
                     if (!hasStartedResearch) {
                       hasStartedResearch = true;
+                      if (!hasNavigatedRef.current && onNavigateRef.current) {
+                        hasNavigatedRef.current = true;
+                        onNavigateRef.current(pendingNavigationJobId ?? currentJobIdRef.current);
+                      }
                       setStatus("streaming");
                       setIsStreamingChat(false);
                     }
@@ -177,15 +233,25 @@ export function useResearchStream({
                     break;
                   case "finish":
                     if (event.report_ready) {
+                      if (!hasNavigatedRef.current && onNavigateRef.current) {
+                        hasNavigatedRef.current = true;
+                        onNavigateRef.current(pendingNavigationJobId ?? currentJobIdRef.current);
+                      }
                       await fetchReport(currentJobIdRef.current);
                     } else if (!hasStartedResearch) {
                       if (!cancelled) {
-                        onConversationalFinishRef.current?.(currentOrchestratorText);
+                        onConversationalFinishRef.current?.(
+                          (streamTelemetry === false ? lastUserMessageMarkdown : "") ||
+                            currentOrchestratorText,
+                        );
                         setOrchestratorText("");
                         setIsStreamingChat(false);
                       }
                     } else {
-                      if (!cancelled) setStatus("failed");
+                      if (!cancelled) {
+                        setStatus("failed");
+                        setIsStreamingChat(false);
+                      }
                     }
                     break;
                   case "error":
@@ -196,13 +262,38 @@ export function useResearchStream({
                     }
                     break;
                 }
-              } catch (e) {
-                console.error("Error parsing SSE event:", e, raw);
+          } catch (e) {
+            console.error("Error parsing SSE event:", e, raw);
+          }
+        };
+
+        try {
+          while (true) {
+            if (cancelled) {
+              reader.cancel().catch(() => {});
+              break;
+            }
+            const { done, value } = await reader.read();
+            if (value) {
+              buffer += decoder.decode(value, { stream: true });
+            }
+            const lines = buffer.split("\n");
+            buffer = lines.pop() || "";
+            for (const line of lines) {
+              if (!line.startsWith("data: ")) continue;
+              await dispatchSseJson(line.slice(6).trim());
+            }
+            if (done) {
+              const rest = buffer.trim();
+              if (rest.startsWith("data: ")) {
+                await dispatchSseJson(rest.slice(6).trim());
               }
+              break;
             }
           }
         } finally {
           if (cancelled) reader.cancel().catch(() => {});
+          else setIsStreamingChat(false);
         }
       } catch (error: unknown) {
         if (!cancelled) {
@@ -216,7 +307,7 @@ export function useResearchStream({
     run();
 
     return () => { cancelled = true; };
-  }, [messages]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [messages, requestNonce, streamTelemetry]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return { status, orchestratorText, pipelineSteps, report, errorText, isStreamingChat };
 }

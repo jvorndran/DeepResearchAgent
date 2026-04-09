@@ -2,10 +2,27 @@
 
 import { useRef, useEffect } from "react";
 import { ArrowRight } from "@phosphor-icons/react";
+import ReactMarkdown from "react-markdown";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import type { Message } from "@/lib/types";
+
+const assistantProse =
+  "prose prose-lg max-w-none dark:prose-invert prose-p:font-serif prose-p:leading-relaxed prose-p:text-foreground/90 prose-headings:font-serif prose-h3:mt-0 prose-h3:mb-3 prose-strong:text-foreground prose-ul:my-3 prose-ol:my-3 prose-li:my-1 prose-p:my-2 first:prose-p:mt-0 last:prose-p:mb-0";
+
+function MarkdownContent({ children, className }: { children: string; className?: string }) {
+  return (
+    <div
+      className={
+        className ??
+        "prose prose-lg max-w-none dark:prose-invert prose-p:font-serif prose-p:leading-relaxed prose-headings:font-serif prose-li:font-serif prose-strong:text-foreground prose-ul:my-3 prose-ol:my-3 prose-p:my-2 first:prose-p:mt-0 last:prose-p:mb-0"
+      }
+    >
+      <ReactMarkdown>{children}</ReactMarkdown>
+    </div>
+  );
+}
 
 interface ChatInterfaceProps {
   messages: Message[];
@@ -40,19 +57,33 @@ export default function ChatInterface({
   };
 
   const hasMessages = messages.length > 0 || isStreamingChat;
+  /** After the assistant’s first reply (e.g. clarifying questions) — not on the empty landing state. */
+  const hasAssistantReply = messages.some((m) => m.role === "assistant");
 
   return (
-    <div className={`flex flex-col h-full transition-all duration-700 ease-[cubic-bezier(0.2,0.8,0.2,1)] ${hasMessages ? "justify-end" : "justify-center"}`}>
+    <div
+      className={`flex min-h-0 flex-1 flex-col transition-all duration-700 ease-[cubic-bezier(0.2,0.8,0.2,1)] ${hasMessages ? "" : "justify-center"}`}
+    >
       {hasMessages && (
-        <ScrollArea className="flex-1 px-6 py-12 md:px-12 lg:px-24">
-          <div className="max-w-4xl mx-auto flex flex-col gap-12 pb-24">
+        <ScrollArea className="h-full min-h-0 flex-1 overflow-hidden px-6 py-12 md:px-12 lg:px-24">
+          <div className="max-w-4xl mx-auto flex flex-col gap-12 pb-8">
             {messages.map((msg, idx) => (
               <div key={idx} data-testid="message-item" data-role={msg.role} className="flex flex-col gap-2 animate-in fade-in slide-in-from-bottom-4 duration-700">
                 <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground font-sans">
                   {msg.role === "user" ? "Inquiry" : "Analysis"}
                 </div>
-                <div className={`text-lg md:text-xl font-serif leading-relaxed ${msg.role === "user" ? "text-foreground pl-4 border-l border-primary/30" : "text-foreground/80 pl-4 border-l-2 border-primary"}`}>
-                  {msg.content}
+                <div
+                  className={`pl-4 ${msg.role === "user" ? "border-l border-primary/30 text-foreground" : "border-l-2 border-primary text-foreground/90"}`}
+                >
+                  <MarkdownContent
+                    className={
+                      msg.role === "user"
+                        ? "prose prose-lg max-w-none dark:prose-invert prose-p:font-serif prose-p:leading-relaxed prose-p:text-foreground prose-headings:font-serif prose-strong:text-foreground prose-ul:my-3 prose-p:my-2 first:prose-p:mt-0"
+                        : assistantProse
+                    }
+                  >
+                    {msg.content}
+                  </MarkdownContent>
                 </div>
               </div>
             ))}
@@ -63,8 +94,14 @@ export default function ChatInterface({
                   <span className="w-1.5 h-1.5 bg-primary rounded-full animate-pulse"></span>
                   Processing
                 </div>
-                <div className="text-lg md:text-xl font-serif leading-relaxed text-foreground/60 pl-4 border-l-2 border-primary/50">
-                  {orchestratorText || <span className="animate-pulse">Synthesizing data...</span>}
+                <div className="pl-4 border-l-2 border-primary/50 text-foreground/70">
+                  {orchestratorText ? (
+                    <MarkdownContent className={`${assistantProse} prose-p:text-foreground/80`}>
+                      {orchestratorText}
+                    </MarkdownContent>
+                  ) : (
+                    <span className="text-lg font-serif animate-pulse">Preparing reply…</span>
+                  )}
                 </div>
               </div>
             )}
@@ -74,7 +111,9 @@ export default function ChatInterface({
         </ScrollArea>
       )}
 
-      <div className={`w-full px-6 md:px-12 lg:px-24 ${hasMessages ? "pb-12 pt-8 bg-background border-t border-border/50" : "max-w-5xl mx-auto"}`}>
+      <div
+        className={`w-full shrink-0 px-6 md:px-12 lg:px-24 ${hasMessages ? "pb-12 pt-8 bg-background border-t border-border/50" : "max-w-5xl mx-auto"}`}
+      >
         {!hasMessages && (
           <div className="mb-16 animate-in fade-in slide-in-from-bottom-8 duration-1000">
             <h2 className="text-5xl md:text-7xl font-serif tracking-tight text-foreground mb-6 leading-[1.1]">
@@ -88,7 +127,7 @@ export default function ChatInterface({
         )}
 
         <div className="max-w-4xl mx-auto relative group">
-          <div className="absolute -inset-1 bg-gradient-to-r from-primary/20 via-transparent to-primary/20 blur opacity-0 group-focus-within:opacity-100 transition-opacity duration-1000"></div>
+          <div className="absolute -inset-1 bg-gradient-to-r from-primary/20 via-transparent to-primary/20 blur opacity-0 group-focus-within:opacity-100 transition-opacity duration-1000 pointer-events-none"></div>
           <div className="relative bg-background border border-border focus-within:border-primary transition-colors duration-500">
             <Textarea
               value={inputValue}
@@ -117,13 +156,14 @@ export default function ChatInterface({
             </div>
           </div>
 
-          {messages.length > 1 && !isStreamingChat && (
+          {hasAssistantReply && (
             <div className="flex justify-start mt-8 animate-in fade-in slide-in-from-bottom-4 duration-700">
-              <Button 
-                data-testid="begin-research-button" 
-                onClick={onBeginResearch} 
-                size="lg" 
-                className="rounded-none bg-foreground text-background hover:bg-primary hover:text-primary-foreground font-sans uppercase tracking-[0.15em] text-xs px-10 py-6 transition-all duration-500 border border-transparent"
+              <Button
+                data-testid="begin-research-button"
+                onClick={onBeginResearch}
+                disabled={isStreamingChat}
+                size="lg"
+                className="rounded-none bg-foreground text-background hover:bg-primary hover:text-primary-foreground font-sans uppercase tracking-[0.15em] text-xs px-10 py-6 transition-all duration-500 border border-transparent disabled:opacity-50"
               >
                 Commence Deep Research
                 <ArrowRight className="ml-3" weight="light" size={16} />

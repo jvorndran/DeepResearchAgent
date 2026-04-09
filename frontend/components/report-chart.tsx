@@ -17,10 +17,16 @@ interface ReportChartProps {
 
 export default function ReportChart({ chartId, chart }: ReportChartProps) {
   return (
-    <div className="h-[400px] w-full mt-8 mb-8" key={chartId}>
-      <h3 className="text-lg font-semibold mb-2 text-center">{chart.title}</h3>
-      <ResponsiveContainer width="100%" height="100%">
-        {chart.type === "line" ? (
+    <figure
+      className="my-10 w-full flex flex-col gap-3"
+      key={chartId}
+    >
+      <h3 className="text-base font-semibold text-center text-foreground shrink-0">
+        {chart.title}
+      </h3>
+      <div className="h-[min(22rem,55vw)] w-full min-h-[240px]">
+        <ResponsiveContainer width="100%" height="100%">
+          {chart.type === "line" ? (
           <LineChart data={chart.data} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis dataKey={chart.xAxisKey} />
@@ -68,9 +74,14 @@ export default function ReportChart({ chartId, chart }: ReportChartProps) {
             <Tooltip />
             <Legend />
           </PieChart>
-        )}
-      </ResponsiveContainer>
-      <p className="text-sm text-muted-foreground text-center mt-2">{chart.description}</p>
-    </div>
+          )}
+        </ResponsiveContainer>
+      </div>
+      {chart.description ? (
+        <figcaption className="text-sm text-muted-foreground text-center leading-relaxed px-1 pb-1">
+          {chart.description}
+        </figcaption>
+      ) : null}
+    </figure>
   );
 }

@@ -23,7 +23,10 @@ from typing import List
 from langchain_core.tools import tool
 import json
 import re
+import os
 from pathlib import Path
+
+_BACKEND_DIR = Path(__file__).resolve().parent.parent
 
 
 # =============================================================================
@@ -471,19 +474,7 @@ In addition to compliance, you must ensure the report meets high analytical stan
 
 ## Severity Classification
 
-| Issue | Severity | Action |
-|---|---|---|
-| Predictive language / investment advice | CRITICAL | `reject_report` |
-| Narrative fallacy / Unsubstantiated claims | CRITICAL | `reject_report` |
-| Missing required section (exec summary, data sources, methodology) | CRITICAL | `reject_report` |
-| Empty executive summary | CRITICAL | `reject_report` |
-| Original query not found in markdown | CRITICAL | `reject_report` |
-| Pydantic schema error | CRITICAL | `reject_report` |
-| Missing disclaimer text | AUTO-FIXABLE | `patch_report(path, "add_disclaimer")` |
-| Missing past performance notice | AUTO-FIXABLE | `patch_report(path, "add_past_performance")` |
-| Missing footer | AUTO-FIXABLE | `patch_report(path, "add_footer")` |
-| Broken `<!-- CHART:id -->` markers | AUTO-FIXABLE | `patch_report(path, "remove_broken_chart_markers")` |
-| Minor formatting, verbosity, typos | MINOR | Note in `approve_report` |
+See the **`qa-review-criteria`** skill for the full severity table (CRITICAL / AUTO-FIXABLE / MINOR), analytical quality checks, and post-patch re-validation rules.
 
 ## Workflow
 
@@ -544,5 +535,7 @@ For rejection:
         reject_report
     ],
 
-    "model": "google_genai:gemini-3-flash-preview"
+    "model": "google_genai:gemini-3-flash-preview",
+
+    "skills": [str(_BACKEND_DIR / "skills" / "quality-analyst")]
 }

@@ -1,0 +1,786 @@
+{
+  "schema_version": 1,
+  "job_id": "gdp_unemployment_20yr",
+  "created_at": "2026-04-02T01:51:46.283137+00:00",
+  "query": "When US GDP contracts, what happens to unemployment? Analyze the historical relationship between US real GDP growth and the unemployment rate over the last 20 years and explain what the data shows.",
+  "title": "US Real GDP Growth and Unemployment: A 20-Year Analysis of Okun's Law (2004–2024)",
+  "executive_summary": "US Real GDP growth and changes in the unemployment rate exhibit a strong inverse relationship (Pearson r = -0.4661, p < 0.0001) over the 2004–2024 period, consistent with Okun's Law. Analysis of 80 quarters revealed that while the overall correlation between GDP growth and the unemployment level is -0.4865, the relationship is most pronounced during contractionary periods. Specifically, the data captured 7 quarters of contraction, including the significant shocks of the 2008-09 financial crisis and the 2020 COVID-19 pandemic, where sharp GDP declines were met with rapid increases in unemployment.",
+  "markdown": "## Executive Summary\n\nUS Real GDP growth and changes in the unemployment rate exhibit a strong inverse relationship (Pearson r = -0.4661, p < 0.0001) over the 2004–2024 period, consistent with Okun's Law. Analysis of 80 quarters revealed that while the overall correlation between GDP growth and the unemployment level is -0.4865, the relationship is most pronounced during contractionary periods. Specifically, the data captured 7 quarters of contraction, including the significant shocks of the 2008-09 financial crisis and the 2020 COVID-19 pandemic, where sharp GDP declines were met with rapid increases in unemployment.\n\n## Research Query\n\nWhen US GDP contracts, what happens to unemployment? Analyze the historical relationship between US real GDP growth and the unemployment rate over the last 20 years and explain what the data shows.\n\n## Data Sources\n\n- **FRED (Federal Reserve Economic Data)**: Historical US Real GDP (GDPC1) and Unemployment Rate (UNRATE), Q1 2004 – Q4 2024 (80 quarterly observations, 336 monthly data points for UNRATE).\n\n## Correlation Findings: US GDP Growth vs. Unemployment\n\nThe statistical analysis confirms a statistically significant inverse correlation between US Real GDP growth and the unemployment rate. Over the 20-year period from 2004 to 2024, the correlation coefficient between GDP growth and the unemployment level was -0.4865 (p-value = 4.7509e-06). This indicates that higher rates of economic growth are consistently associated with lower levels of unemployment.\n\nWhen examining the relationship between GDP growth and the *change* in the unemployment rate, the correlation remains strong at -0.4661 (p-value = 1.3141e-05). This relationship is a fundamental tenet of macroeconomics known as Okun's Law, which suggests that for every 1% decrease in GDP relative to its potential, the unemployment rate tends to rise. The analysis of 80 quarters of data reinforces this theory, showing that economic output is a primary driver of labor market health.\n\n<!-- CHART:gdp_unemployment_trends -->\n\n## Time Series Trends and Historical Shocks\n\nThe 20-year trend highlights how the labor market responds to economic cycles. During the Great Recession (2008-2009), the US economy experienced several quarters of contraction among the 7 total contraction quarters identified in the dataset. As GDP plummeted, the unemployment rate surged, eventually peaking near 10%. This period demonstrated the lagging nature of unemployment, as the labor market continued to struggle even as GDP growth began to stabilize.\n\nThe 2020 COVID-19 pandemic presented an even more extreme case of this inverse relationship. The sharpest quarterly GDP contraction in history was met with an immediate and unprecedented spike in unemployment. However, the subsequent rapid recovery in GDP growth was also mirrored by a swift decline in the unemployment rate. This \"V-shaped\" recovery in both metrics further validates the tight coupling between economic output and employment levels over the long term.\n\n<!-- CHART:okuns_law_scatter -->\n\n## Scatter Analysis of Okun's Law\n\nThe scatter plot analysis reveals the distribution of quarterly observations and the linear trend that defines the Okun's Law relationship. Most data points cluster around the trend line, indicating a stable historical relationship. However, the 7 contractionary quarters often appear as outliers, representing periods of high volatility where the labor market's response to GDP changes is most acute.\n\nIn periods of moderate GDP growth (typically 2-3%), the unemployment rate tends to remain stable or decline slightly. Conversely, when growth falls below 2% or turns negative, the pressure on the unemployment rate to rise becomes significant. The consistency of this pattern over two decades, despite various structural changes in the economy, underscores the resilience of the relationship between production and labor demand.\n\n## Methodology\n\nThis analysis utilized quarterly Real GDP growth data and monthly Unemployment Rate data (aggregated to quarterly averages) from the Federal Reserve Economic Data (FRED) database. The study period spans from Q1 2004 to Q4 2024, encompassing 80 quarterly observations. Statistical methods included calculating Pearson correlation coefficients for both the level and the change in unemployment relative to GDP growth. The \"contraction quarters\" were defined as those with negative real GDP growth.\n\n## Limitations\n\nThis analysis is limited by its use of quarterly data, which may smooth out higher-frequency fluctuations in the labor market. While it captures broad trends, it does not account for structural changes in the labor force, such as shifting participation rates or the \"gig economy,\" which may influence the traditional Okun's Law coefficient. Additionally, the unemployment rate is a lagging indicator, and the full impact of a GDP contraction may not be fully realized within the same quarter.\n\n## Disclaimer\n\n**IMPORTANT DISCLAIMER**: This report is for informational purposes only and does not constitute financial advice. All analysis is based on historical data. Past performance is not indicative of future results.\n\n---\n\n*Generated by Deep Research Agent*  \n*Job ID: gdp_unemployment_20yr*  \n*Generated at: 2026-04-02T01:51:46.282535+00:00*",
+  "charts": {
+    "gdp_unemployment_trends": {
+      "id": "gdp_unemployment_trends",
+      "type": "line",
+      "title": "US Real GDP YoY Growth and Unemployment Rate (Quarterly)",
+      "description": "Quarterly YoY real GDP growth and average unemployment rate over the past 20 years.",
+      "xAxisKey": "quarter",
+      "series": [
+        {
+          "dataKey": "gdp_growth_yoy",
+          "label": "Real GDP YoY Growth (%)",
+          "color": "#3b82f6"
+        },
+        {
+          "dataKey": "unemployment_rate",
+          "label": "Unemployment Rate (%)",
+          "color": "#f59e0b"
+        }
+      ],
+      "data": [
+        {
+          "quarter": "2005Q1",
+          "gdp_growth_yoy": 3.9088432572524257,
+          "unemployment_rate": 5.3
+        },
+        {
+          "quarter": "2005Q2",
+          "gdp_growth_yoy": 3.6177355801611855,
+          "unemployment_rate": 5.1000000000000005
+        },
+        {
+          "quarter": "2005Q3",
+          "gdp_growth_yoy": 3.448598847170792,
+          "unemployment_rate": 4.966666666666667
+        },
+        {
+          "quarter": "2005Q4",
+          "gdp_growth_yoy": 2.9727366937913002,
+          "unemployment_rate": 4.966666666666667
+        },
+        {
+          "quarter": "2006Q1",
+          "gdp_growth_yoy": 3.2131067957182013,
+          "unemployment_rate": 4.733333333333333
+        },
+        {
+          "quarter": "2006Q2",
+          "gdp_growth_yoy": 2.9729038556202125,
+          "unemployment_rate": 4.633333333333333
+        },
+        {
+          "quarter": "2006Q3",
+          "gdp_growth_yoy": 2.325277937424497,
+          "unemployment_rate": 4.633333333333334
+        },
+        {
+          "quarter": "2006Q4",
+          "gdp_growth_yoy": 2.6345603763438197,
+          "unemployment_rate": 4.433333333333334
+        },
+        {
+          "quarter": "2007Q1",
+          "gdp_growth_yoy": 1.5767249700146868,
+          "unemployment_rate": 4.5
+        },
+        {
+          "quarter": "2007Q2",
+          "gdp_growth_yoy": 1.9343747200181172,
+          "unemployment_rate": 4.5
+        },
+        {
+          "quarter": "2007Q3",
+          "gdp_growth_yoy": 2.3680360773066234,
+          "unemployment_rate": 4.666666666666667
+        },
+        {
+          "quarter": "2007Q4",
+          "gdp_growth_yoy": 2.133364682457861,
+          "unemployment_rate": 4.8
+        },
+        {
+          "quarter": "2008Q1",
+          "gdp_growth_yoy": 1.3924712055185307,
+          "unemployment_rate": 5.0
+        },
+        {
+          "quarter": "2008Q2",
+          "gdp_growth_yoy": 1.3760107660276244,
+          "unemployment_rate": 5.333333333333333
+        },
+        {
+          "quarter": "2008Q3",
+          "gdp_growth_yoy": 0.26596727212868654,
+          "unemployment_rate": 6.0
+        },
+        {
+          "quarter": "2008Q4",
+          "gdp_growth_yoy": -2.5411536884212604,
+          "unemployment_rate": 6.866666666666667
+        },
+        {
+          "quarter": "2009Q1",
+          "gdp_growth_yoy": -3.234227293078318,
+          "unemployment_rate": 8.266666666666667
+        },
+        {
+          "quarter": "2009Q2",
+          "gdp_growth_yoy": -3.9788374053187248,
+          "unemployment_rate": 9.299999999999999
+        },
+        {
+          "quarter": "2009Q3",
+          "gdp_growth_yoy": -3.1328157006863644,
+          "unemployment_rate": 9.633333333333333
+        },
+        {
+          "quarter": "2009Q4",
+          "gdp_growth_yoy": 0.10557252348297741,
+          "unemployment_rate": 9.933333333333334
+        },
+        {
+          "quarter": "2010Q1",
+          "gdp_growth_yoy": 1.7452658449103264,
+          "unemployment_rate": 9.833333333333334
+        },
+        {
+          "quarter": "2010Q2",
+          "gdp_growth_yoy": 2.91359502911801,
+          "unemployment_rate": 9.633333333333333
+        },
+        {
+          "quarter": "2010Q3",
+          "gdp_growth_yoy": 3.344209253779229,
+          "unemployment_rate": 9.466666666666667
+        },
+        {
+          "quarter": "2010Q4",
+          "gdp_growth_yoy": 2.7759609093124693,
+          "unemployment_rate": 9.5
+        },
+        {
+          "quarter": "2011Q1",
+          "gdp_growth_yoy": 2.037797199613345,
+          "unemployment_rate": 9.033333333333333
+        },
+        {
+          "quarter": "2011Q2",
+          "gdp_growth_yoy": 1.7437088645501975,
+          "unemployment_rate": 9.066666666666666
+        },
+        {
+          "quarter": "2011Q3",
+          "gdp_growth_yoy": 0.9426534645672335,
+          "unemployment_rate": 9.0
+        },
+        {
+          "quarter": "2011Q4",
+          "gdp_growth_yoy": 1.543075871606514,
+          "unemployment_rate": 8.633333333333333
+        },
+        {
+          "quarter": "2012Q1",
+          "gdp_growth_yoy": 2.6380693108862374,
+          "unemployment_rate": 8.266666666666667
+        },
+        {
+          "quarter": "2012Q2",
+          "gdp_growth_yoy": 2.403335839137921,
+          "unemployment_rate": 8.2
+        },
+        {
+          "quarter": "2012Q3",
+          "gdp_growth_yoy": 2.5737123144880414,
+          "unemployment_rate": 8.033333333333333
+        },
+        {
+          "quarter": "2012Q4",
+          "gdp_growth_yoy": 1.551852007332477,
+          "unemployment_rate": 7.8
+        },
+        {
+          "quarter": "2013Q1",
+          "gdp_growth_yoy": 1.700868485709428,
+          "unemployment_rate": 7.733333333333333
+        },
+        {
+          "quarter": "2013Q2",
+          "gdp_growth_yoy": 1.5199382041070075,
+          "unemployment_rate": 7.533333333333334
+        },
+        {
+          "quarter": "2013Q3",
+          "gdp_growth_yoy": 2.237022493295515,
+          "unemployment_rate": 7.233333333333333
+        },
+        {
+          "quarter": "2013Q4",
+          "gdp_growth_yoy": 3.0091449601746367,
+          "unemployment_rate": 6.933333333333334
+        },
+        {
+          "quarter": "2014Q1",
+          "gdp_growth_yoy": 1.6508175559380112,
+          "unemployment_rate": 6.666666666666667
+        },
+        {
+          "quarter": "2014Q2",
+          "gdp_growth_yoy": 2.6891521587272926,
+          "unemployment_rate": 6.2
+        },
+        {
+          "quarter": "2014Q3",
+          "gdp_growth_yoy": 3.059782928201682,
+          "unemployment_rate": 6.066666666666666
+        },
+        {
+          "quarter": "2014Q4",
+          "gdp_growth_yoy": 2.6858351011456394,
+          "unemployment_rate": 5.7
+        },
+        {
+          "quarter": "2015Q1",
+          "gdp_growth_yoy": 3.9692994988184793,
+          "unemployment_rate": 5.533333333333334
+        },
+        {
+          "quarter": "2015Q2",
+          "gdp_growth_yoy": 3.2790878609270546,
+          "unemployment_rate": 5.433333333333334
+        },
+        {
+          "quarter": "2015Q3",
+          "gdp_growth_yoy": 2.4473213664345517,
+          "unemployment_rate": 5.1000000000000005
+        },
+        {
+          "quarter": "2015Q4",
+          "gdp_growth_yoy": 2.119861312664817,
+          "unemployment_rate": 5.033333333333333
+        },
+        {
+          "quarter": "2016Q1",
+          "gdp_growth_yoy": 1.7950168913805964,
+          "unemployment_rate": 4.8999999999999995
+        },
+        {
+          "quarter": "2016Q2",
+          "gdp_growth_yoy": 1.493250832714721,
+          "unemployment_rate": 4.933333333333334
+        },
+        {
+          "quarter": "2016Q3",
+          "gdp_growth_yoy": 1.8057615310855146,
+          "unemployment_rate": 4.8999999999999995
+        },
+        {
+          "quarter": "2016Q4",
+          "gdp_growth_yoy": 2.1815663030564147,
+          "unemployment_rate": 4.766666666666667
+        },
+        {
+          "quarter": "2017Q1",
+          "gdp_growth_yoy": 2.0874616941966906,
+          "unemployment_rate": 4.566666666666666
+        },
+        {
+          "quarter": "2017Q2",
+          "gdp_growth_yoy": 2.3304137937582903,
+          "unemployment_rate": 4.366666666666667
+        },
+        {
+          "quarter": "2017Q3",
+          "gdp_growth_yoy": 2.410821412174591,
+          "unemployment_rate": 4.333333333333333
+        },
+        {
+          "quarter": "2017Q4",
+          "gdp_growth_yoy": 2.9941434967617697,
+          "unemployment_rate": 4.166666666666667
+        },
+        {
+          "quarter": "2018Q1",
+          "gdp_growth_yoy": 3.328810094759116,
+          "unemployment_rate": 4.033333333333333
+        },
+        {
+          "quarter": "2018Q2",
+          "gdp_growth_yoy": 3.2989628465220244,
+          "unemployment_rate": 3.9333333333333336
+        },
+        {
+          "quarter": "2018Q3",
+          "gdp_growth_yoy": 3.130030640718684,
+          "unemployment_rate": 3.766666666666667
+        },
+        {
+          "quarter": "2018Q4",
+          "gdp_growth_yoy": 2.125110751484538,
+          "unemployment_rate": 3.8333333333333335
+        },
+        {
+          "quarter": "2019Q1",
+          "gdp_growth_yoy": 1.9335587266003706,
+          "unemployment_rate": 3.8666666666666667
+        },
+        {
+          "quarter": "2019Q2",
+          "gdp_growth_yoy": 2.242125694698238,
+          "unemployment_rate": 3.6333333333333333
+        },
+        {
+          "quarter": "2019Q3",
+          "gdp_growth_yoy": 2.797216868642849,
+          "unemployment_rate": 3.6
+        },
+        {
+          "quarter": "2019Q4",
+          "gdp_growth_yoy": 3.3517765241980912,
+          "unemployment_rate": 3.6
+        },
+        {
+          "quarter": "2020Q1",
+          "gdp_growth_yoy": 1.3585350290757248,
+          "unemployment_rate": 3.8333333333333335
+        },
+        {
+          "quarter": "2020Q2",
+          "gdp_growth_yoy": -7.39861495878491,
+          "unemployment_rate": 13.0
+        },
+        {
+          "quarter": "2020Q3",
+          "gdp_growth_yoy": -1.3646720997737227,
+          "unemployment_rate": 8.799999999999999
+        },
+        {
+          "quarter": "2020Q4",
+          "gdp_growth_yoy": -0.9222152417236895,
+          "unemployment_rate": 6.766666666666667
+        },
+        {
+          "quarter": "2021Q1",
+          "gdp_growth_yoy": 1.8007541764505586,
+          "unemployment_rate": 6.233333333333333
+        },
+        {
+          "quarter": "2021Q2",
+          "gdp_growth_yoy": 12.385669309432568,
+          "unemployment_rate": 5.933333333333334
+        },
+        {
+          "quarter": "2021Q3",
+          "gdp_growth_yoy": 5.1508109950936465,
+          "unemployment_rate": 5.066666666666666
+        },
+        {
+          "quarter": "2021Q4",
+          "gdp_growth_yoy": 5.756179192135091,
+          "unemployment_rate": 4.166666666666667
+        },
+        {
+          "quarter": "2022Q1",
+          "gdp_growth_yoy": 4.034582077886428,
+          "unemployment_rate": 3.8666666666666667
+        },
+        {
+          "quarter": "2022Q2",
+          "gdp_growth_yoy": 2.4537929303342976,
+          "unemployment_rate": 3.6333333333333333
+        },
+        {
+          "quarter": "2022Q3",
+          "gdp_growth_yoy": 2.3489732641040373,
+          "unemployment_rate": 3.533333333333333
+        },
+        {
+          "quarter": "2022Q4",
+          "gdp_growth_yoy": 1.3170742821654535,
+          "unemployment_rate": 3.5666666666666664
+        },
+        {
+          "quarter": "2023Q1",
+          "gdp_growth_yoy": 2.3111462286238282,
+          "unemployment_rate": 3.533333333333333
+        },
+        {
+          "quarter": "2023Q2",
+          "gdp_growth_yoy": 2.792610476283919,
+          "unemployment_rate": 3.533333333333333
+        },
+        {
+          "quarter": "2023Q3",
+          "gdp_growth_yoy": 3.2331922827038895,
+          "unemployment_rate": 3.6333333333333333
+        },
+        {
+          "quarter": "2023Q4",
+          "gdp_growth_yoy": 3.390893713155063,
+          "unemployment_rate": 3.8000000000000003
+        },
+        {
+          "quarter": "2024Q1",
+          "gdp_growth_yoy": 2.8632943527041155,
+          "unemployment_rate": 3.8333333333333335
+        },
+        {
+          "quarter": "2024Q2",
+          "gdp_growth_yoy": 3.1266315239534936,
+          "unemployment_rate": 3.9666666666666663
+        },
+        {
+          "quarter": "2024Q3",
+          "gdp_growth_yoy": 2.7913896372876,
+          "unemployment_rate": 4.166666666666667
+        },
+        {
+          "quarter": "2024Q4",
+          "gdp_growth_yoy": 2.3997884845648576,
+          "unemployment_rate": 4.133333333333333
+        }
+      ]
+    },
+    "okuns_law_scatter": {
+      "id": "okuns_law_scatter",
+      "type": "scatter",
+      "title": "Okun's Law: GDP Growth vs Change in Unemployment",
+      "description": "Relationship between quarterly YoY real GDP growth and quarterly change in the unemployment rate.",
+      "xKey": "gdp_growth_yoy",
+      "yKey": "unemployment_change",
+      "xLabel": "Real GDP YoY Growth (%)",
+      "yLabel": "Quarterly Change in Unemployment Rate (p.p.)",
+      "color": "#10b981",
+      "data": [
+        {
+          "gdp_growth_yoy": 3.9088432572524257,
+          "unemployment_change": -0.13333333333333375
+        },
+        {
+          "gdp_growth_yoy": 3.6177355801611855,
+          "unemployment_change": -0.1999999999999993
+        },
+        {
+          "gdp_growth_yoy": 3.448598847170792,
+          "unemployment_change": -0.13333333333333375
+        },
+        {
+          "gdp_growth_yoy": 2.9727366937913002,
+          "unemployment_change": 0.0
+        },
+        {
+          "gdp_growth_yoy": 3.2131067957182013,
+          "unemployment_change": -0.2333333333333334
+        },
+        {
+          "gdp_growth_yoy": 2.9729038556202125,
+          "unemployment_change": -0.10000000000000053
+        },
+        {
+          "gdp_growth_yoy": 2.325277937424497,
+          "unemployment_change": 8.881784197001252e-16
+        },
+        {
+          "gdp_growth_yoy": 2.6345603763438197,
+          "unemployment_change": -0.20000000000000018
+        },
+        {
+          "gdp_growth_yoy": 1.5767249700146868,
+          "unemployment_change": 0.06666666666666643
+        },
+        {
+          "gdp_growth_yoy": 1.9343747200181172,
+          "unemployment_change": 0.0
+        },
+        {
+          "gdp_growth_yoy": 2.3680360773066234,
+          "unemployment_change": 0.16666666666666696
+        },
+        {
+          "gdp_growth_yoy": 2.133364682457861,
+          "unemployment_change": 0.13333333333333286
+        },
+        {
+          "gdp_growth_yoy": 1.3924712055185307,
+          "unemployment_change": 0.20000000000000018
+        },
+        {
+          "gdp_growth_yoy": 1.3760107660276244,
+          "unemployment_change": 0.33333333333333304
+        },
+        {
+          "gdp_growth_yoy": 0.26596727212868654,
+          "unemployment_change": 0.666666666666667
+        },
+        {
+          "gdp_growth_yoy": -2.5411536884212604,
+          "unemployment_change": 0.8666666666666671
+        },
+        {
+          "gdp_growth_yoy": -3.234227293078318,
+          "unemployment_change": 1.4000000000000004
+        },
+        {
+          "gdp_growth_yoy": -3.9788374053187248,
+          "unemployment_change": 1.0333333333333314
+        },
+        {
+          "gdp_growth_yoy": -3.1328157006863644,
+          "unemployment_change": 0.3333333333333339
+        },
+        {
+          "gdp_growth_yoy": 0.10557252348297741,
+          "unemployment_change": 0.3000000000000007
+        },
+        {
+          "gdp_growth_yoy": 1.7452658449103264,
+          "unemployment_change": -0.09999999999999964
+        },
+        {
+          "gdp_growth_yoy": 2.91359502911801,
+          "unemployment_change": -0.20000000000000107
+        },
+        {
+          "gdp_growth_yoy": 3.344209253779229,
+          "unemployment_change": -0.16666666666666607
+        },
+        {
+          "gdp_growth_yoy": 2.7759609093124693,
+          "unemployment_change": 0.033333333333333215
+        },
+        {
+          "gdp_growth_yoy": 2.037797199613345,
+          "unemployment_change": -0.4666666666666668
+        },
+        {
+          "gdp_growth_yoy": 1.7437088645501975,
+          "unemployment_change": 0.033333333333333215
+        },
+        {
+          "gdp_growth_yoy": 0.9426534645672335,
+          "unemployment_change": -0.06666666666666643
+        },
+        {
+          "gdp_growth_yoy": 1.543075871606514,
+          "unemployment_change": -0.36666666666666714
+        },
+        {
+          "gdp_growth_yoy": 2.6380693108862374,
+          "unemployment_change": -0.36666666666666536
+        },
+        {
+          "gdp_growth_yoy": 2.403335839137921,
+          "unemployment_change": -0.0666666666666682
+        },
+        {
+          "gdp_growth_yoy": 2.5737123144880414,
+          "unemployment_change": -0.16666666666666607
+        },
+        {
+          "gdp_growth_yoy": 1.551852007332477,
+          "unemployment_change": -0.2333333333333334
+        },
+        {
+          "gdp_growth_yoy": 1.700868485709428,
+          "unemployment_change": -0.06666666666666643
+        },
+        {
+          "gdp_growth_yoy": 1.5199382041070075,
+          "unemployment_change": -0.1999999999999993
+        },
+        {
+          "gdp_growth_yoy": 2.237022493295515,
+          "unemployment_change": -0.3000000000000007
+        },
+        {
+          "gdp_growth_yoy": 3.0091449601746367,
+          "unemployment_change": -0.2999999999999998
+        },
+        {
+          "gdp_growth_yoy": 1.6508175559380112,
+          "unemployment_change": -0.2666666666666666
+        },
+        {
+          "gdp_growth_yoy": 2.6891521587272926,
+          "unemployment_change": -0.4666666666666668
+        },
+        {
+          "gdp_growth_yoy": 3.059782928201682,
+          "unemployment_change": -0.13333333333333375
+        },
+        {
+          "gdp_growth_yoy": 2.6858351011456394,
+          "unemployment_change": -0.36666666666666625
+        },
+        {
+          "gdp_growth_yoy": 3.9692994988184793,
+          "unemployment_change": -0.16666666666666607
+        },
+        {
+          "gdp_growth_yoy": 3.2790878609270546,
+          "unemployment_change": -0.10000000000000053
+        },
+        {
+          "gdp_growth_yoy": 2.4473213664345517,
+          "unemployment_change": -0.33333333333333304
+        },
+        {
+          "gdp_growth_yoy": 2.119861312664817,
+          "unemployment_change": -0.06666666666666732
+        },
+        {
+          "gdp_growth_yoy": 1.7950168913805964,
+          "unemployment_change": -0.13333333333333375
+        },
+        {
+          "gdp_growth_yoy": 1.493250832714721,
+          "unemployment_change": 0.0333333333333341
+        },
+        {
+          "gdp_growth_yoy": 1.8057615310855146,
+          "unemployment_change": -0.0333333333333341
+        },
+        {
+          "gdp_growth_yoy": 2.1815663030564147,
+          "unemployment_change": -0.13333333333333286
+        },
+        {
+          "gdp_growth_yoy": 2.0874616941966906,
+          "unemployment_change": -0.20000000000000018
+        },
+        {
+          "gdp_growth_yoy": 2.3304137937582903,
+          "unemployment_change": -0.1999999999999993
+        },
+        {
+          "gdp_growth_yoy": 2.410821412174591,
+          "unemployment_change": -0.0333333333333341
+        },
+        {
+          "gdp_growth_yoy": 2.9941434967617697,
+          "unemployment_change": -0.16666666666666607
+        },
+        {
+          "gdp_growth_yoy": 3.328810094759116,
+          "unemployment_change": -0.13333333333333375
+        },
+        {
+          "gdp_growth_yoy": 3.2989628465220244,
+          "unemployment_change": -0.09999999999999964
+        },
+        {
+          "gdp_growth_yoy": 3.130030640718684,
+          "unemployment_change": -0.16666666666666652
+        },
+        {
+          "gdp_growth_yoy": 2.125110751484538,
+          "unemployment_change": 0.06666666666666643
+        },
+        {
+          "gdp_growth_yoy": 1.9335587266003706,
+          "unemployment_change": 0.033333333333333215
+        },
+        {
+          "gdp_growth_yoy": 2.242125694698238,
+          "unemployment_change": -0.2333333333333334
+        },
+        {
+          "gdp_growth_yoy": 2.797216868642849,
+          "unemployment_change": -0.033333333333333215
+        },
+        {
+          "gdp_growth_yoy": 3.3517765241980912,
+          "unemployment_change": 0.0
+        },
+        {
+          "gdp_growth_yoy": 1.3585350290757248,
+          "unemployment_change": 0.2333333333333334
+        },
+        {
+          "gdp_growth_yoy": -7.39861495878491,
+          "unemployment_change": 9.166666666666666
+        },
+        {
+          "gdp_growth_yoy": -1.3646720997737227,
+          "unemployment_change": -4.200000000000001
+        },
+        {
+          "gdp_growth_yoy": -0.9222152417236895,
+          "unemployment_change": -2.0333333333333323
+        },
+        {
+          "gdp_growth_yoy": 1.8007541764505586,
+          "unemployment_change": -0.5333333333333332
+        },
+        {
+          "gdp_growth_yoy": 12.385669309432568,
+          "unemployment_change": -0.2999999999999998
+        },
+        {
+          "gdp_growth_yoy": 5.1508109950936465,
+          "unemployment_change": -0.8666666666666671
+        },
+        {
+          "gdp_growth_yoy": 5.756179192135091,
+          "unemployment_change": -0.8999999999999995
+        },
+        {
+          "gdp_growth_yoy": 4.034582077886428,
+          "unemployment_change": -0.30000000000000027
+        },
+        {
+          "gdp_growth_yoy": 2.4537929303342976,
+          "unemployment_change": -0.2333333333333334
+        },
+        {
+          "gdp_growth_yoy": 2.3489732641040373,
+          "unemployment_change": -0.10000000000000009
+        },
+        {
+          "gdp_growth_yoy": 1.3170742821654535,
+          "unemployment_change": 0.033333333333333215
+        },
+        {
+          "gdp_growth_yoy": 2.3111462286238282,
+          "unemployment_change": -0.033333333333333215
+        },
+        {
+          "gdp_growth_yoy": 2.792610476283919,
+          "unemployment_change": 0.0
+        },
+        {
+          "gdp_growth_yoy": 3.2331922827038895,
+          "unemployment_change": 0.10000000000000009
+        },
+        {
+          "gdp_growth_yoy": 3.390893713155063,
+          "unemployment_change": 0.16666666666666696
+        },
+        {
+          "gdp_growth_yoy": 2.8632943527041155,
+          "unemployment_change": 0.033333333333333215
+        },
+        {
+          "gdp_growth_yoy": 3.1266315239534936,
+          "unemployment_change": 0.13333333333333286
+        },
+        {
+          "gdp_growth_yoy": 2.7913896372876,
+          "unemployment_change": 0.20000000000000062
+        },
+        {
+          "gdp_growth_yoy": 2.3997884845648576,
+          "unemployment_change": -0.0333333333333341
+        }
+      ]
+    }
+  },
+  "data_sources": [
+    {
+      "provider": "FRED MCP Server",
+      "description": "Historical US Real GDP (GDPC1) and Unemployment Rate (UNRATE)",
+      "tickers": [
+        "GDPC1",
+        "UNRATE"
+      ],
+      "series_ids": null,
+      "date_range": {
+        "start": "2004",
+        "end": "2024"
+      },
+      "row_count": 336
+    }
+  ],
+  "metadata": {
+    "analysis_type": "correlation_analysis",
+    "chart_count": 2,
+    "word_count": 777
+  }
+}
