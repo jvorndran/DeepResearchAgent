@@ -73,6 +73,28 @@ const RESEARCH_EVENTS = [
 
 const RESEARCH_STREAM_FULL_EVENTS = eventsToSseLines(researchStreamEvents);
 
+/** Home intake: real `start` from the recording + synthetic clarifying `finish` (no `agent_start` yet). */
+function researchStreamFullHomeLines(): string[] {
+  const full = researchStreamEvents as unknown[];
+  const head = full[0];
+  if (typeof head !== "object" || head === null || (head as { type?: string }).type !== "start") {
+    throw new Error("research-stream-full.json must begin with a start event");
+  }
+  const homeEvents: unknown[] = [
+    head,
+    {
+      type: "user_message",
+      markdown:
+        "### Clarifying questions\n\n- Confirm analysis of **US unemployment and labor force participation** (FRED: UNRATE, CIVPART).\n\nClick **Commence Deep Research** to begin.",
+    },
+    { type: "finish", report_ready: false },
+    "[DONE]",
+  ];
+  return eventsToSseLines(homeEvents);
+}
+
+const RESEARCH_STREAM_FULL_HOME_EVENTS = researchStreamFullHomeLines();
+
 const SCENARIOS: Record<string, { events: string[]; delay: number }> = {
   start:        { events: START_EVENTS,        delay: 0   },
   synthesizing: { events: SYNTHESIZING_EVENTS, delay: 400 },
@@ -80,6 +102,8 @@ const SCENARIOS: Record<string, { events: string[]; delay: number }> = {
   research:     { events: RESEARCH_EVENTS,     delay: 350 },
   /** Recorded backend transcript (`hooks/fixtures/research-stream-full.json`) for Cypress + unit tests */
   research_stream_full: { events: RESEARCH_STREAM_FULL_EVENTS, delay: 350 },
+  /** Same recording `job_id` as transcript + HITL-style finish for the home page */
+  research_stream_full_home: { events: RESEARCH_STREAM_FULL_HOME_EVENTS, delay: 0 },
 };
 
 export async function POST(req: NextRequest) {
