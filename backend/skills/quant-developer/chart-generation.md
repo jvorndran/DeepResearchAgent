@@ -20,9 +20,14 @@ triggers: [chart, Recharts, AxisChartDef, ScatterChartDef, PieChartDef, JSON]
   "description": "Revenue trend over time.",
   "xAxisKey": "date",
   "data": [{"date": "2024", "value": 100}],
-  "series": [{"dataKey": "value", "label": "Revenue", "color": "#3b82f6"}]
+  "series": [{"dataKey": "value", "label": "Revenue", "color": "#3b82f6"}],
+  "referenceLines": [
+    {"axis": "y", "value": 80, "label": "Baseline", "color": "#888", "dashed": true},
+    {"axis": "x", "value": "2023", "label": "Policy Change", "color": "#ef4444", "dashed": false}
+  ]
 }
 ```
+**`referenceLines` is optional** but should be included whenever it adds analytical value — e.g., historical averages, targets, crisis dates, rate decisions, or regime changes. Each entry: `axis` (`"x"` or `"y"`), `value` (the data-domain value), `label` (short string), `color` (hex), `dashed` (bool).
 
 ## ScatterChart
 ```json
@@ -50,4 +55,5 @@ triggers: [chart, Recharts, AxisChartDef, ScatterChartDef, PieChartDef, JSON]
   "data": [{"name": "A", "value": 40, "color": "#3b82f6"}]
 }
 ```
+
 **Rule:** Use the canonical report schema only. Do not emit legacy `config`, `xAxis`, `yAxis`, `key`, or `name` fields.

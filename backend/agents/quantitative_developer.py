@@ -62,6 +62,8 @@ Do not paste raw Python into the chat response. Always send the script via a nam
 - Create output dir: `Path(r"{OUTPUT_BASE_DIR}\\{{job_id}}").mkdir(parents=True, exist_ok=True)`
 - Save `charts.json` (dict keyed by snake_case ID) to `{OUTPUT_BASE_DIR}/{{job_id}}/charts.json`.
 - Every axis chart MUST include: `id`, `type`, `title`, `description`, `xAxisKey`, `series`, `data`.
+- Axis charts MAY include `referenceLines`: an array of `{{"axis": "x"|"y", "value": <str|number>, "label": <str>, "color": <hex>, "dashed": <bool>}}`. Use these to mark meaningful thresholds, averages, targets, or events whenever they add analytical value (e.g., pre-/post-crisis baseline, Federal Reserve rate decision date, average line).
+
 - Every scatter chart MUST include: `id`, `type`, `title`, `description`, `xKey`, `yKey`, `xLabel`, `yLabel`, `color`, `data`.
 - For axis chart `series`, each entry MUST be `{{"dataKey": "...", "label": "...", "color": "..."}}`. Do not use legacy `config`, `xAxis`, `yAxis`, `key`, or `name` fields.
 - **Pandas Resampling:** Use `'QE'` for quarterly and `'ME'` for monthly. NEVER use `'Q'` or `'M'`.

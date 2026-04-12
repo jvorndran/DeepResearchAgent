@@ -27,7 +27,12 @@ export default function ChatPage({ params }: { params: Promise<{ job_id: string 
     <div className="flex flex-col min-h-screen bg-background">
       <AppHeader showNewResearch />
       <main className="flex-1 flex flex-col relative">
-        {(status === "idle" || status === "streaming") && (
+        {(status === "idle" || status === "loading") && (
+          <div className="flex flex-1 items-center justify-center text-muted-foreground text-sm font-mono animate-pulse">
+            Loading report…
+          </div>
+        )}
+        {status === "streaming" && (
           <StreamingView orchestratorText={orchestratorText} pipelineSteps={pipelineSteps} />
         )}
         {status === "report_ready" && report && (

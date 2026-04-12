@@ -77,7 +77,7 @@ export function useResearchStream({
           }
         }
       };
-      setStatus("idle");
+      setStatus("loading");
       poll();
       return () => { cancelled = true; };
     }
@@ -188,30 +188,50 @@ export function useResearchStream({
                       setStatus("streaming");
                       setIsStreamingChat(false);
                     }
-                    setPipelineSteps((prev) => [
-                      ...prev,
-                      { agent: event.agent, status: "running", tools: [] },
-                    ]);
+                    setPipelineSteps((prev) => {
+                      const steps = [...prev];
+                      const existing = steps.find((s) => s.agent === event.agent);
+                      if (existing) {
+                        existing.status = "running";
+                      } else {
+                        steps.push({ agent: event.agent, status: "running", tools: [] });
+                      }
+                      return steps;
+                    });
                     break;
                   case "tool_call":
                     setPipelineSteps((prev) => {
                       const steps = [...prev];
-                      const step = steps.findLast((s) => s.agent === event.agent);
+                      let step = steps.find((s) => s.agent === event.agent);
+                      if (!step && event.agent === null) {
+                        step = { agent: null, status: "running", tools: [] };
+                        steps.push(step);
+                      }
                       if (step) {
-                        step.tools.push({ tool: event.tool, args: event.args, status: "running" });
+                        if (event.tool === "write_todos") {
+                          const existingTool = step.tools.find((t) => t.tool === "write_todos");
+                          if (existingTool) {
+                            existingTool.args = event.args;
+                            existingTool.status = "running";
+                          } else {
+                            step.tools.push({ tool: event.tool, args: event.args, status: "running" });
+                          }
+                        } else {
+                          step.tools.push({ tool: event.tool, args: event.args, status: "running" });
+                        }
                       }
                       return steps;
                     });
                     // Route tool calls to orchestrator log so it shows real-time activity
                     if (event.agent && event.tool !== "emit_chat_message") {
-                      currentOrchestratorText += `\n\n**→ ${event.tool}**`;
+                      currentOrchestratorText += `\\n\\n**→ ${event.tool}**`;
                       setOrchestratorText(currentOrchestratorText);
                     }
                     break;
                   case "tool_result":
                     setPipelineSteps((prev) => {
                       const steps = [...prev];
-                      const step = steps.findLast((s) => s.agent === event.agent);
+                      const step = steps.find((s) => s.agent === event.agent);
                       if (step) {
                         const tool = step.tools.findLast((t) => t.tool === event.tool);
                         if (tool) { tool.status = "done"; tool.summary = event.summary; }
@@ -219,20 +239,17 @@ export function useResearchStream({
                       return steps;
                     });
                     // Route tool results to orchestrator log
-                    if (event.agent && event.summary && event.tool !== "emit_chat_message") {
-                      if (event.tool === "write_todos") {
-                        // write_todos has special rendering via the processedText regex
-                        currentOrchestratorText += `\n${event.summary}`;
-                      } else {
-                        currentOrchestratorText += `\n> ${event.summary.slice(0, 200)}`;
-                      }
+                    if (event.tool === "write_todos") {
+                      // write_todos is now natively rendered in PipelineActivity
+                    } else if (event.agent && event.summary && event.tool !== "emit_chat_message") {
+                      currentOrchestratorText += `\\n> ${event.summary.slice(0, 200)}`;
                       setOrchestratorText(currentOrchestratorText);
                     }
                     break;
                   case "agent_end":
                     setPipelineSteps((prev) => {
                       const steps = [...prev];
-                      const step = steps.findLast((s) => s.agent === event.agent);
+                      const step = steps.find((s) => s.agent === event.agent);
                       if (step) step.status = "done";
                       return steps;
                     });

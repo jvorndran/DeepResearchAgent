@@ -30,6 +30,8 @@ This document defines the end-to-end execution flow of the Deep Research Agent.
   - Executes code in sandbox using the venv Python interpreter.
   - Iterates on errors (max 3 retries).
 - **Output:** `backend/outputs/{job_id}/charts.json` (Recharts-compatible format).
+- **Chart Features:** All axis charts (line, bar, area) automatically render a `Brush` scrubber — no flag needed. Charts MAY include `referenceLines` (array of `{axis, value, label, color, dashed}`) to mark thresholds, averages, regime changes, or key dates.
+- **Dual Y-Axis:** Handled automatically by the frontend. If the largest series value range exceeds the smallest by 10x or more, the component splits axes — highest-range series on the left, the rest on the right. The backend does not need to specify this.
 
 ## 4. Phase 4: Report Synthesis
 - **Goal:** Assemble the final research report with narrative and chart markers.
