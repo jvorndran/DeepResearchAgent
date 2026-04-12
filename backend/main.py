@@ -30,8 +30,14 @@ from pydantic import BaseModel, Field
 from agents.orchestrator import create_orchestrator, stream_research
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+# Set STREAM_DEBUG=1 in your environment to enable verbose chunk-level debug logs.
+_stream_debug = os.environ.get("STREAM_DEBUG", "0") == "1"
+logging.basicConfig(level=logging.DEBUG if _stream_debug else logging.INFO)
 logger = logging.getLogger(__name__)
+if not _stream_debug:
+    # Keep chatty libraries quiet unless debug mode is on
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 # Resolve the absolute path to the backend directory
 BACKEND_DIR = Path(__file__).resolve().parent
@@ -61,44 +67,6 @@ def _serialize(data: Any) -> Any:
     return data
 
 
-def _interrupt_payload_value(entry: Any) -> Any:
-    """LangGraph v2 uses `Interrupt` dataclass instances; older paths used dicts."""
-    if isinstance(entry, dict):
-        return entry.get("value")
-    return getattr(entry, "value", None)
-
-
-def _hitl_from_updates_dict(raw_data: dict[str, Any]) -> tuple[list[Any], list[Any]] | None:
-    """Parse HITL action_requests / review_configs from one updates dict (if interrupted)."""
-    interrupts = raw_data.get("__interrupt__")
-    if not interrupts:
-        return None
-    if not isinstance(interrupts, (list, tuple)):
-        return None
-    first = interrupts[0]
-    iv = _interrupt_payload_value(first)
-    if not isinstance(iv, dict):
-        return None
-    ar = iv.get("action_requests", [])
-    rc = iv.get("review_configs", [])
-    if not isinstance(ar, list) or not isinstance(rc, list):
-        return None
-    return (ar, rc)
-
-
-def _hitl_from_updates_payload(raw: Any) -> tuple[list[Any], list[Any]] | None:
-    """LangGraph emits interrupts as either a dict or a one-element list of dicts — see pregel/_loop.py."""
-    if isinstance(raw, dict):
-        return _hitl_from_updates_dict(raw)
-    if isinstance(raw, list):
-        for el in raw:
-            if isinstance(el, dict):
-                hitl = _hitl_from_updates_dict(el)
-                if hitl is not None:
-                    return hitl
-    return None
-
-
 def _agent_from_ns(ns: list) -> str | None:
     """Extract the innermost agent name from a LangGraph namespace list."""
     if not ns:
@@ -111,6 +79,10 @@ def _parse_update(ns: list, data: Any, prev_agent: str | None) -> tuple[list[dic
     """
     Convert a raw LangGraph 'updates' payload into clean semantic events.
     Returns (events, current_agent_name).
+
+    v2 streaming format: data is {node_name: state_delta}, e.g.
+      {"model_request": {"messages": [...]}, "tools": {"messages": [...]}}
+    We collect messages from all node state deltas.
     """
     events: list[dict] = []
     agent = _agent_from_ns(ns)
@@ -125,8 +97,23 @@ def _parse_update(ns: list, data: Any, prev_agent: str | None) -> tuple[list[dic
     if not isinstance(data, dict):
         return events, agent
 
-    messages = data.get("messages", [])
-    if not isinstance(messages, list):
+    # v2 updates: data is {node_name: state_delta} — gather messages from all nodes.
+    messages: list = []
+    for key, val in data.items():
+        if key.startswith("__"):
+            continue  # skip __interrupt__, __pregel_tasks__, etc.
+        if isinstance(val, dict):
+            node_msgs = val.get("messages", [])
+            if isinstance(node_msgs, list):
+                messages.extend(node_msgs)
+
+    # Fallback: flat messages key (custom events or non-node data)
+    if not messages:
+        direct = data.get("messages", [])
+        if isinstance(direct, list):
+            messages = direct
+
+    if not messages:
         return events, agent
 
     for msg in messages:
@@ -211,7 +198,6 @@ class Message(BaseModel):
 class ChatRequest(BaseModel):
     messages: List[Message]
     job_id: Optional[str] = None
-    resume: Optional[Dict[str, Any]] = None
     stream_telemetry: Optional[bool] = Field(
         default=None,
         description="False = omit raw model tokens; client uses user_message SSE from emit_chat_message.",
@@ -222,16 +208,39 @@ async def health_check():
     return {"status": "ok"}
 
 def _is_orchestrator_home_ai(meta: Any, token: Any) -> bool:
-    """True for main orchestrator model tokens (not subagent streams)."""
+    """True for main orchestrator model tokens (not subagent streams).
+
+    deepagents wraps the whole graph so even the orchestrator's tokens arrive
+    with a non-empty namespace — we cannot filter by ns depth. Instead we rely
+    on metadata fields set by LangGraph / deepagents:
+
+      lc_agent_name  — explicitly "orchestrator" when set by the framework
+      langgraph_node — "model" or "model_request" for the orchestrator's LLM node;
+                       subagents also use these names, but their lc_agent_name
+                       will differ (e.g. "data-engineer", "quant-developer").
+
+    When lc_agent_name is absent we fall back to accepting any AI chunk from a
+    model node — this is permissive but avoids dropping orchestrator tokens when
+    the framework doesn't populate the field.
+    """
     if not token or str(getattr(token, "type", "")).lower() not in ("ai", "aimessagechunk"):
         return False
     if not isinstance(meta, dict):
         return True
-    if meta.get("lc_agent_name") == "orchestrator":
+
+    lc = meta.get("lc_agent_name") or ""
+    node = meta.get("langgraph_node") or ""
+
+    # Explicit orchestrator label — highest confidence
+    if lc == "orchestrator":
         return True
-    node = meta.get("langgraph_node")
-    lc = meta.get("lc_agent_name")
-    return node == "model" and lc in (None, "", "orchestrator")
+
+    # Explicit subagent label — reject
+    if lc and lc not in ("", "orchestrator"):
+        return False
+
+    # lc_agent_name absent: accept if it's a model node
+    return node in ("model", "model_request")
 
 
 def _markdown_from_tool_args(args: Any) -> Optional[str]:
@@ -302,37 +311,41 @@ async def chat_stream(request: ChatRequest, req: Request):
     async def event_generator():
         current_agent: str | None = None
         current_task_agent: str | None = None  # tracks subagent running inside task()
-        emitted_execution_started = False
         stream_telemetry = True if request.stream_telemetry is None else request.stream_telemetry
         home_chat_fallback_text = ""
         user_message_emitted = False
         try:
-            if request.resume is None:
-                yield _sse({"type": "start", "job_id": job_id})
-            else:
-                # Resume: research execution is beginning immediately.
-                emitted_execution_started = True
-                yield _sse({"type": "execution_started", "job_id": job_id})
+            yield _sse({"type": "start", "job_id": job_id})
 
             async for chunk in stream_research(
                 query=query,
                 job_id=job_id,
                 messages=messages_dict,
-                resume=request.resume,
                 agent=req.app.state.agent,
             ):
                 chunk_type = chunk.get("type")
+                logger.debug("[STREAM] chunk type=%s ns=%s", chunk_type, chunk.get("ns", []))
 
                 # ── Streaming text tokens from the orchestrator ──────────────
                 if chunk_type == "messages":
+                    ns = chunk.get("ns", [])
                     token, meta = chunk.get("data", (None, None))
                     agent_name = meta.get("langgraph_node") if isinstance(meta, dict) else None
+                    lc_agent = meta.get("lc_agent_name") if isinstance(meta, dict) else None
                     token_type = getattr(token, "type", "")
-                    legacy_orch = (
-                        agent_name == "model"
-                        and str(token_type).lower() in ("ai", "aimessagechunk")
+                    # deepagents wraps everything inside an outer graph so even the main
+                    # orchestrator arrives with a non-empty ns (e.g. ('tools:uuid',)).
+                    # We cannot use namespace depth to distinguish orchestrator from subagent.
+                    # Instead, rely on lc_agent_name / langgraph_node from the metadata.
+                    is_home_ai = _is_orchestrator_home_ai(meta, token)
+                    logger.debug(
+                        "[STREAM/messages] ns=%s token_type=%s agent_name=%s lc_agent=%s "
+                        "is_home_ai=%s has_content=%s full_meta=%s",
+                        ns, token_type, agent_name, lc_agent,
+                        is_home_ai,
+                        bool(token and hasattr(token, "content") and token.content),
+                        meta,
                     )
-                    is_home_ai = legacy_orch or _is_orchestrator_home_ai(meta, token)
                     if is_home_ai and token and hasattr(token, "content") and token.content:
                         content = token.content
                         if isinstance(content, list):
@@ -343,6 +356,7 @@ async def chat_stream(request: ChatRequest, req: Request):
                         else:
                             text = str(content) if not isinstance(content, str) else content
                         if text:
+                            logger.debug("[STREAM/messages] emitting text delta len=%d stream_telemetry=%s", len(text), stream_telemetry)
                             if stream_telemetry:
                                 yield _sse({"type": "text", "delta": text})
                             else:
@@ -356,54 +370,43 @@ async def chat_stream(request: ChatRequest, req: Request):
                             md = _markdown_from_tool_args(args)
                             if md and not user_message_emitted:
                                 user_message_emitted = True
+                                logger.debug("[STREAM/messages] emitting user_message from emit_chat_message tool call")
                                 yield _sse({"type": "user_message", "markdown": md})
 
                 # ── LangGraph state updates → semantic pipeline events ────────
                 elif chunk_type in ("updates", "custom"):
                     ns = chunk.get("ns", [])
                     raw_data = _serialize(chunk.get("data", {}))
-                    # HumanInTheLoopMiddleware: interrupt-only updates are often `[{__interrupt__: (...)}]`, not a flat dict.
-                    hitl = _hitl_from_updates_payload(raw_data)
-                    if hitl is not None:
-                        action_requests, review_configs = hitl
-                        yield _sse({
-                            "type": "approval_required",
-                            "job_id": job_id,
-                            "action_requests": action_requests,
-                            "review_configs": review_configs,
-                        })
-                        continue
+                    logger.debug("[STREAM/%s] ns=%s data_keys=%s", chunk_type, ns, list(raw_data.keys()) if isinstance(raw_data, dict) else type(raw_data).__name__)
                     events, current_agent = _parse_update(ns, raw_data, current_agent)
+                    logger.debug("[STREAM/%s] parsed %d events current_agent=%s", chunk_type, len(events), current_agent)
                     for event in events:
-                        # Deepagents runs subagents via ainvoke — they never appear as
-                        # LangGraph subgraph nodes. Instead, translate the orchestrator's
-                        # own task() tool calls / results into agent lifecycle events so
-                        # the pipeline view in the frontend has something to display.
+                        # Translate the orchestrator's task() tool calls / results into
+                        # agent lifecycle events so the pipeline view has something to display.
                         if event.get("type") == "tool_call" and event.get("tool") == "task":
                             args = event.get("args") or {}
                             subagent = args.get("subagent_type") or args.get("name")
+                            logger.debug("[STREAM/updates] task() tool_call subagent=%s", subagent)
                             if subagent:
-                                if not emitted_execution_started:
-                                    emitted_execution_started = True
-                                    yield _sse({"type": "execution_started", "job_id": job_id})
                                 if current_task_agent:
                                     yield _sse({"type": "agent_end", "agent": current_task_agent})
                                 current_task_agent = subagent
+                                logger.info("[STREAM/updates] agent_start %s", subagent)
                                 yield _sse({"type": "agent_start", "agent": subagent})
                             continue
                         if event.get("type") == "tool_result" and event.get("tool") == "task":
+                            logger.debug("[STREAM/updates] task() tool_result → agent_end for %s", current_task_agent)
                             if current_task_agent:
                                 yield _sse({"type": "agent_end", "agent": current_task_agent})
                                 current_task_agent = None
                             continue
                         # Regular events
+                        logger.debug("[STREAM/updates] event type=%s tool=%s agent=%s", event.get("type"), event.get("tool"), event.get("agent"))
                         md = _markdown_from_emit_chat_tool_event(event)
                         if md is not None and not user_message_emitted:
                             user_message_emitted = True
+                            logger.info("[STREAM/updates] emitting user_message from emit_chat_message")
                             yield _sse({"type": "user_message", "markdown": md})
-                        if event.get("type") == "agent_start" and not emitted_execution_started:
-                            emitted_execution_started = True
-                            yield _sse({"type": "execution_started", "job_id": job_id})
                         yield _sse(event)
 
             # Close out any still-active agents

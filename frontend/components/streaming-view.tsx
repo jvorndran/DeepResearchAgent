@@ -107,9 +107,9 @@ function OrchestratorTelemetry({ orchestratorText }: { orchestratorText: string 
             </div>
             <span className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground font-mono">System.Log</span>
           </div>
-          <ScrollArea className="h-[500px] w-full p-6">
+          <ScrollArea data-testid="orchestrator-log" className="h-[500px] w-full p-6">
             {processedText ? (
-              <div className="prose prose-sm max-w-none dark:prose-invert prose-p:font-sans prose-p:text-foreground/80 prose-p:leading-relaxed">
+              <div data-testid="orchestrator-log-content" className="prose prose-sm max-w-none dark:prose-invert prose-p:font-sans prose-p:text-foreground/80 prose-p:leading-relaxed">
                 <ReactMarkdown
                   components={{
                     h3({ children, ...props }) {
@@ -127,7 +127,7 @@ function OrchestratorTelemetry({ orchestratorText }: { orchestratorText: string 
                       let status = "";
                       
                       if (typeof firstChild === 'string' && firstChild.startsWith('STATUS:')) {
-                        const match = firstChild.match(/^STATUS:(done|in_progress|pending)\|(.*)/);
+                        const match = firstChild.match(/^STATUS:(done|completed|in_progress|pending)\|(.*)/);
                         if (match) {
                           status = match[1];
                           childArray[0] = match[2];
@@ -135,7 +135,7 @@ function OrchestratorTelemetry({ orchestratorText }: { orchestratorText: string 
                       }
 
                       if (status) {
-                        const isDone = status === 'done';
+                        const isDone = status === 'done' || status === 'completed';
                         const isProgress = status === 'in_progress';
                         
                         return (

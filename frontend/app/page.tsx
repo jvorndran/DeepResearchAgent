@@ -13,7 +13,7 @@ export default function Home() {
   const [submittedMessages, setSubmittedMessages] = useState<Message[]>([]);
   const [pendingApprovalJobId, setPendingApprovalJobId] = useState<string | null>(null);
   const [inputValue, setInputValue] = useState("");
-  /** Same id as backend LangGraph thread — set from first SSE `start` so resume/Commence hits the same checkpoint. */
+  /** Same id as backend LangGraph thread — set from first SSE `start` so Commence navigates to the same checkpoint. */
   const [sessionJobId, setSessionJobId] = useState("");
 
   const { isStreamingChat, orchestratorText } = useResearchStream({
@@ -24,9 +24,6 @@ export default function Home() {
     onApprovalRequired: (id) => {
       setPendingApprovalJobId(id);
     },
-    onResearchExecutionStarted: () => {
-      setPendingApprovalJobId(null);
-    },
     onConversationalFinish: (text) => {
       setMessages((prev) => [...prev, { role: "assistant", content: text }]);
     },
@@ -35,10 +32,13 @@ export default function Home() {
   const handleSend = (forceResearch = false) => {
     if (!forceResearch && !inputValue.trim()) return;
     if (forceResearch && pendingApprovalJobId) {
-      // Save resume payload for the chat page, then navigate immediately.
-      // The chat page opens the SSE connection so research streams there.
-      const resume = { decisions: [{ type: "approve" as const }] };
-      sessionStorage.setItem("pending_resume", JSON.stringify(resume));
+      // Store a single "begin" message and navigate to the chat page.
+      // The chat page sends this message to the same LangGraph thread,
+      // and the orchestrator (seeing it) calls task() to start the pipeline.
+      sessionStorage.setItem(
+        "pending_messages",
+        JSON.stringify([{ role: "user", content: "Please begin the research now with the parameters discussed." }])
+      );
       router.push(`/chat/${sessionJobId}`);
       return;
     }

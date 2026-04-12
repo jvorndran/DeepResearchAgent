@@ -54,7 +54,7 @@ Common toolset → tool mappings:
 ## Error: NaN / Infinity in Response
 
 **Cause**: FMP returns NaN for missing data points.
-**Behavior**: The `save_fmp_data` tool auto-sanitizes NaN before saving to CSV. If NaN appears in a raw tool result before saving, just call `save_fmp_data` — it will be cleaned.
+**Behavior**: The `save_data` tool auto-sanitizes NaN before saving to CSV. If NaN appears in a raw tool result before saving, just call `save_data` — it will be cleaned.
 
 ## Error: MCP Timeout
 

@@ -34,6 +34,7 @@ from pathlib import Path
 from mcp_clients.fmp_mcp_client import create_fmp_mcp_client, get_fmp_mcp_config, list_fmp_tools as list_fmp_tools_async
 from mcp_clients.fred_mcp_client import create_fred_mcp_client
 from core.context import ResearchContext
+from .subagent_tool_guard import FILESYSTEM_AND_SHELL_TOOLS, ToolBlocklistMiddleware
 
 
 # =============================================================================
@@ -88,12 +89,7 @@ def _sanitize_nan(result: str) -> str:
 
 async def _auto_save_result(result: str, tool_name: str) -> str:
     """
-    If the tool result is a raw data array or FRED-style {data: [...]} dict,
-    auto-save it to CSV and return only a compact summary.
-
-    This prevents tens-of-thousands of token data dumps from entering the LLM
-    context window when the data-engineer forgets (or hasn't yet called)
-    save_fmp_data().
+    If the tool result is a raw data array, auto-save it to CSV and return a pointer.
     """
     if not isinstance(result, str):
         return result
@@ -101,7 +97,7 @@ async def _auto_save_result(result: str, tool_name: str) -> str:
     try:
         data = json.loads(result)
     except Exception:
-        return result  # not valid JSON — leave as-is
+        return result
 
     is_data_array = isinstance(data, list) and len(data) > 0
     is_data_dict = (
@@ -112,31 +108,27 @@ async def _auto_save_result(result: str, tool_name: str) -> str:
     )
 
     if not (is_data_array or is_data_dict):
-        return result  # compact response — no action needed
+        return result
 
     try:
         timestamp = int(_time.time())
         file_path = DATA_STORAGE_DIR / "_auto" / f"{tool_name}_{timestamp}.csv"
-        meta = await _save_data_to_storage(data, file_path)
+        # We'll use the pointer format that _save_data_to_storage already knows
+        meta = _run_async(_save_data_to_storage(data, file_path))
         saved_path = meta["storage_path"].replace("\\", "/")
-        summary = {
+        
+        # Return a pointer JSON that save_data will resolve
+        pointer = {
             "status": "auto_saved",
-            "saved_path": saved_path,
+            "file_path": saved_path,
             "row_count": meta["row_count"],
             "columns": meta["columns"],
-            "note": (
-                "Raw data auto-saved to CSV to avoid context bloat. "
-                "Pass saved_path to extract_schema or save_fmp_data."
-            ),
+            "note": "Raw data auto-saved. Pass this entire JSON to save_data."
         }
-        _de_logger.info(
-            "Auto-saved %s result (%d rows) → %s",
-            tool_name, meta["row_count"], saved_path,
-        )
-        return json.dumps(summary)
+        return json.dumps(pointer)
     except Exception as e:
         _de_logger.warning("Auto-save failed for tool '%s': %s", tool_name, e)
-        return result  # fallback: return sanitized original
+        return result
 
 
 def _with_timeout(mcp_tool, timeout_secs: float):
@@ -234,17 +226,25 @@ def _run_async(coro):
 
 async def _save_data_to_storage(data: Any, file_path: Path) -> dict:
     """
-    Save data to storage and return metadata.
-
-    Args:
-        data: Data to save (DataFrame, dict, or list)
-        file_path: Path where data should be saved
-
-    Returns:
-        Dictionary with storage path and metadata
+    Save data to storage and return metadata. Handles both raw data and pointers.
     """
     # Ensure parent directory exists
     file_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Handle large tool result pointers
+    if isinstance(data, str) and '"file_path": "/large_tool_results/' in data:
+        try:
+            pointer = json.loads(data)
+            pointer_path = pointer.get("file_path")
+            if pointer_path:
+                # Resolve physical path to the large result
+                temp_dir = Path(os.getenv("TEMP_DIR", "C:/Users/jvorn/.gemini/tmp/deepresearchagent"))
+                filename = Path(pointer_path).name
+                physical_path = temp_dir / "large_tool_results" / filename
+                if physical_path.exists():
+                    data = physical_path.read_text(encoding="utf-8")
+        except Exception as e:
+            _de_logger.warning("Failed to resolve large tool result pointer: %s", e)
 
     # Parse JSON string if needed (LLM may pass MCP tool output as a string)
     if isinstance(data, str):
@@ -292,26 +292,27 @@ async def _save_data_to_storage(data: Any, file_path: Path) -> dict:
 
 
 @tool
-def save_fmp_data(
+def save_data(
     data: str,
     ticker: str,
     data_type: str,
     runtime: ToolRuntime[ResearchContext],
-    metadata: Optional[Dict[str, Any]] = None
+    metadata: Optional[Dict[str, str | int | float | bool | None]] = None
 ) -> str:
     """
-    Save data fetched from FMP or FRED MCP tools to storage.
+    Save data fetched from any MCP tool (FMP, FRED, or other sources) to storage.
 
-    After using FMP or FRED MCP tools to fetch financial data, use this tool to
-    save the data to local storage and get back only the storage path.
+    Use this after fetching any financial or macroeconomic data to persist it to
+    local storage and get back a storage path. Never return raw data — always save
+    it first and return the path.
 
     The job_id is automatically read from runtime context — do NOT pass it as an argument.
 
     Args:
-        data: The data fetched from FMP or FRED (dict, list, or JSON string)
-        ticker: Stock ticker or FRED series ID (e.g., "AAPL", "GDPC1")
-        data_type: Type of data (e.g., "income_statement", "real_gdp_quarterly")
-        metadata: Optional metadata to include (date ranges, etc.)
+        data: JSON string returned by any MCP tool, or a pointer JSON string
+        ticker: Stock ticker, FRED series ID, or other identifier (e.g., "AAPL", "UNRATE", "SP500")
+        data_type: Descriptive type of data (e.g., "income_statement", "unemployment_rate", "cpi_monthly")
+        metadata: Optional metadata to include (date ranges, source, units, etc.)
 
     Returns:
         JSON string with storage path and metadata (NOT the raw data)
@@ -353,7 +354,7 @@ def save_fmp_data(
 
 
 @tool
-def extract_schema(file_paths: List[str]) -> str:
+def extract_schema(file_paths: str | list[str]) -> str:
     """
     Extract exact schemas from saved data files.
 
@@ -374,6 +375,17 @@ def extract_schema(file_paths: List[str]) -> str:
         - sample_rows: First 2 rows as list of dictionaries
         - shape: Tuple of (num_rows, num_columns)
     """
+    if isinstance(file_paths, str):
+        try:
+            import json as _json
+            file_paths = _json.loads(file_paths)
+            if not isinstance(file_paths, list):
+                file_paths = [str(file_paths)]
+        except Exception:
+            file_paths = [file_paths]
+    if not isinstance(file_paths, list):
+        file_paths = [str(file_paths)]
+
     schemas = {}
 
     for file_path in file_paths:
@@ -406,125 +418,43 @@ def extract_schema(file_paths: List[str]) -> str:
 # SUBAGENT CONFIGURATION
 # =============================================================================
 
-def _build_system_prompt(fred_available: bool) -> str:
-    """Build the data engineer system prompt, optionally including FRED tools."""
-    fred_section = ""
-    if fred_available:
-        fred_section = """
-## FRED MCP Integration
+def _build_system_prompt() -> str:
+    """Build the data engineer system prompt."""
+    return f"""# ROLE
+You are the Data Engineer. You fetch financial data and extract deterministic schemas while preventing context bloat.
 
-You have access to the **FRED MCP Server** for macroeconomic series (GDP, CPI, FEDFUNDS, UNRATE, etc.).
-Use FRED for macro indicators; use FMP for company/equity data. Save FRED data with `save_fmp_data` using the series ID as `ticker`.
+# DATA SOURCE RULES — STRICT
+| Data type | Source | Tools |
+|-----------|--------|-------|
+| Stock quotes, financial statements, market data, SEC filings | **FMP** | `getIncomeStatement`, `getQuote`, etc. |
+| Macroeconomic series (GDP, CPI, unemployment, rates, payrolls…) | **FRED** | `fred_search`, `fred_get_series` |
 
-See the **`fred-macro-fetch`** skill for common series IDs, the full workflow, and CSV column schema.
-"""
-    else:
-        fred_section = """
-## FRED MCP Server
+# CORE RULES
+1. **NO RAW DATA:** NEVER return raw data arrays. ALWAYS call `save_data` and return only the storage path + metadata.
+2. **TOOL BOUNDARY:** Filesystem and shell tools are blocked. Use only MCP tools plus `save_data` and `extract_schema`.
+3. **FMP TOOLS:** Call FMP tools directly as functions.
+   - `limit ≤ 5` for statement tools.
+   - `period` must be: "FY", "Q1", "Q2", "Q3", "Q4". NEVER "annual" or "quarterly".
+4. **POINTERS:** If a tool returns `"file_path": "/large_tool_results/..."`, pass that JSON string as-is to `save_data`.
+5. **MACRO DATA → PREFER FRED:** For macroeconomic series (GDP, CPI, unemployment,
+   interest rates, payrolls, wages, participation rate, etc.) prefer FRED tools
+   (`fred_search`, `fred_get_series`) over FMP economics tools. FMP economics tools
+   exist but FRED provides richer historical macro data.
+6. **CONCISENESS:** Final response must be under 150 words. Return ONLY the JSON result (data_files, row_counts, metadata).
 
-The FRED MCP server is currently **offline**. FRED macroeconomic tools are not available.
-To enable FRED data: start the server with `node build/index.js --http` in the fred-mcp-server directory.
-"""
+# INTEGRATION
+- **FMP:** `statements` toolset is pre-enabled. Call `enable_toolset(name=...)` for other FMP toolsets.
+- **FRED:** Use `fred_search(query=...)` to find a series ID, then `fred_get_series(series_id=...)`. Pass series ID as `ticker` in `save_data`.
+- **Workflow:** Fetch → `save_data` → `extract_schema` (if requested) → Return JSON summary.
 
-    return f"""You are the Data Engineer for a financial research platform.
-
-Your role is to handle all data operations while preventing context window bloat.
-
-## ⚠️ CRITICAL: HOW TO CALL FMP TOOLS
-
-FMP tools (like `getIncomeStatement`, `getHistoricalPrice`, etc.) are **direct tool function
-calls** — NOT shell commands. Call them exactly like any other tool by their function name.
-
-✅ CORRECT — call the tool directly as a function:
-  getIncomeStatement(symbol="AAPL", period="FY", limit=5)
-
-  Valid period values: "FY" (full fiscal year), "Q1", "Q2", "Q3", "Q4" (quarterly).
-  NEVER use "annual", "quarter", "yearly", or any other value — the API will reject them.
-
-❌ WRONG — never use shell/execute for FMP data:
-  execute("fmp getIncomeStatement --symbol AAPL")   ← fmp is NOT a CLI program
-  execute("python -c '...'")                         ← wrong
-
-The `execute`, `write_file`, and `read_file` shell tools belong to the quant developer.
-**Do NOT use shell tools for any data fetching.** Your tools are: FMP tools, FRED tools,
-`save_fmp_data`, and `extract_schema` — nothing else.
-
-## FMP MCP Integration
-
-You have access to the **Financial Modeling Prep (FMP) MCP Server** (250+ tools). The `statements` toolset is **pre-enabled** — call `getIncomeStatement`, `getBalanceSheetStatement`, `getCashFlowStatement`, `getKeyMetrics`, `getRatios` immediately. For other data types, call `enable_toolset(name=...)` first.
-
-**Key constraints:**
-- `limit ≤ 5` for all statement tools (higher values return 402)
-- Call `save_fmp_data` immediately after every FMP fetch — do not buffer multiple results
-- `job_id` is injected automatically — do NOT pass it to `save_fmp_data`
-
-See the **`fmp-data-fetch`** skill for toolset mappings, period normalization, and the full workflow.
-See the **`fmp-api-errors`** skill for recovery procedures on 402, invalid period, and MCP timeout errors.
-{fred_section}
-## Responsibilities
-
-1. **Data Fetching**:
-   - Call FMP MCP tools directly to fetch financial/equity data
-   - Call FRED MCP tools directly to fetch macroeconomic series (when available)
-   - Use `save_fmp_data` to save fetched data to storage
-   - Return ONLY storage paths, never raw data
-
-2. **Schema Extraction**:
-   - Use `extract_schema` to load data from storage and extract exact schemas
-   - Deterministically extract: column names, data types, sample rows (2 rows max)
-   - Return compact schema metadata
-
-## Critical Rules
-
-- NEVER return raw data in your response
-- ALWAYS save data to storage first using save_fmp_data, then return the path
-- Schemas must be exact - use the extract_schema tool which uses pandas, not LLM inference
-- Keep responses compact: paths + metadata only
-- **API LIMIT**: statements tools (getIncomeStatement, getBalanceSheetStatement, etc.) support a maximum of `limit=5`. Never request more than 5 rows — it returns a 402 error. If the user asks for 10 years, fetch 5.
-
-## CRITICAL: Conciseness Rule
-
-Your final response to the orchestrator must be **under 200 words**.
-Return ONLY the JSON block: `data_files`, `row_counts`, `metadata`.
-Do NOT include raw schema content. Do NOT explain your steps.
-
-## Output Format
-
-For data fetching tasks, return:
+# OUTPUT FORMAT
 {{
     "status": "success",
-    "data_files": {{
-        "TSMC": "./data/job123/TSMC_quote_job123.csv"
-    }},
-    "row_counts": {{
-        "TSMC": 1
-    }},
-    "metadata": {{
-        "data_type": "quote",
-        "source": "FMP MCP Server"
-    }}
+    "data_files": {{"TICKER": "path/to/file.csv"}},
+    "row_counts": {{"TICKER": 10}},
+    "metadata": {{"data_type": "income_statement", "source": "FMP"}}
 }}
-
-For schema extraction, return:
-{{
-    "status": "success",
-    "schemas": {{
-        "./data/job123/TSMC_quote_job123.csv": {{
-            "columns": ["symbol", "price", "volume", "change"],
-            "dtypes": {{"symbol": "object", "price": "float64"}},
-            "sample_rows": [{{}}, {{}}],
-            "shape": [1, 4]
-        }}
-    }}
-}}
-
-## Chart Schema Awareness
-
-The quant developer is responsible for producing `outputs/charts.json` — a named dict of
-chart definitions (AxisChartDef / ScatterChartDef / PieChartDef per the ResearchReport v1 schema).
-Your job ends at data storage and schema extraction; you are not responsible for chart structure.
-
-Remember: You are the data pipeline. Keep the orchestrator's context clean by returning only references, not raw data."""
+"""
 
 
 async def get_data_engineer_subagent():
@@ -544,16 +474,17 @@ async def get_data_engineer_subagent():
     fmp_client = await create_fmp_mcp_client()
     fmp_tools = await fmp_client.get_tools()
 
-    # Pre-enable the `statements` toolset so getIncomeStatement / getBalanceSheetStatement /
-    # getCashFlowStatement / getKeyMetrics / getRatios are available from the very first
-    # LLM turn — eliminates the 3-turn discovery loop (list_toolsets→enable→list_tools).
+    # Pre-enable `statements` so financial statement tools are available from turn 1.
     enable_tool = next((t for t in fmp_tools if getattr(t, "name", "") == "enable_toolset"), None)
     if enable_tool:
-        await asyncio.wait_for(
-            enable_tool.ainvoke({"name": "statements"}),
-            timeout=_FMP_TIMEOUT,
-        )
-        fmp_tools = await fmp_client.get_tools()  # re-fetch with statements tools included
+        try:
+            await asyncio.wait_for(
+                enable_tool.ainvoke({"name": "statements"}),
+                timeout=_FMP_TIMEOUT,
+            )
+        except Exception as _e:
+            logger.warning("Failed to pre-enable FMP 'statements' toolset: %s", _e)
+    fmp_tools = await fmp_client.get_tools()  # re-fetch with statements tools included
 
     # Wrap all FMP tools so any single call that hangs raises MCPTimeoutError
     fmp_tools = [_with_timeout(t, _FMP_TIMEOUT) for t in fmp_tools]
@@ -588,19 +519,16 @@ async def get_data_engineer_subagent():
                 )
                 fred_tools = []
     except Exception as e:
-        logger.warning(
-            "FRED MCP server unavailable at %s — FRED tools not loaded. "
-            "Start with: node build/index.js --http\nError: %s",
+        logger.error(
+            "FRED MCP server unreachable at %s. Start with: "
+            "cd fred-mcp-server && FRED_API_KEY=<key> node build/index.js --http\nError: %s",
             os.getenv("FRED_MCP_URL", "http://localhost:3000/mcp"), e
         )
 
     # Wrap all FRED tools the same way
     fred_tools = [_with_timeout(t, _FRED_TIMEOUT) for t in fred_tools]
 
-    fred_available = len(fred_tools) > 0
-
-    if fred_available:
-        description = """Use this subagent to fetch financial or macroeconomic data, or extract schemas from saved data files.
+    description = """Use this subagent to fetch financial or macroeconomic data, or extract schemas from saved data files.
 
     Delegate when you need to:
     - Fetch stock data from Financial Modeling Prep (FMP) via MCP Server (250+ tools across 24 categories)
@@ -612,24 +540,18 @@ async def get_data_engineer_subagent():
 
     Note: FMP uses dynamic toolset loading — the agent will call enable_toolset() before using
     financial tools. It returns only storage paths and compact metadata, never raw data."""
-    else:
-        description = """Use this subagent to fetch financial data from the FMP MCP Server or extract schemas from saved data files.
-
-    Delegate when you need to:
-    - Fetch stock data from Financial Modeling Prep (FMP) via MCP Server (250+ tools across 24 categories)
-    - Get real-time quotes, historical prices, financial statements, market data
-    - Access technical indicators, insider trading data, SEC filings, news, and more
-    - Save fetched data to storage
-    - Extract exact schemas (column names, dtypes, sample rows) from data files
-
-    Note: FMP uses dynamic toolset loading — the agent will call enable_toolset() before using
-    financial tools. It returns only storage paths and compact metadata, never raw data."""
 
     return {
         "name": "data-engineer",
         "description": description,
-        "system_prompt": _build_system_prompt(fred_available),
-        "tools": [save_fmp_data, extract_schema] + fmp_tools + fred_tools,
+        "system_prompt": _build_system_prompt(),
+        "tools": [save_data, extract_schema] + fmp_tools + fred_tools,
+        "middleware": [
+            ToolBlocklistMiddleware(
+                FILESYSTEM_AND_SHELL_TOOLS,
+                "Fetch and save data through the provided MCP tools and storage helpers instead.",
+            )
+        ],
         "model": "google_genai:gemini-3-flash-preview",
         "skills": [str(_BACKEND_DIR / "skills" / "data-engineer")]
     }

@@ -1,126 +1,33 @@
 ---
 name: code-execution-errors
-description: Recovery procedures for Python execution errors in analysis.py — ModuleNotFoundError, FileNotFoundError, KeyError, shape mismatches, JSON errors
-triggers:
-  - error
-  - traceback
-  - failed
-  - ModuleNotFoundError
-  - FileNotFoundError
-  - KeyError
-  - ValueError
-  - stderr
-  - SyntaxError
-  - execution failed
-  - exit code 1
+description: Concise rules for fixing common Python execution errors
+triggers: [error, fix, retry, pandas, KeyError, FileNotFoundError]
 ---
 
-# Code Execution Error Recovery
+# Fixes
 
-## Before Retrying: Always Read stderr
+## Pandas Resampling
+- **Error:** `ValueError: Invalid frequency`
+- **Fix:** Use `'QE'` for quarterly, `'ME'` for monthly. **NEVER** `'Q'` or `'M'`.
 
-```
-execute("C:\\...\\python.exe C:\\...\\analysis.py")
-# → if stdout is empty and exit code is non-zero:
-read_file("/projects/.../outputs/{job_id}/code/analysis.py")   # check the script
-```
+## File Paths
+- **Error:** `FileNotFoundError`
+- **Fix:** Always use the Windows absolute path provided by the Orchestrator for `read_csv`.
 
-Use `edit_file` for targeted fixes (preferred over rewriting the whole script).
+## Filesystem Tool Paths
+- **Error:** `Windows absolute paths are not supported`
+- **Fix:** `read_file`, `write_file`, `edit_file`, `ls`, and `glob` must use virtual `/projects/...` paths. Convert `C:\projects\DeepResearchAgent\...` to `/projects/DeepResearchAgent/...` first.
 
----
+## Date Labels
+- **Error:** Unsupported `strftime` directives such as `%Q`
+- **Fix:** Build quarter labels with attributes, e.g. `f"{dt.year} Q{dt.quarter}"`. For month labels, use `f"{dt.year}-{dt.month:02d}"`.
 
-## ModuleNotFoundError
+## Data Merging
+- **Error:** `KeyError: 'date'`
+- **Fix:** Verify column names from the schema sample rows. Some sources use `Date` or `period`.
 
-```
-ModuleNotFoundError: No module named 'scipy'
-```
+## Charts JSON
+- **Error:** `JSONDecodeError`
+- **Fix:** Ensure the `charts.json` is a dict keyed by `snake_case` IDs. Use `json.dumps(charts, indent=2)` to save.
 
-**Fix**: Only use these imports: `pandas`, `numpy`, `scipy`, `json`, `pathlib`, `datetime`.
-If you tried to import anything else, remove it. All five listed modules are installed in the venv.
-
----
-
-## FileNotFoundError — Input Data
-
-```
-FileNotFoundError: [Errno 2] No such file or directory: 'C:\...\AAPL_income.csv'
-```
-
-**Cause**: Wrong path. Data files use Windows absolute paths.
-**Fix**: Check the exact path from the orchestrator's task instructions. Use raw strings:
-```python
-df = pd.read_csv(r"C:\projects\DeepResearchAgent\backend\data\{job_id}\AAPL_income_statement_{job_id}.csv")
-```
-
----
-
-## FileNotFoundError — Output Directory
-
-```
-FileNotFoundError: [Errno 2] No such file or directory: 'C:\...\outputs\{job_id}\charts.json'
-```
-
-**Fix**: Create the output directory before writing:
-```python
-from pathlib import Path
-Path(r"C:\projects\DeepResearchAgent\backend\outputs\{job_id}").mkdir(parents=True, exist_ok=True)
-```
-
----
-
-## KeyError — Missing Column
-
-```
-KeyError: 'revenue'
-```
-
-**Fix**: Print available columns first (this is the ONE time printing a small thing is allowed):
-```python
-print(df.columns.tolist())
-```
-Then re-check the schema the orchestrator provided. FMP column names are camelCase: `netIncome`, `operatingExpenses`, `totalRevenue` — not snake_case.
-
----
-
-## ValueError / Shape Mismatch in Correlation
-
-```
-ValueError: x and y must have same first dimension
-```
-
-**Fix**: Align DataFrames by date before correlating:
-```python
-merged = pd.merge(df1[["date","value"]], df2[["date","value"]], on="date", suffixes=("_a","_b"))
-merged = merged.dropna()
-r, p = scipy.stats.pearsonr(merged["value_a"], merged["value_b"])
-```
-
----
-
-## JSON Serialization Error in charts.json
-
-```
-TypeError: Object of type float32 is not JSON serializable
-```
-
-**Fix**: Cast numpy types before dumping:
-```python
-import numpy as np
-def _to_python(obj):
-    if isinstance(obj, (np.integer,)): return int(obj)
-    if isinstance(obj, (np.floating,)): return float(obj)
-    if isinstance(obj, np.ndarray): return obj.tolist()
-    return obj
-
-with open(charts_path, "w") as f:
-    json.dump(charts, f, default=_to_python)
-```
-
----
-
-## Retry Limit
-
-Maximum **3 attempts** per script. If still failing after 3 tries:
-1. Return the exact stderr to the orchestrator
-2. Include the last working partial output if any
-3. Do not loop further
+**Rule:** Read `stderr` using `read_file`, apply fix via `edit_file`, and retry. Max 3 attempts.

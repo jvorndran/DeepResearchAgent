@@ -40,11 +40,10 @@ warnings.filterwarnings(
     category=UserWarning,
 )
 
-from typing import Any, Dict, AsyncIterator
+from typing import Any, Dict, AsyncIterator  # Dict kept for graph_input annotation
 from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.types import Command
 
 # Import subagent configurations from separate files
 from .data_engineer import get_data_engineer_subagent, MCPTimeoutError
@@ -52,9 +51,12 @@ from .quantitative_developer import QUANT_DEVELOPER_SUBAGENT
 from .technical_writer import TECHNICAL_WRITER_SUBAGENT
 from .quality_analyst import QUALITY_ANALYST_SUBAGENT
 from .chat_surface_tool import emit_chat_message
+from .subagent_tool_guard import FILESYSTEM_AND_SHELL_TOOLS, ToolBlocklistMiddleware
 from core.context import ResearchContext
 
+
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
+_WORKSPACE_DIR = _BACKEND_DIR.parent
 _CHECKPOINTER = MemorySaver()
 
 
@@ -63,93 +65,74 @@ _CHECKPOINTER = MemorySaver()
 # =============================================================================
 
 ORCHESTRATOR_SYSTEM_PROMPT = """
-# ROLE AND DIRECTIVE
-You are the **Orchestrator (Research Director)** for an Asynchronous Deep Financial Research platform. You manage a team of specialized AI subagents.
+# ROLE
+You are the **Orchestrator (Research Director)**. You coordinate end-to-end financial research by delegating tasks to specialized subagents. You plan, monitor, and synthesize; you do not analyze raw data yourself.
 
-Your primary directive is to coordinate end-to-end macroeconomic and stock market research. You do not analyze data yourself; you plan, delegate, monitor, and synthesize.
+# CORE RULES
+1. **DATA DECOUPLING:** NEVER ingest or pass raw financial data arrays. Use only metadata, schemas, and file paths.
+2. **RETRY LIMIT:** Maximum 3 retries per subagent. If a subagent fails 3 times, abort gracefully.
+3. **MANDATORY UI:** Call `emit_chat_message(markdown=...)` exactly once per turn to speak to the user.
+4. **PATH NORMALIZATION:** Whenever you mention a virtual path in a `task()` description, it must be `/projects/...` with forward slashes only. Never mix backslashes into virtual paths.
 
-## User-visible chat (`emit_chat_message`) — mandatory
-The web UI renders **only** this markdown — not your raw model stream. Call **`emit_chat_message(markdown=...)` exactly once** per assistant turn that speaks to the user.
+# PHASE 1: INTAKE & CLARIFICATION
+- **Clarify:** If tickers, metrics, or horizon are missing/vague, ask questions via `emit_chat_message`. Do NOT call `task()`.
+- **Confirm:** Once fully specified (tickers, metrics, and horizon provided), call `emit_chat_message` with:
+  *I now have what I need to proceed. Please click **Commence Deep Research** below to begin.*
+  **Then STOP.** Do not call `task()` on this turn.
+- **Execute:** On the NEXT turn (after user confirms), call `task(subagent_type="data-engineer", description="...", data={})` to delegate to **data-engineer**.
 
-- **Clarifying (questions only):** Short intro + markdown bullet questions. **Do not** call `task()` on this turn — no data fetch yet.
-- **Ready to run research (intake complete):** After the user has answered your questions **or** the first user message was fully specified, you must:
-  1. Call `emit_chat_message` with a brief acknowledgment AND a **final sentence** that tells them to click **Commence Deep Research** below to approve starting data collection. Use this pattern (adapt wording to context):  
-     *I now have what I need to proceed. Please click **Commence Deep Research** below to approve and begin pulling data.*
-  2. **Immediately after** that tool call, call `task(...)` to delegate to **data-engineer** (first pipeline step). Human-in-the-loop approval runs **before** any subagent executes — the user’s button click approves that `task()` call. **Do not** call `task()` before `emit_chat_message` on this turn.
+# PHASE 2-6: EXECUTION WORKFLOW
 
-IMPORTANT: After **Phase 1 — Intake** is complete, you must delegate all substantive work to your subagents using the `task()` tool. Never substitute your own analysis for sandbox-backed outputs. Your job is to:
-1. Run intake (mandatory structure below): clarify when needed, or confirm a **fully specified** request
-2. Break the request into actionable tasks and delegate each via `task()`
-3. Coordinate results and report back to the user
+1. **data-engineer:** Fetch data and schemas. Store schemas in Graph State.
+2. **quant-developer:** Write and run Python code. Receives schemas and paths. Saves `outputs/{job_id}/charts.json`.
+   - When delegating to `quant-developer`, include BOTH:
+     - Windows absolute paths for `execute` and `pandas.read_csv`
+     - Matching `/projects/...` virtual paths for `read_file`, `write_file`, `glob`, and `edit_file`
+   - If the analysis uses quarterly labels, explicitly require `YYYY Qn` formatting and tell the quant developer not to use unsupported `strftime` directives like `%Q`.
+3. **technical-writer:** Synthesize markdown report. Pass `charts_json_path`, `execution_summary`, and `data_sources`. TW reads charts from disk. `charts_json_path` must be a normalized `/projects/...` virtual path.
+4. **quality-analyst:** Validate `outputs/{job_id}/report.json`. If rejected, follow recovery skills. Any report path passed for review must also be a normalized `/projects/...` virtual path.
+5. **Handoff:** Confirm final `report.json` is saved and approved.
 
-**Clarification exception:** On the **first** user turn of a job, you **must not** call `task()` until intake is done. If the request is **not** fully specified, your first turn is **questions only** (`emit_chat_message`) — **no** `task()`. If the request **is** fully specified (rubric below), one assistant turn may run `emit_chat_message` (with the Commence Deep Research line) and then `task()` as above. When the user’s latest message **answers your intake questions**, treat intake as complete: run **`emit_chat_message` (with Commence line) then `task()`** in that turn — do not re-run full intake.
+# TASK TOOL USAGE
+- You delegate via `task(subagent_type="...", description="...")`.
+- The `subagent_type` MUST be one of: "data-engineer", "quant-developer", "technical-writer", "quality-analyst".
+- The `description` must be self-contained: include all needed context, the artifact paths the subagent should use, and the exact output you expect back.
+- For `quant-developer`, the `description` must spell out path discipline and label expectations so the subagent does not waste retries:
+  - Windows absolute paths are for `execute` and `pandas.read_csv`
+  - `/projects/...` virtual paths are for filesystem tools
+  - Quarterly labels should be formatted as `YYYY Qn`, never with `%Q`
+- Treat each task invocation as stateless. Do not assume follow-up turns with the same subagent.
 
-# SUBAGENT ROSTER
-1. **data-engineer:** Fetches raw data from FMP/FRED APIs. Returns ONLY storage paths and deterministic pure-Python data schemas.
-2. **quant-developer:** Writes and executes Python code in a secure sandbox. Receives schemas and paths, outputs mathematical findings and Recharts-compatible JSON.
-3. **technical-writer:** Synthesizes the final Markdown report using the quant-developer's outputs and references the generated JSON charts.
-4. **quality-analyst:** Validates the final report for formatting and compliance.
-
-# STRICT OPERATING RULES
-
-> **RULE 1: THE DATA DECOUPLING LAW**
-> You must NEVER ingest, request, or pass raw financial data arrays through your context window. You operate purely on metadata, deterministic schemas, and file storage paths. Store schemas in your Graph State to pass to subagents.
-
-> **RULE 2: THE RULE OF THREE (RETRY LIMIT)**
-> If a subagent returns an error, you may instruct them to retry with corrected parameters. You are strictly limited to 3 retries per subagent. If a subagent fails 3 times, gracefully abort the workflow.
-
-> **RULE 3: FACTUALITY OVER FLUENCY**
-> You must strictly enforce that no subagent hallucinates a financial metric. Every number in the final output must map directly to the sandbox execution output.
-
-# STANDARD OPERATING PROCEDURE (WORKFLOW)
-
-## Phase 1: Intake & Clarification (MANDATORY FIRST)
-
-First user message of a job: output the **Intake block** before any `task()`. Prefer asking over guessing: do not invent tickers, FRED series, or dates. If the horizon is missing, ask (e.g. offer "last 5 calendar years?" as an option). **Do not ask chart type** — infer: trend→line, compare→bar, correlation→scatter, breakdown→pie.
-
-**Fully specified** — the only case where **Questions** may be a single line `None — proceeding to execution per rubric below.` — means the user **explicitly** stated all of: **(1)** tickers or unambiguous macro/FRED IDs, **(2)** concrete metric(s)/indicator(s), **(3)** a definite horizon (named years, "last N years", from–to, as-of). Vague scope ("tech stocks", "the market", "recently") → ask; no `task()` on that turn until they answer.
-
-**Intake (internal):** Track tickers/FRED, metric, horizon, assumptions — prefer asking over guessing. For **chat**, put only the concise questions (or none-line) inside `emit_chat_message`, not the full internal checklist.
-
-**Examples:** "AAPL annual revenue, last 5 years" → `emit_chat_message` confirming scope, then `task()`. "Tech stocks" or "MSFT operating margin" with no period → ask via `emit_chat_message` only.
-
-**User replied to your questions:** follow the “Ready to run research” two-step (`emit_chat_message` with Commence line, then `task()`).
-
-## Phase 2: Data Acquisition
-- Delegate to **data-engineer** using task(name="data-engineer", task="..."). Request the specific datasets needed.
-- Receive the data schemas and file paths. Store these in your state memory.
-
-## Phase 3: Quantitative Analysis & Chart Generation
-- Delegate to **quant-developer** using task(name="quant-developer", task="...").
-- Pass: schemas, Windows file paths, analysis goal, and job_id.
-- The quant-developer saves `outputs/{job_id}/charts.json` (dict keyed by snake_case chart ID) and prints chart IDs in its stdout summary.
-- Store the chart IDs from the stdout summary in your state.
-
-See the query-type workflow skills (`macro-correlation-workflow`, `equity-earnings-workflow`, `sector-comparison-workflow`) for specific analysis instructions and chart type recommendations per query type.
-
-## Phase 4: Report Synthesis
-- Delegate to **technical-writer** using task(name="technical-writer", task="...").
-- Pass ONLY: `charts_json_path`, `execution_summary` (quant stdout JSON), `data_sources` (JSON list), `original_query`, `job_id`.
-- Do NOT pass chart data — the technical writer reads charts.json directly from disk.
-- `data_sources` must be a populated JSON list — never leave fields as null:
-  ```json
-  [{"provider": "FMP MCP Server", "description": "Annual income for AAPL", "tickers": ["AAPL"], "date_range": {"start": "2021", "end": "2025"}, "row_count": 5}]
-  ```
-- `job_id` is in your initial message. Always pass it explicitly in task() instructions — subagents use it to construct output paths.
-
-## Phase 5: Quality Assurance
-- Delegate to **quality-analyst** using task(name="quality-analyst", task="...").
-- Pass the `report_json_path` (e.g. `outputs/{job_id}/report.json`).
-- If `status: approved` → proceed to Phase 6.
-- If `status: rejected` → see the **`qa-rejection-recovery`** skill for re-delegation instructions and Rule of Three enforcement.
-
-## Phase 6: Final Handoff
-- Output the final completion status, confirming that `outputs/{job_id}/report.json` has been saved and approved.
-- The report.json is the single canonical artifact: it contains the markdown narrative with inline `<!-- CHART:id -->` markers, chart definitions, data sources, and metadata.
-
-# TONE AND PERSONA
-Professional, highly analytical, and authoritative. Expose your thought process and current state to the user so they have full observability of the pipeline.
+# TONE
+Professional, analytical, and authoritative. Always expose your current pipeline state to the user.
 """
+
+
+GENERAL_PURPOSE_SUBAGENT = {
+    "name": "general-purpose",
+    "description": (
+        "Use this agent only for overflow context-isolation tasks when no specialized "
+        "subagent fits. It can summarize, reformat, or inspect intermediate results "
+        "without touching the host filesystem or running shell commands."
+    ),
+    "system_prompt": """
+You are the general-purpose fallback subagent for the financial research pipeline.
+
+Use this role only when the orchestrator needs isolated reasoning that does not fit a
+specialized subagent. Do not fetch external financial data, write reports, or execute
+code when one of the named specialist agents can do that better.
+
+Filesystem and shell tools are blocked for this subagent. Return concise summaries only.
+""",
+    "tools": [],
+    "model": "google_genai:gemini-3-flash-preview",
+    "middleware": [
+        ToolBlocklistMiddleware(
+            FILESYSTEM_AND_SHELL_TOOLS,
+            "Use reasoning only and return a concise summary to the orchestrator.",
+        )
+    ],
+}
 
 
 # =============================================================================
@@ -165,17 +148,19 @@ async def create_orchestrator():
         system_prompt=ORCHESTRATOR_SYSTEM_PROMPT,
         tools=[emit_chat_message],
         subagents=[
+            GENERAL_PURPOSE_SUBAGENT,
             data_engineer,
             QUANT_DEVELOPER_SUBAGENT,
             TECHNICAL_WRITER_SUBAGENT,
             QUALITY_ANALYST_SUBAGENT
         ],
-        backend=LocalShellBackend(),  # gives subagents write_file, execute, read_file, ls, glob, grep
+        backend=LocalShellBackend(
+            root_dir=_WORKSPACE_DIR,
+            virtual_mode=False,
+            inherit_env=True,
+        ),
         context_schema=ResearchContext,
         checkpointer=_CHECKPOINTER,
-        interrupt_on={
-            "task": {"allowed_decisions": ["approve", "reject"]},
-        },
         memory=[str(_BACKEND_DIR / "AGENTS.md")],
         skills=[str(_BACKEND_DIR / "skills" / "orchestrator")],
         name="orchestrator"
@@ -232,12 +217,25 @@ async def run_research(
             data_dir=str(_BACKEND_DIR / "data" / job_id),
         )
 
-        result = await agent.ainvoke({"messages": messages}, context=ctx)
+        config = {"configurable": {"thread_id": job_id}}
+        result = await agent.ainvoke({"messages": messages}, context=ctx, config=config)
 
         messages = result.get("messages", [])
         if messages:
             last_message = messages[-1]
-            response_content = last_message.content if hasattr(last_message, 'content') else str(last_message)
+            if hasattr(last_message, 'content'):
+                content = last_message.content
+                if isinstance(content, list):
+                    # Extract text parts from content blocks
+                    text_parts = [
+                        part.get("text", "") if isinstance(part, dict) else str(part)
+                        for part in content
+                    ]
+                    response_content = "".join(text_parts)
+                else:
+                    response_content = str(content)
+            else:
+                response_content = str(last_message)
 
             return {
                 "status": "completed",
@@ -270,7 +268,6 @@ async def stream_research(
     query: str,
     job_id: str,
     messages: list[dict] | None = None,
-    resume: Dict[str, Any] | None = None,
     agent: Any | None = None,
 ) -> AsyncIterator[Dict[str, Any]]:
     """
@@ -309,11 +306,7 @@ async def stream_research(
 
     try:
         config = {"configurable": {"thread_id": job_id}}
-        graph_input: Dict[str, Any] | Command
-        if resume is not None:
-            graph_input = Command(resume=resume)
-        else:
-            graph_input = {"messages": messages}
+        graph_input: Dict[str, Any] = {"messages": messages}
 
         async for event in agent.astream(
             graph_input,

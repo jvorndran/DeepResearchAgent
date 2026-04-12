@@ -12,6 +12,6 @@ def emit_chat_message(markdown: str) -> str:
     Put intake questions as a short intro line plus bullet list.
     When intake is complete and you are about to delegate with `task()`, your markdown MUST tell the user to click
     **Commence Deep Research** in the UI to approve and begin — see system prompt for required wording.
-    Do not paste internal checklists, skills, or long Phase templates here.
+    Do not paste internal checklists, skills, or long Phase templates here. Do not describe task-tool arguments to the user.
     """
     return "Message recorded for the chat UI."

@@ -20,7 +20,7 @@ their own artifacts (charts.json, CSV files); the technical writer reads those
 artifacts and assembles the complete report independently.
 """
 
-from typing import Dict, Any, List
+from typing import Dict, List
 from langchain_core.tools import tool
 import json
 import os
@@ -29,15 +29,104 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core.report_schema import ResearchReport, DataSource, ReportMetadata
+from .subagent_tool_guard import FILESYSTEM_AND_SHELL_TOOLS, ToolBlocklistMiddleware
 
 # Absolute output base dir — avoids CWD ambiguity when running as a subagent
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
 _OUTPUT_BASE_DIR = Path(os.getenv("OUTPUT_DIR", str(_BACKEND_DIR / "outputs")))
+_LAST_REPORT_CONTEXT: dict[str, str] = {
+    "charts_json_path": "",
+    "original_query": "",
+    "job_id": "",
+}
 
 
 # =============================================================================
 # TECHNICAL WRITER TOOLS
 # =============================================================================
+
+
+def _labelize_key(key: str) -> str:
+    """Turn a data key like `gdp_growth_pct` into a readable label."""
+    return key.replace("_", " ").strip().title()
+
+
+def _infer_chart_description(chart_copy: dict, chart_id: str) -> str:
+    title = chart_copy.get("title")
+    if isinstance(title, str) and title.strip():
+        return title.strip()
+    return f"Chart for {chart_id.replace('_', ' ')}."
+
+
+def _normalize_chart_definitions(charts_on_disk: dict) -> dict:
+    """Coerce legacy chart shapes into the ResearchReport schema."""
+    normalized: dict = {}
+
+    for chart_id, chart_def in charts_on_disk.items():
+        if not isinstance(chart_def, dict):
+            normalized[chart_id] = chart_def
+            continue
+
+        chart_copy = dict(chart_def)
+        chart_copy.setdefault("id", chart_id)
+        chart_copy.setdefault("description", _infer_chart_description(chart_copy, chart_id))
+
+        config = chart_copy.get("config") if isinstance(chart_copy.get("config"), dict) else {}
+
+        if chart_copy.get("type") in {"line", "bar", "area"}:
+            if "xAxisKey" not in chart_copy and isinstance(config.get("xKey"), str):
+                chart_copy["xAxisKey"] = config["xKey"]
+
+            if "series" not in chart_copy:
+                config_series = config.get("series")
+                if isinstance(config_series, list) and config_series:
+                    chart_copy["series"] = [
+                        {
+                            "dataKey": item.get("dataKey") or item.get("key", ""),
+                            "label": item.get("label") or item.get("name") or _labelize_key(item.get("dataKey") or item.get("key", "")),
+                            "color": item.get("color", "#3b82f6"),
+                        }
+                        for item in config_series
+                        if isinstance(item, dict) and (item.get("dataKey") or item.get("key"))
+                    ]
+                elif isinstance(config.get("yKeys"), list):
+                    y_keys = config.get("yKeys", [])
+                    colors = config.get("colors", [])
+                    names = config.get("names", [])
+                    chart_copy["series"] = [
+                        {
+                            "dataKey": data_key,
+                            "label": names[idx] if idx < len(names) else _labelize_key(data_key),
+                            "color": colors[idx] if idx < len(colors) else "#3b82f6",
+                        }
+                        for idx, data_key in enumerate(y_keys)
+                        if isinstance(data_key, str) and data_key
+                    ]
+
+        if chart_copy.get("type") == "scatter" and "xKey" not in chart_copy:
+            config_series = config.get("series") if isinstance(config.get("series"), list) else []
+            first_config_series = config_series[0] if config_series and isinstance(config_series[0], dict) else {}
+            x_key = config.get("xKey") or chart_copy.get("xAxisKey", "x")
+            y_key = (
+                first_config_series.get("key")
+                or first_config_series.get("dataKey")
+                or chart_copy.get("yKey")
+                or "y"
+            )
+            chart_copy["xKey"] = x_key
+            chart_copy["yKey"] = y_key
+            chart_copy["xLabel"] = chart_copy.get("xLabel") or _labelize_key(x_key)
+            chart_copy["yLabel"] = chart_copy.get("yLabel") or first_config_series.get("name") or _labelize_key(y_key)
+            chart_copy["color"] = chart_copy.get("color") or first_config_series.get("color") or "#3b82f6"
+
+        normalized[chart_id] = chart_copy
+
+    return normalized
+
+
+def _extract_job_id_from_path(path: str) -> str:
+    match = re.search(r"[\\/](test-[^\\/]+)[\\/]", path)
+    return match.group(1) if match else ""
 
 @tool
 def plan_report_structure(
@@ -70,6 +159,10 @@ def plan_report_structure(
         - chart_ids: List of chart IDs discovered from charts.json
         - recommended_sections: Count
     """
+    _LAST_REPORT_CONTEXT["charts_json_path"] = charts_json_path
+    _LAST_REPORT_CONTEXT["original_query"] = original_query
+    _LAST_REPORT_CONTEXT["job_id"] = _extract_job_id_from_path(charts_json_path)
+
     # Load chart IDs from disk — never from caller context
     chart_ids: list[str] = []
     try:
@@ -159,10 +252,10 @@ def plan_report_structure(
 @tool
 def write_research_report(
     markdown: str,
-    charts_json_path: str,
-    data_sources: List[Dict[str, Any]],
-    original_query: str,
-    job_id: str,
+    charts_json_path: str = "",
+    data_sources: str = "[]",
+    original_query: str = "",
+    job_id: str = "",
     title: str = "",
     executive_summary: str = "",
     analysis_type: str = "custom"
@@ -187,7 +280,7 @@ def write_research_report(
                   - ## Disclaimer (MUST contain "does not constitute financial advice"
                     AND "Past performance is not indicative of future results")
         charts_json_path: Path to charts.json on disk (e.g. "outputs/abc123/charts.json")
-        data_sources: List of DataSource dicts — small metadata only
+        data_sources: JSON string containing DataSource dicts with small metadata only
                       (provider, description, tickers/series_ids, date_range, row_count)
         original_query: The user's original research question
         job_id: Unique job identifier
@@ -200,11 +293,18 @@ def write_research_report(
 
     Returns:
         JSON string with:
-        - report_path: Path where report.json was saved
+        - report_path: Absolute Windows path where report.json was saved
         - chart_count: Number of <!-- CHART:id --> markers found in markdown
         - word_count: Approximate word count of markdown
         - validation_issues: List of non-blocking warnings (may be empty)
     """
+    if not charts_json_path.strip():
+        charts_json_path = _LAST_REPORT_CONTEXT["charts_json_path"]
+    if not original_query.strip():
+        original_query = _LAST_REPORT_CONTEXT["original_query"]
+    if not job_id.strip():
+        job_id = _extract_job_id_from_path(charts_json_path) or _LAST_REPORT_CONTEXT["job_id"]
+
     # Normalise data_sources — may arrive as JSON string or a single dict instead of list
     if isinstance(data_sources, str):
         try:
@@ -240,10 +340,7 @@ def write_research_report(
         except Exception:
             charts_on_disk = {}
 
-    # Normalise: inject missing 'id' from dict key (quant-developer occasionally omits it)
-    for _ckey, _cval in charts_on_disk.items():
-        if isinstance(_cval, dict) and "id" not in _cval:
-            _cval["id"] = _ckey
+    charts_on_disk = _normalize_chart_definitions(charts_on_disk)
 
     # -------------------------------------------------------------------------
     # 2. Append footer to the LLM-written markdown
@@ -319,7 +416,7 @@ def write_research_report(
     # -------------------------------------------------------------------------
     # 6. Save to disk with pre-write validation
     # -------------------------------------------------------------------------
-    report_path = (_OUTPUT_BASE_DIR / job_id / "report.json").relative_to(Path.cwd()).as_posix()
+    report_path = str((_OUTPUT_BASE_DIR / job_id / "report.json").resolve())
     validation_issues = _save_report(report, report_path)
 
     return json.dumps({
@@ -389,85 +486,42 @@ TECHNICAL_WRITER_SUBAGENT = {
     The technical writer writes ALL prose itself. Do not expect the tool to generate content
     from execution_summary — the LLM writes every section with unique, cited analysis.""",
 
-    "system_prompt": """You are the Technical Writer for a financial research platform.
+    "system_prompt": """# ROLE
+You are the Technical Writer. You synthesize research reports by reading `charts.json` and `execution_summary`, then writing a complete markdown narrative.
 
-You are the SOLE assembler of the ResearchReport artifact. No other agent touches report.json.
-The quant developer produces charts.json and an execution_summary; the data engineer produces CSV files.
-You read those artifacts, then **YOU WRITE the complete markdown narrative yourself**, and call
-`write_research_report` to validate and save it.
+# CORE TOOLS
+1. `plan_report_structure`: Discover chart IDs from `charts.json`. Call this FIRST.
+2. `write_research_report`: Save your finalized markdown to `report.json`.
 
-## CRITICAL: Use ONLY Your Two Custom Tools
+# WORKFLOW
+1. **Plan:** Call `plan_report_structure`. Note the available `chart_ids`.
+2. **Draft:** Write the full markdown narrative in your response. Cite statistics from `execution_summary`.
+   - Sections: Exec Summary, Query, Data Sources, Analysis (with `<!-- CHART:id -->`), Methodology, Limitations, Disclaimer.
+   - Disclaimer must include: "does not constitute financial advice" and "Past performance is not indicative of future results".
+3. **Save:** Call `write_research_report` exactly once with this shape:
+   - `markdown`
+   - `charts_json_path`
+   - `data_sources`
+   - `original_query`
+   - `job_id`
+   - optional: `title`, `executive_summary`, `analysis_type`
 
-**Do NOT call** `read_file`, `write_file`, `ls`, `glob`, `grep`, or `execute` — ever.
-You have exactly two custom tools: `plan_report_structure` and `write_research_report`.
-Use those and nothing else. The orchestrator always gives you a valid `charts_json_path` — pass it as-is to your tools; they handle all file I/O internally.
-
-## The Golden Rule
-
-**You write every word of the report.** The `write_research_report` tool does NOT generate content —
-it only validates structure and saves. If you pass a thin `execution_summary` to the tool and expect
-it to fill in sections, the report will be empty and repetitive. Every section must contain unique
-prose you composed based on the execution_summary data.
-
-## Analytical Rigor
-
-Move beyond simple labels. Use frameworks like counterfactual analysis, regime switching, decomposition, leading vs. lagging indicators, and mean reversion. See the **`report-writing`** skill for the full framework reference table with examples and when to apply each.
-
-## What You Receive From the Orchestrator
-
-- `charts_json_path`: Path to charts.json on disk (e.g. `outputs/abc123/charts.json`)
-- `execution_summary`: Compact JSON from the quant developer — contains all statistics you need
-- `data_sources`: Small metadata list (provider, series IDs, date ranges, row counts)
-- `original_query` and `job_id`
-
-## Step 1: Inspect chart IDs
-
-Call `plan_report_structure(query_type, charts_json_path, execution_summary, original_query)` to
-discover the chart IDs available in charts.json. Note the IDs — you will need them for inline markers.
-
-## Step 2: Write the complete markdown narrative
-
-Write the full markdown **in your response text before calling any tool**. Every section must be
-unique — never copy the same sentence into two sections. Cite the specific numbers from
-execution_summary inline in parentheticals.
-
-### Style Guidelines
-- **Professional & Objective**: Maintain a tone that is dense with information but accessible.
-- **Precise Terminology**: Use terms like 'basis points', 'secular trend', 'cyclical headwind' appropriately.
-- **Contextualize Visuals**: Never include a chart marker without explaining its "So What?"—the specific insight it provides.
-- **Avoid Narrative Fallacy**: Do not invent stories to explain random noise; focus on statistically significant findings.
-
-### Required sections (in this order)
-
-Executive Summary → Research Query → Data Sources → [Analysis sections with inline `<!-- CHART:id -->` markers] → Methodology → Limitations → Disclaimer
-
-The Disclaimer **must** contain: `"does not constitute financial advice"` and `"Past performance is not indicative of future results"`.
-
-See the **`report-writing`** skill for the full section template with examples, chart placement rules, and QA anti-patterns.
-
-## Step 3: Call write_research_report
-
-Once your markdown is complete, call:
-
-```
-write_research_report(
-    markdown=<your complete markdown>,
-    charts_json_path=<path>,
-    data_sources=<list>,
-    original_query=<query>,
-    job_id=<id>,
-    title=<descriptive title>,
-    executive_summary=<plain text version of executive summary>,
-    analysis_type=<query_type from step 1>
-)
-```
-
-## Step 4: Report results
-
-After the tool returns, report the `report_path`, `chart_count`, `word_count`, and any
-`validation_issues` to the orchestrator. A passing report has word count > 400, chart_count ≥ 1, and no validation_issues.""",
+# RULES
+- **YOU write the prose.** The tool only saves it.
+- **No data through context:** Read `charts.json` through the provided report tools only.
+- **No shell/filesystem tools:** They are blocked for this subagent.
+- **Inline Charts:** Place `<!-- CHART:id -->` markers immediately after the referencing text.
+- **Word Count:** Aim for > 400 words of dense, analytical content.
+- **No fallback thrashing:** If `write_research_report` returns an argument error, call it again with the exact required fields above. Do not try `read_file` or `execute`.
+""",
 
     "tools": [plan_report_structure, write_research_report],
+    "middleware": [
+        ToolBlocklistMiddleware(
+            FILESYSTEM_AND_SHELL_TOOLS,
+            "Use plan_report_structure and write_research_report for artifact access instead.",
+        )
+    ],
 
     "model": "google_genai:gemini-3-flash-preview",
 

@@ -52,7 +52,7 @@ read_file("/projects/DeepResearchAgent/backend/outputs/{job_id}/charts.json")
 
 ## CSV Data Format from Data-Engineer
 
-CSV files produced by `save_fmp_data` have one of two layouts:
+CSV files produced by `save_data` have one of two layouts:
 
 **FRED time-series** (e.g. GDPC1, UNRATE):
 ```python

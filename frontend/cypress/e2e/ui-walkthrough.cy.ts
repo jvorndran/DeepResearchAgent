@@ -3,13 +3,16 @@
  * Run via: npm run cypress:open → select this spec
  * Click ▶ Resume in the command log to advance.
  *
- * Stages 2–4 set localStorage.__cypress_stream_scenario__ via onBeforeLoad so
+ * Stages 2–3 set localStorage.__cypress_stream_scenario__ via onBeforeLoad so
  * the hook fetches /api/mock-stream directly (same-origin, real streaming, no proxy).
- * No cy.intercept needed — the browser talks straight to the Next.js mock route.
+ * Stage 4 uses the same recorded transcript as unit tests (`research_stream_full`).
+ * No cy.intercept on the stream — the browser talks straight to the Next.js mock route.
  */
 export {};
 
 const JOB_ID = 'gdp_unemployment_20yr';
+/** Job id inside `hooks/fixtures/research-stream-full.json` (start + report fetch). */
+const STREAM_FIXTURE_JOB_ID = 'job_f6dd6b7f';
 
 const CONVERSATIONAL_SSE = [
   `data: {"type":"start","job_id":"${JOB_ID}"}`,
@@ -20,8 +23,12 @@ const CONVERSATIONAL_SSE = [
 ].join('\n') + '\n';
 
 /** Visit the chat page directly, bypassing the home-page "Begin Research" flow */
-function visitChatPage(scenario: string, message = 'When US GDP contracts, what happens to unemployment? Analyze the historical relationship between US real GDP growth and the unemployment rate over the last 20 years.') {
-  cy.visit(`/chat/${JOB_ID}`, {
+function visitChatPage(
+  scenario: string,
+  message = 'When US GDP contracts, what happens to unemployment? Analyze the historical relationship between US real GDP growth and the unemployment rate over the last 20 years.',
+  jobId: string = JOB_ID,
+) {
+  cy.visit(`/chat/${jobId}`, {
     onBeforeLoad(win) {
       win.sessionStorage.setItem('pending_messages', JSON.stringify([{ role: 'user', content: message }]));
       win.localStorage.setItem('__cypress_stream_scenario__', scenario);
@@ -55,12 +62,14 @@ it('Stage 1 — Home: Begin Research button after multi-turn conversation', () =
 // ── Stage 2: Synthesizing Intelligence ───────────────────────────────────────
 
 it('Stage 2 — Chat: Synthesizing Intelligence (orchestrator text streams in)', () => {
-  // Hook fetches /api/mock-stream?scenario=synthesizing — text-only events, 400ms apart
-  // Pipeline panel stays on "Initializing subagents..." while text types itself in
+  // Hook fetches /api/mock-stream?scenario=synthesizing — backend-shaped SSE with
+  // tool_call/tool_result + user_message + text deltas, but still no agent_start yet.
+  // Pipeline panel stays on "Initializing subagents..." while the clarifying response streams in.
   visitChatPage('synthesizing');
   cy.get('[data-testid="streaming-view"]').should('exist');
+  cy.get('[data-testid="orchestrator-log"]').should('contain.text', 'Tickers');
 
-  cy.log('**STAGE 2 — Orchestrator text streams in token by token, no agent cards yet**');
+  cy.log('**STAGE 2 — Backend-shaped clarifying stream arrives before any agent cards appear**');
   cy.pause();
 });
 
@@ -79,17 +88,18 @@ it('Stage 3 — Chat: Pipeline agents streaming (watch agent cards appear)', () 
 // ── Stage 4: Report ───────────────────────────────────────────────────────────
 
 it('Stage 4 — Chat: Full report with chart', () => {
-  // Hook fetches /api/mock-stream?scenario=research — full pipeline + finish:report_ready:true
-  cy.intercept('GET', `http://localhost:8000/api/reports/${JOB_ID}`, {
+  // Hook fetches /api/mock-stream?scenario=research_stream_full — same JSON as Vitest
+  // (`hooks/fixtures/research-stream-full.json`) + finish:report_ready:true
+  cy.intercept('GET', `http://localhost:8000/api/reports/${STREAM_FIXTURE_JOB_ID}`, {
     fixture: 'gdp_unemployment_20yr/report.json',
   }).as('getReport');
 
-  visitChatPage('research');
+  visitChatPage('research_stream_full', undefined, STREAM_FIXTURE_JOB_ID);
   cy.wait('@getReport', { timeout: 20000 });
   cy.get('[data-testid="report-view"]').should('exist');
   cy.get('.recharts-wrapper').should('exist');
 
-  cy.log('**STAGE 4 — Full report: title, executive summary, bar chart**');
+  cy.log('**STAGE 4 — Full report: title, executive summary, bar chart (stream = research-stream-full fixture)**');
   cy.pause();
 });
 

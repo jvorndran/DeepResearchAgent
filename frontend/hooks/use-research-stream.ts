@@ -6,16 +6,13 @@ import type { ResearchStatus, Message, PipelineStep, ResearchReport } from "@/li
 export interface UseResearchStreamOptions {
   jobId: string;
   messages: Message[];
-  resume?: { decisions: Array<{ type: "approve" | "reject" }> } | null;
   requestNonce?: number;
   /** When false (home intake chat), raw model `text` tokens are omitted server-side; use `user_message` SSE only. */
   streamTelemetry?: boolean;
   onNavigate?: (jobId: string) => void;
-  /** First `start` SSE in a session — persist and send as `job_id` on every later request (required for resume / same thread). */
+  /** First `start` SSE in a session — persist and send as `job_id` on every later request (required for same thread). */
   onJobId?: (jobId: string) => void;
   onApprovalRequired?: (jobId: string) => void;
-  /** Fires when pipeline execution actually starts (after user approves Commence Deep Research). */
-  onResearchExecutionStarted?: () => void;
   onConversationalFinish?: (assistantText: string) => void;
 }
 
@@ -31,13 +28,11 @@ export interface UseResearchStreamResult {
 export function useResearchStream({
   jobId,
   messages,
-  resume,
   requestNonce = 0,
   streamTelemetry = true,
   onNavigate,
   onJobId,
   onApprovalRequired,
-  onResearchExecutionStarted,
   onConversationalFinish,
 }: UseResearchStreamOptions): UseResearchStreamResult {
   const [status, setStatus] = useState<ResearchStatus>("idle");
@@ -54,8 +49,6 @@ export function useResearchStream({
   onJobIdRef.current = onJobId;
   const onApprovalRequiredRef = useRef(onApprovalRequired);
   onApprovalRequiredRef.current = onApprovalRequired;
-  const onResearchExecutionStartedRef = useRef(onResearchExecutionStarted);
-  onResearchExecutionStartedRef.current = onResearchExecutionStarted;
   const onConversationalFinishRef = useRef(onConversationalFinish);
   onConversationalFinishRef.current = onConversationalFinish;
 
@@ -63,8 +56,8 @@ export function useResearchStream({
   const currentJobIdRef = useRef(jobId);
 
   useEffect(() => {
-    // No messages and no resume — either poll for an existing report or do nothing
-    if (messages.length === 0 && !resume) {
+    // No messages — either poll for an existing report or do nothing
+    if (messages.length === 0) {
       if (!jobId) return;
       // Refresh case: poll until report is ready
       let cancelled = false;
@@ -124,7 +117,6 @@ export function useResearchStream({
       try {
         const body: Record<string, unknown> = { messages };
         if (jobId) body.job_id = jobId;
-        if (resume) body.resume = resume;
         if (streamTelemetry === false) body.stream_telemetry = false;
 
         const mockScenario = typeof window !== "undefined" && window.localStorage.getItem("__cypress_stream_scenario__");
@@ -150,6 +142,8 @@ export function useResearchStream({
 
           try {
             const event = JSON.parse(raw);
+            // Debug: log every SSE event so we can diagnose streaming issues
+            console.log("[SSE]", event.type, event);
             switch (event.type) {
                   case "start":
                     currentJobIdRef.current = event.job_id;
@@ -157,16 +151,6 @@ export function useResearchStream({
                     if (event.job_id) {
                       onJobIdRef.current?.(event.job_id);
                     }
-                    break;
-                  case "execution_started":
-                    hasStartedResearch = true;
-                    onResearchExecutionStartedRef.current?.();
-                    if (!hasNavigatedRef.current && onNavigateRef.current) {
-                      hasNavigatedRef.current = true;
-                      onNavigateRef.current(event.job_id ?? pendingNavigationJobId ?? currentJobIdRef.current);
-                    }
-                    setStatus("streaming");
-                    setIsStreamingChat(false);
                     break;
                   case "text":
                     if (streamTelemetry) {
@@ -178,15 +162,22 @@ export function useResearchStream({
                     const md = typeof event.markdown === "string" ? event.markdown : "";
                     lastUserMessageMarkdown = md;
                     if (streamTelemetry === false) {
+                      // Home page: replace orchestratorText with the latest message
                       currentOrchestratorText = md;
                       setOrchestratorText(md);
+                      // Detect the "Commence Deep Research" ready message and fire approval callback
+                      if (md.includes("Commence Deep Research")) {
+                        onApprovalRequiredRef.current?.(currentJobIdRef.current ?? pendingNavigationJobId ?? "");
+                      }
+                    } else {
+                      // Chat page: append emit_chat_message content to the orchestrator log.
+                      // The orchestrator only emits structured output via this tool (no raw text
+                      // tokens), so this is the only way the log gets populated.
+                      currentOrchestratorText += (currentOrchestratorText ? "\n\n---\n\n" : "") + md;
+                      setOrchestratorText(currentOrchestratorText);
                     }
                     break;
                   }
-                  case "approval_required":
-                    setIsStreamingChat(false);
-                    onApprovalRequiredRef.current?.(event.job_id ?? pendingNavigationJobId ?? currentJobIdRef.current);
-                    break;
                   case "agent_start":
                     if (!hasStartedResearch) {
                       hasStartedResearch = true;
@@ -211,6 +202,11 @@ export function useResearchStream({
                       }
                       return steps;
                     });
+                    // Route tool calls to orchestrator log so it shows real-time activity
+                    if (event.agent && event.tool !== "emit_chat_message") {
+                      currentOrchestratorText += `\n\n**→ ${event.tool}**`;
+                      setOrchestratorText(currentOrchestratorText);
+                    }
                     break;
                   case "tool_result":
                     setPipelineSteps((prev) => {
@@ -222,6 +218,16 @@ export function useResearchStream({
                       }
                       return steps;
                     });
+                    // Route tool results to orchestrator log
+                    if (event.agent && event.summary && event.tool !== "emit_chat_message") {
+                      if (event.tool === "write_todos") {
+                        // write_todos has special rendering via the processedText regex
+                        currentOrchestratorText += `\n${event.summary}`;
+                      } else {
+                        currentOrchestratorText += `\n> ${event.summary.slice(0, 200)}`;
+                      }
+                      setOrchestratorText(currentOrchestratorText);
+                    }
                     break;
                   case "agent_end":
                     setPipelineSteps((prev) => {
