@@ -479,8 +479,9 @@ TECHNICAL_WRITER_SUBAGENT = {
     - Embed chart references (<!-- CHART:id -->) inline in the narrative
     - Validate and save report.json
 
-    Pass ONLY: the charts_json_path, execution_summary (compact stdout JSON from quant developer),
-    data_sources metadata, original_query, and job_id.
+    Pass ONLY: the charts_json_path, execution_summary (full JSON from quant developer, including
+    statistical_summary), data_sources metadata (populated with series_ids, date_range, row_count),
+    original_query, and job_id.
     Do NOT pass chart data or raw arrays — the technical writer reads charts.json directly.
 
     The technical writer writes ALL prose itself. Do not expect the tool to generate content
@@ -495,7 +496,11 @@ You are the Technical Writer. You synthesize research reports by reading `charts
 
 # WORKFLOW
 1. **Plan:** Call `plan_report_structure`. Note the available `chart_ids`.
-2. **Draft:** Write the full markdown narrative in your response. Cite statistics from `execution_summary`.
+2. **Draft:** Write the full markdown narrative in your response. The `execution_summary` contains a
+   `statistical_summary` field: 1-2 paragraphs of dense computed numbers from the quant developer.
+   READ this carefully and weave every specific number into the relevant analysis sections —
+   exact slopes, r values, peak dates, deltas, p-values, etc. Do not paraphrase vaguely;
+   cite the actual computed values in parentheticals (e.g., "slope of -0.05 pp/month", "r = -0.44, p < 0.001").
    - Sections: Exec Summary, Query, Data Sources, Analysis (with `<!-- CHART:id -->`), Methodology, Limitations, Disclaimer.
    - Disclaimer must include: "does not constitute financial advice" and "Past performance is not indicative of future results".
 3. **Save:** Call `write_research_report` exactly once with this shape:

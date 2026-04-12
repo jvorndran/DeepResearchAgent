@@ -69,15 +69,20 @@ Do not paste raw Python into the chat response. Always send the script via a nam
 - **Date formatting safety:** Prefer `.year`, `.quarter`, and `.month` attributes over custom `strftime` directives when building chart labels.
 - Palette: `["#3b82f6", "#f59e0b", "#10b981", "#ef4444", "#8b5cf6"]`.
 - Imports: `pandas, numpy, scipy, json, pathlib, datetime` only.
+- After saving charts.json, write a `statistical_summary`: 1-2 paragraphs of specific computed numbers.
+  Include whatever statistics are analytically meaningful for this query type — e.g., trend slopes
+  (numpy.polyfit), peak/trough values + dates, baseline vs current deltas, Pearson r + p-value,
+  YoY changes, CAGR, z-scores. Cite exact computed values, not approximations.
+  This will be read directly by the technical writer to write the report — make it dense and precise.
 - Final Output: Print a compact JSON with findings and `chart_ids`.
 
 # FINAL RESPONSE
-Under 200 words. Return ONLY the JSON result:
+Under 400 words. Return ONLY the JSON result:
 ```json
 {{
   "charts_json": "outputs/{{job_id}}/charts.json",
   "chart_ids": ["id1", "id2"],
-  "key_findings": "Numbers and summary only."
+  "statistical_summary": "Two paragraphs of computed findings. E.g.: 'The unemployment rate declined at a slope of -0.05 pp/month over the five-year period (numpy.polyfit), from a peak of 14.8% in April 2020 to a current 4.3%. The pre-pandemic baseline (2019 avg) was 3.68%, indicating a 0.62 pp structural residual. Prime-age participation recovered from 82.5% to 83.8% (+1.3 pp), while total participation fell from 63.1% to 61.9% (-1.2 pp), yielding a participation gap widening of 2.5 pp. Pearson r between UNRATE and CIVPART over the period is -0.44 (p=0.0003).'"
 }}
 ```
 """
@@ -100,7 +105,7 @@ QUANT_DEVELOPER_SUBAGENT = {
 
     Provide the exact data schemas, file paths, and analysis goal.
     The quant developer will write code, run it, fix any errors, and return
-    a charts.json path plus a concise mathematical findings summary with chart IDs.""",
+    a charts.json path, chart IDs, and a dense `statistical_summary` with exact computed values.""",
 
     "system_prompt": QUANT_DEVELOPER_SYSTEM_PROMPT,
 

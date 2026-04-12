@@ -20,6 +20,13 @@ triggers: [report, markdown, write, synthesize, executive summary, disclaimer]
 ## Inline Charts
 `<!-- CHART:chart_id -->` immediately after referencing text.
 
+## Using Statistical Summary
+- The `execution_summary.statistical_summary` contains computed numbers from the quant developer.
+  Cite every specific value inline in your analysis sections using parentheticals.
+- Populate `data_sources` when calling `write_research_report`: extract `series_ids`,
+  `date_range` (start/end dates inferred from data), and `row_count` from the description
+  you received — do not leave these fields null.
+
 ## Rule
 - **Word Count:** > 400 words.
 - **Save:** Call `write_research_report`.
