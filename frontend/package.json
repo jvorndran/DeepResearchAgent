@@ -14,6 +14,7 @@
     "cypress:visual": "cypress run --env SCREENSHOTS=true --browser chrome"
   },
   "dependencies": {
+    "@chenglou/pretext": "^0.0.5",
     "@phosphor-icons/react": "^2.1.10",
     "@tailwindcss/typography": "^0.5.19",
     "class-variance-authority": "^0.7.1",

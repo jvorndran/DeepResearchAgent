@@ -56,29 +56,224 @@ export function useResearchStream({
   const currentJobIdRef = useRef(jobId);
 
   useEffect(() => {
-    // No messages — either poll for an existing report or do nothing
+    // No messages — page was refreshed mid-research (or navigated directly).
+    // Try to reconnect to the live SSE stream if the job is still running,
+    // otherwise fall back to polling for the completed report.
     if (messages.length === 0) {
       if (!jobId) return;
-      // Refresh case: poll until report is ready
       let cancelled = false;
-      const poll = async (delay = 0): Promise<void> => {
-        if (delay) await new Promise<void>((r) => setTimeout(r, delay));
+
+      const fetchReport = async (): Promise<void> => {
+        const res = await fetch(`http://localhost:8000/api/reports/${jobId}`);
+        if (!res.ok) throw new Error(`Report fetch failed: ${res.status}`);
+        const data = await res.json();
+        if (!cancelled) { setReport(data); setStatus("report_ready"); }
+      };
+
+      // Main entry: check status then either reconnect to SSE or poll.
+      const checkAndConnect = async (): Promise<void> => {
         if (cancelled) return;
+
+        // 1. Check current job status
+        let statusRes: Response;
         try {
-          const res = await fetch(`http://localhost:8000/api/reports/${jobId}`);
-          if (res.status === 202 || res.status === 404) { poll(5000); return; }
-          if (!res.ok) throw new Error(`${res.status}`);
-          const data = await res.json();
-          if (!cancelled) { setReport(data); setStatus("report_ready"); }
-        } catch (error: unknown) {
+          statusRes = await fetch(`http://localhost:8000/api/reports/${jobId}`);
+        } catch {
           if (!cancelled) {
             setStatus("error");
-            setErrorText(error instanceof Error ? error.message : `Could not load report for job ${jobId}.`);
+            setErrorText(`Could not connect to server for job ${jobId}.`);
           }
+          return;
+        }
+
+        if (statusRes.status === 200) {
+          // Report already ready
+          try {
+            const data = await statusRes.json();
+            if (!cancelled) { setReport(data); setStatus("report_ready"); }
+          } catch {
+            if (!cancelled) { setStatus("error"); setErrorText("Failed to parse report."); }
+          }
+          return;
+        }
+
+        if (statusRes.status === 410) {
+          if (!cancelled) {
+            setStatus("error");
+            setErrorText("Research was interrupted — the server was restarted mid-job. Please start a new research.");
+          }
+          return;
+        }
+
+        if (statusRes.status === 500) {
+          if (!cancelled) {
+            setStatus("error");
+            setErrorText("Research job failed on the server.");
+          }
+          return;
+        }
+
+        if (statusRes.status !== 202) {
+          if (!cancelled) {
+            setStatus("error");
+            setErrorText(`Could not load report for job ${jobId}.`);
+          }
+          return;
+        }
+
+        // 2. Job is running (202) — try to reconnect to live SSE stream
+        let sseRes: Response;
+        try {
+          sseRes = await fetch(`http://localhost:8000/api/jobs/${jobId}/stream`);
+        } catch {
+          // Network error — retry after delay
+          if (!cancelled) {
+            await new Promise<void>((r) => setTimeout(r, 5000));
+            checkAndConnect();
+          }
+          return;
+        }
+
+        if (sseRes.status === 404) {
+          // Job finished between status check and SSE connect — poll once more
+          await new Promise<void>((r) => setTimeout(r, 1000));
+          if (!cancelled) checkAndConnect();
+          return;
+        }
+
+        if (!sseRes.ok || !sseRes.body) {
+          // SSE unavailable — fall back to polling
+          await new Promise<void>((r) => setTimeout(r, 5000));
+          if (!cancelled) checkAndConnect();
+          return;
+        }
+
+        // 3. SSE connected — show streaming view and replay events
+        if (!cancelled) {
+          setStatus("streaming");
+          setOrchestratorText("");
+          setPipelineSteps([]);
+          setErrorText("");
+        }
+
+        let currentOrchestratorText = "";
+        const reader = sseRes.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        const handleEvent = async (event: Record<string, any>): Promise<void> => {
+          if (cancelled) return;
+          console.log("[SSE/reconnect]", event.type, event);
+          switch (event.type) {
+            case "start":
+              break; // already know job_id from URL
+            case "text":
+              currentOrchestratorText += event.delta;
+              setOrchestratorText(currentOrchestratorText);
+              break;
+            case "user_message": {
+              const md = typeof event.markdown === "string" ? event.markdown : "";
+              currentOrchestratorText += (currentOrchestratorText ? "\n\n---\n\n" : "") + md;
+              setOrchestratorText(currentOrchestratorText);
+              break;
+            }
+            case "agent_start":
+              setStatus("streaming");
+              setPipelineSteps((prev) => {
+                const steps = [...prev];
+                const existing = steps.find((s) => s.agent === event.agent);
+                if (existing) { existing.status = "running"; } else { steps.push({ agent: event.agent, status: "running", tools: [] }); }
+                return steps;
+              });
+              break;
+            case "tool_call":
+              setPipelineSteps((prev) => {
+                const steps = [...prev];
+                let step = steps.find((s) => s.agent === event.agent);
+                if (!step && event.agent === null) { step = { agent: null, status: "running", tools: [] }; steps.push(step); }
+                if (step) {
+                  if (event.tool === "write_todos") {
+                    const existingTool = step.tools.find((t) => t.tool === "write_todos");
+                    if (existingTool) { existingTool.args = event.args; existingTool.status = "running"; }
+                    else { step.tools.push({ tool: event.tool, args: event.args, status: "running" }); }
+                  } else {
+                    step.tools.push({ tool: event.tool, args: event.args, status: "running" });
+                  }
+                }
+                return steps;
+              });
+              if (event.agent && event.tool !== "emit_chat_message") {
+                currentOrchestratorText += `\\n\\n**→ ${event.tool}**`;
+                setOrchestratorText(currentOrchestratorText);
+              }
+              break;
+            case "tool_result":
+              setPipelineSteps((prev) => {
+                const steps = [...prev];
+                const step = steps.find((s) => s.agent === event.agent);
+                if (step) { const tool = step.tools.findLast((t) => t.tool === event.tool); if (tool) { tool.status = "done"; tool.summary = event.summary; } }
+                return steps;
+              });
+              if (event.agent && event.summary && event.tool !== "emit_chat_message") {
+                currentOrchestratorText += `\\n> ${event.summary.slice(0, 200)}`;
+                setOrchestratorText(currentOrchestratorText);
+              }
+              break;
+            case "agent_end":
+              setPipelineSteps((prev) => {
+                const steps = [...prev];
+                const step = steps.find((s) => s.agent === event.agent);
+                if (step) step.status = "done";
+                return steps;
+              });
+              break;
+            case "finish":
+              if (event.report_ready) {
+                try { await fetchReport(); } catch { if (!cancelled) { setStatus("error"); setErrorText("Failed to load report after completion."); } }
+              } else {
+                if (!cancelled) setStatus("failed");
+              }
+              break;
+            case "error":
+              if (!cancelled) { setStatus("error"); setErrorText(event.errorText || "An error occurred"); }
+              break;
+          }
+        };
+
+        try {
+          while (true) {
+            if (cancelled) { reader.cancel().catch(() => {}); break; }
+            const { done, value } = await reader.read();
+            if (value) buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() || "";
+            for (const line of lines) {
+              if (!line.startsWith("data: ")) continue;
+              const raw = line.slice(6).trim();
+              if (!raw || raw === "[DONE]") continue;
+              try { await handleEvent(JSON.parse(raw)); } catch (e) { console.error("Error parsing SSE:", e, raw); }
+            }
+            if (done) {
+              const rest = buffer.trim();
+              if (rest.startsWith("data: ")) {
+                try { await handleEvent(JSON.parse(rest.slice(6).trim())); } catch { /* ignore */ }
+              }
+              break;
+            }
+          }
+        } catch {
+          // SSE stream dropped — retry
+          if (!cancelled) {
+            await new Promise<void>((r) => setTimeout(r, 3000));
+            if (!cancelled) checkAndConnect();
+          }
+        } finally {
+          reader.cancel().catch(() => {});
         }
       };
+
       setStatus("loading");
-      poll();
+      checkAndConnect();
       return () => { cancelled = true; };
     }
 

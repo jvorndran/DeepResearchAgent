@@ -6,6 +6,7 @@ import ReactMarkdown from "react-markdown";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { usePretextHeight, useElementWidth } from "@/hooks/use-pretext";
 import type { Message } from "@/lib/types";
 
 const assistantProse =
@@ -44,6 +45,20 @@ export default function ChatInterface({
   onBeginResearch,
 }: ChatInterfaceProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const { ref: streamContainerRef, width: streamContainerWidth } = useElementWidth<HTMLDivElement>();
+
+  // Pretext-powered height reservation for orchestratorText as it streams
+  // Font: 18px Cormorant Garamond (assistantProse uses font-serif)
+  // Line-height: 28px (approx prose-lg default)
+  const streamFont = "18px 'Cormorant Garamond', serif";
+  const streamLineHeight = 28;
+  const streamHorizontalPadding = 32; // pl-4 = 16px, plus some buffer
+  const { height: reservedStreamHeight } = usePretextHeight(
+    orchestratorText,
+    streamFont,
+    Math.max(0, streamContainerWidth - streamHorizontalPadding),
+    streamLineHeight
+  );
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -89,12 +104,15 @@ export default function ChatInterface({
             ))}
 
             {isStreamingChat && (
-              <div className="flex flex-col gap-2 animate-in fade-in duration-500">
+              <div ref={streamContainerRef} className="flex flex-col gap-2 animate-in fade-in duration-500">
                 <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground font-sans flex items-center gap-2">
                   <span className="w-1.5 h-1.5 bg-primary rounded-full animate-pulse"></span>
                   Processing
                 </div>
-                <div className="pl-4 border-l-2 border-primary/50 text-foreground/70">
+                <div 
+                  className="pl-4 border-l-2 border-primary/50 text-foreground/70 transition-[min-height] duration-300 ease-out"
+                  style={{ minHeight: `${reservedStreamHeight}px` }}
+                >
                   {orchestratorText ? (
                     <MarkdownContent className={`${assistantProse} prose-p:text-foreground/80`}>
                       {orchestratorText}
@@ -134,9 +152,14 @@ export default function ChatInterface({
               onChange={(e) => onInputChange(e.target.value)}
               onKeyDown={handleKeyDown}
               disabled={isStreamingChat}
+              autoResize={true}
+              font="18px 'Cormorant Garamond', serif"
+              lineHeight={28}
+              paddingVertical={48}
+              maxHeight={300}
               placeholder="e.g., Analyze the historical relationship between US GDP growth and tech sector valuations..."
               data-testid="research-input"
-              className="min-h-[80px] max-h-[300px] w-full resize-none border-0 bg-transparent px-6 py-6 text-lg font-serif shadow-none focus-visible:ring-0 disabled:opacity-50 placeholder:text-muted-foreground/50 placeholder:font-sans placeholder:text-base placeholder:font-light"
+              className="w-full resize-none border-0 bg-transparent px-6 py-6 text-lg font-serif shadow-none focus-visible:ring-0 disabled:opacity-50 placeholder:text-muted-foreground/50 placeholder:font-sans placeholder:text-base placeholder:font-light overflow-hidden"
               rows={1}
             />
             <div className="flex items-center justify-between px-6 pb-4 pt-2 border-t border-border/30">

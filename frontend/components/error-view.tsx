@@ -1,8 +1,10 @@
 "use client";
 
+import { memo } from "react";
 import { useRouter } from "next/navigation";
 import { Warning, ArrowLeft } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
+import { usePretextHeight, useElementWidth } from "@/hooks/use-pretext";
 import type { ResearchStatus } from "@/lib/types";
 
 interface ErrorViewProps {
@@ -10,8 +12,22 @@ interface ErrorViewProps {
   errorText?: string;
 }
 
-export default function ErrorView({ status, errorText }: ErrorViewProps) {
+export default memo(function ErrorView({ status, errorText }: ErrorViewProps) {
   const router = useRouter();
+  const { ref: logRef, width: logWidth } = useElementWidth<HTMLDivElement>();
+
+  // Pretext-powered height reservation for error log
+  // Font: 14px monospace (text-sm font-mono)
+  // Line-height: 20px (approx text-sm default)
+  const logFont = "14px ui-monospace, monospace";
+  const logLineHeight = 20;
+  const logPadding = 48; // p-6 = 24px each side
+  const { height: reservedLogHeight } = usePretextHeight(
+    errorText || "The quality analyst may have rejected the report after maximum retries, or a system timeout occurred.",
+    logFont,
+    Math.max(0, logWidth - logPadding),
+    logLineHeight
+  );
 
   return (
     <div data-testid="error-view" className="flex-1 flex items-center justify-center p-6 md:p-12 lg:p-24 bg-background animate-in fade-in duration-1000">
@@ -34,7 +50,11 @@ export default function ErrorView({ status, errorText }: ErrorViewProps) {
             </p>
           </div>
 
-          <div className="w-full text-left bg-background border border-destructive/20 p-6">
+          <div 
+            ref={logRef} 
+            className="w-full text-left bg-background border border-destructive/20 p-6 transition-[min-height] duration-300 ease-out"
+            style={{ minHeight: reservedLogHeight ? `${reservedLogHeight + logPadding}px` : "auto" }}
+          >
             <div className="text-[10px] uppercase tracking-[0.2em] text-destructive/70 font-mono mb-4">
               Error.Log
             </div>
@@ -54,4 +74,4 @@ export default function ErrorView({ status, errorText }: ErrorViewProps) {
       </div>
     </div>
   );
-}
+});

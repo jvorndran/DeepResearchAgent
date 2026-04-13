@@ -1,5 +1,6 @@
 "use client";
 
+import { memo } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 
@@ -7,7 +8,7 @@ interface AppHeaderProps {
   showNewResearch?: boolean;
 }
 
-export default function AppHeader({ showNewResearch }: AppHeaderProps) {
+export default memo(function AppHeader({ showNewResearch }: AppHeaderProps): React.ReactNode {
   return (
     <header className="flex items-center justify-between px-8 py-6 border-b border-border bg-background sticky top-0 z-10 transition-all duration-300">
       <Link href="/" className="flex items-center gap-3 group">
@@ -26,4 +27,4 @@ export default function AppHeader({ showNewResearch }: AppHeaderProps) {
       )}
     </header>
   );
-}
+});

@@ -1,16 +1,77 @@
 "use client";
 
+import { useMemo, memo, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 import { CaretRight, ChartBar, FileText } from "@phosphor-icons/react";
 import ReportChart from "@/components/report-chart";
+import { usePretextHeight, useElementWidth } from "@/hooks/use-pretext";
+import { prepare, measureLineStats } from "@chenglou/pretext";
 import type { ResearchReport } from "@/lib/types";
 
 interface ReportViewProps {
   report: ResearchReport;
 }
 
-export default function ReportView({ report }: ReportViewProps) {
-  const renderMarkdownWithCharts = (markdown: string) => {
+const DataSourceCard = memo(function DataSourceCard({ source }: { source: ResearchReport["data_sources"][number] }) {
+  const { ref: containerRef, width: containerWidth } = useElementWidth<HTMLDivElement>();
+
+  // Use Pretext to find the "shrink-wrap" width — the tightest width that fits the longest line.
+  // Font: 14px sans-serif (text-sm font-sans)
+  const font = "14px var(--font-manrope), sans-serif";
+  const horizontalPadding = 40; // p-5 = 20px each side
+  
+  const shrinkWrapWidth = useMemo(() => {
+    if (!source.description || containerWidth <= 0) return undefined;
+    
+    const prepared = prepare(source.description, font);
+    // Measure line stats at the current container width
+    const { maxLineWidth } = measureLineStats(prepared as any, containerWidth - horizontalPadding);
+    
+    // Add back the padding
+    return Math.ceil(maxLineWidth + horizontalPadding);
+  }, [source.description, containerWidth, font]);
+
+  return (
+    <div 
+      ref={containerRef}
+      style={{ maxWidth: shrinkWrapWidth ? `${shrinkWrapWidth}px` : "100%" }}
+      className="flex flex-col gap-2 p-5 bg-muted/30 rounded-sm border border-border/50 transition-[max-width] duration-500 ease-out"
+    >
+      <span className="font-sans font-bold text-foreground">{source.provider}</span>
+      <span className="font-sans text-sm text-muted-foreground leading-relaxed">{source.description}</span>
+      <div className="flex flex-wrap gap-2 mt-3">
+        {source.tickers?.map((t) => (
+          <span key={t} className="bg-background px-2 py-1 text-xs font-mono text-muted-foreground border border-border rounded-sm">
+            {t}
+          </span>
+        ))}
+        {source.series_ids?.map((s) => (
+          <span key={s} className="bg-background px-2 py-1 text-xs font-mono text-muted-foreground border border-border rounded-sm">
+            {s}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+});
+
+export default memo(function ReportView({ report }: ReportViewProps) {
+  const { ref: summaryRef, width: summaryWidth } = useElementWidth<HTMLDivElement>();
+
+  // Pretext-powered height reservation for executive summary
+  // Font: 16px sans-serif (text-base font-sans)
+  // Line-height: 24px (approx text-base default)
+  const summaryFont = "16px var(--font-manrope), sans-serif";
+  const summaryLineHeight = 24;
+  const { height: reservedSummaryHeight } = usePretextHeight(
+    report.executive_summary,
+    summaryFont,
+    Math.max(0, summaryWidth),
+    summaryLineHeight
+  );
+
+  const renderMarkdownWithCharts = useCallback((markdown?: string) => {
+    if (!markdown) return null;
     const parts = markdown.split(/(<!--\s*CHART:\S+?\s*-->)/g);
     return parts.map((part, index) => {
       const match = part.match(/<!--\s*CHART:(\S+?)\s*-->/);
@@ -25,7 +86,7 @@ export default function ReportView({ report }: ReportViewProps) {
       }
       return <ReactMarkdown key={index}>{part}</ReactMarkdown>;
     });
-  };
+  }, [report.charts]);
 
   return (
     <div data-testid="report-view" className="flex-1 overflow-y-auto p-4 md:p-8 lg:p-12 bg-background">
@@ -48,9 +109,15 @@ export default function ReportView({ report }: ReportViewProps) {
           <h2 className="text-lg font-bold font-sans text-foreground mb-3">
             Executive Summary
           </h2>
-          <p className="text-base font-sans leading-relaxed text-muted-foreground max-w-4xl">
-            {report.executive_summary}
-          </p>
+          <div 
+            ref={summaryRef} 
+            style={{ minHeight: `${reservedSummaryHeight}px` }}
+            className="transition-[min-height] duration-300 ease-out"
+          >
+            <p className="text-base font-sans leading-relaxed text-muted-foreground max-w-4xl">
+              {report.executive_summary}
+            </p>
+          </div>
         </section>
 
         {/* Main Content */}
@@ -67,22 +134,7 @@ export default function ReportView({ report }: ReportViewProps) {
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               {report.data_sources.map((source, idx) => (
-                <div key={idx} className="flex flex-col gap-2 p-5 bg-muted/30 rounded-sm border border-border/50">
-                  <span className="font-sans font-bold text-foreground">{source.provider}</span>
-                  <span className="font-sans text-sm text-muted-foreground leading-relaxed">{source.description}</span>
-                  <div className="flex flex-wrap gap-2 mt-3">
-                    {source.tickers?.map((t) => (
-                      <span key={t} className="bg-background px-2 py-1 text-xs font-mono text-muted-foreground border border-border rounded-sm">
-                        {t}
-                      </span>
-                    ))}
-                    {source.series_ids?.map((s) => (
-                      <span key={s} className="bg-background px-2 py-1 text-xs font-mono text-muted-foreground border border-border rounded-sm">
-                        {s}
-                      </span>
-                    ))}
-                  </div>
-                </div>
+                <DataSourceCard key={idx} source={source} />
               ))}
             </div>
           </section>
@@ -90,4 +142,4 @@ export default function ReportView({ report }: ReportViewProps) {
       </div>
     </div>
   );
-}
+});
