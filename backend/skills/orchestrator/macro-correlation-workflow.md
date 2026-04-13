@@ -15,7 +15,7 @@ triggers: [GDP, unemployment, inflation, CPI, interest rate, FRED, macro, correl
 1. **Merge:** Inner join on "date".
 2. **Stats:** Pearson r, p-value, Spearman rho (`scipy.stats`).
 3. **Resample:** Resample to lower frequency (e.g., quarterly) before join.
-4. **Paths:** Use Windows absolute paths for `execute` and `pandas.read_csv`, but `/projects/...` virtual paths for filesystem tools.
+4. **Paths:** Use absolute paths consistently for all tools (`execute`, `pandas.read_csv`, and filesystem tools).
 5. **Quarter Labels:** Format quarterly labels as `YYYY Qn`; never use unsupported `strftime` directives like `%Q`.
 6. **Charts:** 
    - `time_series_overlay`: Line chart (both series).

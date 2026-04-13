@@ -36,7 +36,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Ensure stdout/stderr handle Unicode on Windows
+# Ensure stdout/stderr handle Unicode correctly
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 if hasattr(sys.stderr, "reconfigure"):

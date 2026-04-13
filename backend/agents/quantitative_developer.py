@@ -26,16 +26,9 @@ DATA_STORAGE_DIR = os.getenv("DATA_STORAGE_DIR", str(_BACKEND_DIR / "data"))
 # Absolute path so analysis.py scripts use it regardless of sandbox CWD
 OUTPUT_BASE_DIR = os.getenv("OUTPUT_DIR", str(_BACKEND_DIR / "outputs"))
 
-# LocalShellBackend virtual path: strip drive letter so C:\foo\bar → /foo/bar.
-# write_file / read_file / ls / glob / grep REQUIRE virtual paths starting with /.
-# execute uses real Windows paths because it spawns a subprocess.
-import re as _re
-OUTPUT_BASE_VIRTUAL = _re.sub(r'^[A-Za-z]:[/\\]', '/', OUTPUT_BASE_DIR).replace('\\', '/')
-DATA_STORAGE_VIRTUAL = _re.sub(r'^[A-Za-z]:[/\\]', '/', DATA_STORAGE_DIR).replace('\\', '/')
-
 # Prefer the venv Python (has pandas/numpy/scipy) over the bare system interpreter.
-# The venv is always at backend/.venv/Scripts/python.exe on Windows.
-_VENV_PYTHON = _BACKEND_DIR / ".venv" / "Scripts" / "python.exe"
+# The venv is always at backend/.venv/bin/python on Linux.
+_VENV_PYTHON = _BACKEND_DIR / ".venv" / "bin" / "python"
 PYTHON_EXECUTABLE = str(_VENV_PYTHON) if _VENV_PYTHON.exists() else sys.executable
 
 
@@ -47,19 +40,16 @@ QUANT_DEVELOPER_SYSTEM_PROMPT = f"""# ROLE
 You are the Quantitative Developer. You write and execute Python code for mathematical analysis and Recharts-compatible chart definitions.
 
 # PATHS
-- **Virtual path only:** Use `/projects/...` paths with `write_file`, `read_file`, `ls`, `glob`, and `edit_file`. NEVER pass `C:\\...` paths to these filesystem tools.
-- **Windows path only:** Use full absolute paths with `execute` and `pandas.read_csv`.
-- **Path conversion rule:** Convert `C:\\projects\\DeepResearchAgent\\...` to `/projects/DeepResearchAgent/...` before any filesystem tool call.
+- Use absolute paths for all tools (`write_file`, `read_file`, `ls`, `glob`, `edit_file`, `execute`, and `pandas.read_csv`).
 - Interpreter for execution: `{PYTHON_EXECUTABLE}`
 - Output base: `{OUTPUT_BASE_DIR}`
 
 # WORKFLOW
-1. Derive virtual equivalents for every Windows file path you need to inspect with filesystem tools.
-2. `write_file` `{OUTPUT_BASE_VIRTUAL}/{{job_id}}/code/analysis.py` → 3. `execute` code → 4. If error, `read_file` stderr, `edit_file`, retry (max 3) → 5. `read_file` charts.json.
+1. `write_file` `{OUTPUT_BASE_DIR}/{{job_id}}/code/analysis.py` → 2. `execute` code → 3. If error, `read_file` stderr, `edit_file`, retry (max 3) → 4. `read_file` charts.json.
 Do not paste raw Python into the chat response. Always send the script via a named `write_file` tool call with both the target path and full file contents.
 
 # CODING RULES
-- Create output dir: `Path(r"{OUTPUT_BASE_DIR}\\{{job_id}}").mkdir(parents=True, exist_ok=True)`
+- Create output dir: `Path("{OUTPUT_BASE_DIR}/{{job_id}}").mkdir(parents=True, exist_ok=True)`
 - Save `charts.json` (dict keyed by snake_case ID) to `{OUTPUT_BASE_DIR}/{{job_id}}/charts.json`.
 - Every axis chart MUST include: `id`, `type`, `title`, `description`, `xAxisKey`, `series`, `data`.
 - Axis charts MAY include `referenceLines`: an array of `{{"axis": "x"|"y", "value": <str|number>, "label": <str>, "color": <hex>, "dashed": <bool>}}`. Use these to mark meaningful thresholds, averages, targets, or events whenever they add analytical value (e.g., pre-/post-crisis baseline, Federal Reserve rate decision date, average line).

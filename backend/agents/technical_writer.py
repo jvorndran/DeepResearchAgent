@@ -125,7 +125,7 @@ def _normalize_chart_definitions(charts_on_disk: dict) -> dict:
 
 
 def _extract_job_id_from_path(path: str) -> str:
-    match = re.search(r"[\\/](test-[^\\/]+)[\\/]", path)
+    match = re.search(r"/(test-[^/]+)/", path)
     return match.group(1) if match else ""
 
 @tool
@@ -173,73 +173,42 @@ def plan_report_structure(
         else:
             chart_ids = list(charts_data.keys())
     except (FileNotFoundError, json.JSONDecodeError, OSError):
-        # Try replacing backslashes with forward slashes as a fallback
-        try:
-            clean_path = charts_json_path.replace("\\", "/")
-            raw = Path(clean_path).read_text(encoding="utf-8")
-            charts_data = json.loads(raw)
-            if isinstance(charts_data, list):
-                chart_ids = [item["name"] for item in charts_data if isinstance(item, dict) and "name" in item]
-            else:
-                chart_ids = list(charts_data.keys())
-        except Exception:
-            chart_ids = []
+        chart_ids = []
 
-    # Base mandatory sections always present
-    base_intro = [
-        {"title": "Executive Summary", "description": "2-3 sentence overview of key findings", "chart_id": None},
-        {"title": "Research Query", "description": "Original user question restated", "chart_id": None},
-        {"title": "Data Sources", "description": "APIs, tickers, date ranges, row counts", "chart_id": None},
-    ]
+    # Determine if query is Macro or Equity/Company focused
+    macro_types = {"macro_indicator", "trend_analysis", "correlation_analysis"}
+    is_macro = query_type in macro_types
 
-    base_footer = [
-        {"title": "Methodology", "description": "Data collection and analysis approach", "chart_id": None},
-        {"title": "Limitations", "description": "What the analysis does not cover", "chart_id": None},
-        {"title": "Disclaimer", "description": "Financial disclaimer and past performance notice", "chart_id": None},
-    ]
+    if is_macro:
+        outline = [
+            {"title": "Executive Summary", "description": "Macro View and Key Findings (2-3 sentences)", "chart_id": None},
+            {"title": "Research Query", "description": "Original user question restated", "chart_id": None},
+            {"title": "Data Sources", "description": "APIs, tickers, date ranges, row counts", "chart_id": None},
+            {"title": "Macro Environment & Policy Context", "description": "Current macroeconomic conditions and relevant policy", "chart_id": None},
+            {"title": "Indicator Analysis & Market Implications", "description": "Trends in data and how they affect the broader market", "chart_id": None},
+            {"title": "Structural Risks", "description": "Risks to the thesis and economic headwinds", "chart_id": None},
+            {"title": "Methodology", "description": "Data collection and analysis approach", "chart_id": None},
+            {"title": "Limitations", "description": "What the analysis does not cover", "chart_id": None},
+            {"title": "Disclaimer", "description": "Financial disclaimer and past performance notice", "chart_id": None},
+        ]
+    else:
+        outline = [
+            {"title": "Executive Summary", "description": "The 'Call', Price Target Implications, and Key Findings", "chart_id": None},
+            {"title": "Research Query", "description": "Original user question restated", "chart_id": None},
+            {"title": "Data Sources", "description": "APIs, tickers, date ranges, row counts", "chart_id": None},
+            {"title": "Investment Thesis & Catalysts", "description": "Core thesis and upcoming catalysts for the asset", "chart_id": None},
+            {"title": "Financial Analysis & Valuation", "description": "Historical performance, forecasts, and valuation", "chart_id": None},
+            {"title": "Investment Risks", "description": "Company-specific, operational, and macro risks", "chart_id": None},
+            {"title": "Methodology", "description": "Data collection and analysis approach", "chart_id": None},
+            {"title": "Limitations", "description": "What the analysis does not cover", "chart_id": None},
+            {"title": "Disclaimer", "description": "Financial disclaimer and past performance notice", "chart_id": None},
+        ]
 
-    # Query-type-specific middle sections
-    type_sections: dict[str, list[dict]] = {
-        "correlation_analysis": [
-            {"title": "Correlation Findings", "description": "Pearson/Spearman coefficients and significance", "chart_id": None},
-            {"title": "Time Series Trends", "description": "How each variable moved over time", "chart_id": None},
-            {"title": "Scatter Analysis", "description": "Joint distribution and outliers", "chart_id": None},
-        ],
-        "trend_analysis": [
-            {"title": "Trend Overview", "description": "Direction and magnitude of trends", "chart_id": None},
-            {"title": "Key Inflection Points", "description": "Notable shifts in direction", "chart_id": None},
-            {"title": "Comparative Performance", "description": "Benchmarking against peers or indices", "chart_id": None},
-        ],
-        "sector_comparison": [
-            {"title": "Sector Overview", "description": "High-level sector landscape", "chart_id": None},
-            {"title": "Metric Comparison", "description": "Side-by-side key metrics", "chart_id": None},
-            {"title": "Relative Positioning", "description": "Leaders and laggards within sector", "chart_id": None},
-        ],
-        "macro_indicator": [
-            {"title": "Macro Environment", "description": "Current macro context", "chart_id": None},
-            {"title": "Indicator Analysis", "description": "Trends in selected macro indicators", "chart_id": None},
-            {"title": "Asset Correlation", "description": "How macro indicators relate to asset prices", "chart_id": None},
-        ],
-        "earnings_analysis": [
-            {"title": "Earnings Overview", "description": "Revenue, EPS, and margins summary", "chart_id": None},
-            {"title": "Quarter-over-Quarter Trends", "description": "Sequential and YoY comparisons", "chart_id": None},
-            {"title": "Guidance and Estimates", "description": "Beat/miss history and forward guidance", "chart_id": None},
-        ],
-        "custom": [
-            {"title": "Key Findings", "description": "Primary insights from analysis", "chart_id": None},
-            {"title": "Detailed Analysis", "description": "Supporting evidence and statistics", "chart_id": None},
-        ],
-    }
-
-    middle = type_sections.get(query_type, type_sections["custom"])
-
-    # Distribute discovered chart IDs across middle sections
+    # Distribute discovered chart IDs across middle sections (indices 3, 4, 5)
     chart_queue = list(chart_ids)
-    for section in middle:
+    for i in range(3, 6):
         if chart_queue:
-            section["chart_id"] = chart_queue.pop(0)
-
-    outline = base_intro + middle + base_footer
+            outline[i]["chart_id"] = chart_queue.pop(0)
 
     return json.dumps({
         "outline": outline,
@@ -293,7 +262,7 @@ def write_research_report(
 
     Returns:
         JSON string with:
-        - report_path: Absolute Windows path where report.json was saved
+        - report_path: Absolute path where report.json was saved
         - chart_count: Number of <!-- CHART:id --> markers found in markdown
         - word_count: Approximate word count of markdown
         - validation_issues: List of non-blocking warnings (may be empty)
@@ -328,17 +297,7 @@ def write_research_report(
         elif isinstance(parsed, dict):
             charts_on_disk = parsed
     except (FileNotFoundError, json.JSONDecodeError, OSError):
-        # Try replacing backslashes with forward slashes as a fallback
-        try:
-            clean_path = charts_json_path.replace("\\", "/")
-            raw_charts = Path(clean_path).read_text(encoding="utf-8")
-            parsed = json.loads(raw_charts)
-            if isinstance(parsed, list):
-                charts_on_disk = {item["name"]: item for item in parsed if isinstance(item, dict) and "name" in item}
-            elif isinstance(parsed, dict):
-                charts_on_disk = parsed
-        except Exception:
-            charts_on_disk = {}
+        charts_on_disk = {}
 
     charts_on_disk = _normalize_chart_definitions(charts_on_disk)
 
@@ -495,13 +454,12 @@ You are the Technical Writer. You synthesize research reports by reading `charts
 2. `write_research_report`: Save your finalized markdown to `report.json`.
 
 # WORKFLOW
-1. **Plan:** Call `plan_report_structure`. Note the available `chart_ids`.
-2. **Draft:** Write the full markdown narrative in your response. The `execution_summary` contains a
+1. **Plan:** Call `plan_report_structure`. Note the available `chart_ids` and the `outline`.
+2. **Draft:** Write the full markdown narrative in your response, following the sections exactly as provided by `plan_report_structure`. The `execution_summary` contains a
    `statistical_summary` field: 1-2 paragraphs of dense computed numbers from the quant developer.
    READ this carefully and weave every specific number into the relevant analysis sections —
    exact slopes, r values, peak dates, deltas, p-values, etc. Do not paraphrase vaguely;
    cite the actual computed values in parentheticals (e.g., "slope of -0.05 pp/month", "r = -0.44, p < 0.001").
-   - Sections: Exec Summary, Query, Data Sources, Analysis (with `<!-- CHART:id -->`), Methodology, Limitations, Disclaimer.
    - Disclaimer must include: "does not constitute financial advice" and "Past performance is not indicative of future results".
 3. **Save:** Call `write_research_report` exactly once with this shape:
    - `markdown`
@@ -516,7 +474,7 @@ You are the Technical Writer. You synthesize research reports by reading `charts
 - **No data through context:** Read `charts.json` through the provided report tools only.
 - **No shell/filesystem tools:** They are blocked for this subagent.
 - **Inline Charts:** Place `<!-- CHART:id -->` markers immediately after the referencing text.
-- **Word Count:** Aim for > 400 words of dense, analytical content.
+- **Word Count:** Aim for 600-800+ words of dense, analytical content in investment bank style.
 - **No fallback thrashing:** If `write_research_report` returns an argument error, call it again with the exact required fields above. Do not try `read_file` or `execute`.
 """,
 

@@ -124,7 +124,7 @@ def _write_status(job_id: str, status: JobStatus, query: str = "") -> None:
         "query": query,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }), encoding="utf-8")
-    os.replace(tmp, final)  # atomic on Windows NTFS (same volume)
+    os.replace(tmp, final)  # atomic rename (POSIX guarantee)
 
 
 def _read_status(job_id: str) -> dict | None:
@@ -600,8 +600,13 @@ async def chat_stream(request: ChatRequest, req: Request):
         _JOBS[job_id] = job_state
         _write_status(job_id, JobStatus.RUNNING, query)  # creates outputs dir immediately
 
+        # Create a fresh orchestrator per job so MCP sessions (FRED, FMP) are
+        # always newly established.  On WSL2, the Hyper-V virtual network drops
+        # idle TCP connections after ~4 min, which silently invalidates the
+        # sessions baked into a shared app.state.agent — causing HTTP 500s from
+        # the FRED MCP server on the first tool call of any subsequent job.
         bg_task = asyncio.create_task(
-            _run_job_background(job_id, query, messages_dict, req.app.state.agent, job_state),
+            _run_job_background(job_id, query, messages_dict, None, job_state),
             name=f"research_{job_id}",
         )
         job_state.task = bg_task

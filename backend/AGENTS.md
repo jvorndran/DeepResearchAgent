@@ -4,17 +4,17 @@ This file is loaded into every agent's system prompt. Rules here apply to ALL ag
 
 ---
 
-## 1. Windows Path Rules
+## 1. Path Rules
 
-This platform runs on **Windows**. There are TWO path systems in use:
+This platform runs on **Linux**. Use absolute paths with forward slashes for all tools.
 
 | Context | Format | Example |
 |---------|--------|---------|
-| `write_file`, `read_file`, `ls`, `glob`, `grep` (virtual filesystem tools) | Virtual path — strip drive letter, use forward slashes | `/projects/DeepResearchAgent/backend/outputs/abc123/report.json` |
-| `execute` (subprocess) | Windows absolute path | `C:\projects\DeepResearchAgent\backend\outputs\abc123\analysis.py` |
-| `pandas.read_csv()` inside scripts | Windows absolute path | `C:\projects\DeepResearchAgent\backend\data\abc123\AAPL_income.csv` |
+| `write_file`, `read_file`, `ls`, `glob`, `grep` | Absolute path | `/home/vorndranj/projects/DeepResearchAgent/backend/outputs/abc123/report.json` |
+| `execute` (subprocess) | Absolute path | `/home/vorndranj/projects/DeepResearchAgent/backend/.venv/bin/python /home/vorndranj/projects/DeepResearchAgent/backend/outputs/abc123/analysis.py` |
+| `pandas.read_csv()` inside scripts | Absolute path | `pd.read_csv("/home/vorndranj/projects/DeepResearchAgent/backend/data/abc123/AAPL_income.csv")` |
 
-**Conversion rule**: `C:\foo\bar` → `/foo/bar` (strip drive letter + colon, convert backslashes)
+Never use backslashes or Windows drive letters in any path.
 
 ---
 
@@ -23,7 +23,7 @@ This platform runs on **Windows**. There are TWO path systems in use:
 **Raw data arrays NEVER cross agent boundaries.** This is the single most important rule.
 
 - The **data-engineer** saves raw data to CSV and returns only: storage paths, row counts, column names, sample rows (2 max).
-- The **quant-developer** reads CSVs directly from disk using Windows paths in `pandas.read_csv()`.
+- The **quant-developer** reads CSVs directly from disk using absolute paths in `pandas.read_csv()`.
 - The **orchestrator** stores only schemas and file paths in its state — never data rows.
 - Tool results exceeding ~500 tokens should be saved to disk; return the path.
 
@@ -71,11 +71,11 @@ Use instead: "historically", "as of the data period", "the trend has shown", "ba
 
 All job outputs are organized under `backend/` using `{job_id}` as the namespace:
 
-| Artifact | Windows Path | Virtual Path |
-|----------|-------------|--------------|
-| Raw data CSVs | `C:\...\backend\data\{job_id}\*.csv` | `/projects/.../backend/data/{job_id}/*.csv` |
-| Analysis script | `C:\...\backend\outputs\{job_id}\code\analysis.py` | `/projects/.../backend/outputs/{job_id}/code/analysis.py` |
-| Charts JSON | `C:\...\backend\outputs\{job_id}\charts.json` | `/projects/.../backend/outputs/{job_id}/charts.json` |
-| Report JSON | `C:\...\backend\outputs\{job_id}\report.json` | `/projects/.../backend/outputs/{job_id}/report.json` |
+| Artifact | Path |
+|----------|------|
+| Raw data CSVs | `/home/vorndranj/projects/DeepResearchAgent/backend/data/{job_id}/*.csv` |
+| Analysis script | `/home/vorndranj/projects/DeepResearchAgent/backend/outputs/{job_id}/code/analysis.py` |
+| Charts JSON | `/home/vorndranj/projects/DeepResearchAgent/backend/outputs/{job_id}/charts.json` |
+| Report JSON | `/home/vorndranj/projects/DeepResearchAgent/backend/outputs/{job_id}/report.json` |
 
 The `job_id` is always available in the runtime context and is automatically injected into tools that need it.

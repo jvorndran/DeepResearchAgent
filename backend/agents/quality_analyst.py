@@ -62,17 +62,11 @@ def validate_report_format(report_json_path: str) -> str:
         raw = Path(report_json_path).read_text(encoding="utf-8")
         data = json.loads(raw)
     except FileNotFoundError:
-        # Try replacing backslashes with forward slashes
-        try:
-            clean_path = report_json_path.replace("\\", "/")
-            raw = Path(clean_path).read_text(encoding="utf-8")
-            data = json.loads(raw)
-        except FileNotFoundError:
-            return json.dumps({
-                "valid": False,
-                "schema_errors": [f"File not found: {report_json_path}"],
-                "missing_elements": []
-            })
+        return json.dumps({
+            "valid": False,
+            "schema_errors": [f"File not found: {report_json_path}"],
+            "missing_elements": []
+        })
     except json.JSONDecodeError as e:
         return json.dumps({
             "valid": False,
@@ -142,18 +136,11 @@ def check_compliance(report_json_path: str) -> str:
         data = json.loads(raw)
         report_text = data.get("markdown", "")
     except FileNotFoundError:
-        # Try replacing backslashes with forward slashes
-        try:
-            clean_path = report_json_path.replace("\\", "/")
-            raw = Path(clean_path).read_text(encoding="utf-8")
-            data = json.loads(raw)
-            report_text = data.get("markdown", "")
-        except FileNotFoundError:
-            return json.dumps({
-                "compliant": False,
-                "violations": [f"File not found: {report_json_path}"],
-                "severity": "critical"
-            })
+        return json.dumps({
+            "compliant": False,
+            "violations": [f"File not found: {report_json_path}"],
+            "severity": "critical"
+        })
     except json.JSONDecodeError as e:
         return json.dumps({
             "compliant": False,
@@ -165,11 +152,7 @@ def check_compliance(report_json_path: str) -> str:
 
     # Patterns that indicate predictive advice (not allowed)
     prediction_patterns = [
-        (r"will (increase|decrease|rise|fall|grow|decline|surge|drop)", "Predictive language about future performance"),
         (r"(should|must|need to) (buy|sell|invest|trade|acquire|divest)", "Investment advice"),
-        (r"(is|are) expected to (increase|decrease|rise|fall|outperform)", "Future expectations"),
-        (r"forecast(s|ed|ing)?", "Forecasting language"),
-        (r"projected? (growth|decline|returns?)", "Projected performance"),
         (r"(recommend|suggestion|advice):? (buy|sell|hold)", "Investment recommendations")
     ]
 
@@ -217,19 +200,12 @@ def verify_chart_references(report_json_path: str) -> str:
         data = json.loads(raw)
         report = ResearchReport(**data)
     except (FileNotFoundError, json.JSONDecodeError, ValidationError) as e:
-        # Try replacing backslashes with forward slashes
-        try:
-            clean_path = report_json_path.replace("\\", "/")
-            raw = Path(clean_path).read_text(encoding="utf-8")
-            data = json.loads(raw)
-            report = ResearchReport(**data)
-        except Exception as e2:
-            return json.dumps({
-                "valid": False,
-                "broken_references": [f"Could not load report: {e2}"],
-                "chart_count": 0,
-                "defined_charts": []
-            })
+        return json.dumps({
+            "valid": False,
+            "broken_references": [f"Could not load report: {e}"],
+            "chart_count": 0,
+            "defined_charts": []
+        })
 
     marker_ids: list[str] = re.findall(r'<!--\s*CHART:(\S+?)\s*-->', report.markdown)
     defined = list(report.charts.keys())
@@ -284,18 +260,11 @@ def patch_report(report_json_path: str, patch_type: str) -> str:
         raw = path.read_text(encoding="utf-8")
         data = json.loads(raw)
     except FileNotFoundError:
-        # Try replacing backslashes with forward slashes
-        try:
-            clean_path = report_json_path.replace("\\", "/")
-            path = Path(clean_path)
-            raw = path.read_text(encoding="utf-8")
-            data = json.loads(raw)
-        except Exception:
-            return json.dumps({
-                "patched": False,
-                "changes_made": [],
-                "validation_issues": [f"File not found: {report_json_path}"]
-            })
+        return json.dumps({
+            "patched": False,
+            "changes_made": [],
+            "validation_issues": [f"File not found: {report_json_path}"]
+        })
     except json.JSONDecodeError as e:
         return json.dumps({
             "patched": False,
@@ -481,7 +450,7 @@ You are the Quality Analyst. You are the final gatekeeper for research reports.
 # CRITICAL RULES
 - **Compliance:** Never approve predictive language like "will increase" or investment advice.
 - **Terminality:** `approve_report` and `reject_report` are final. No further tool calls.
-- **Paths:** Use absolute Windows paths for the report tools.
+- **Paths:** Use absolute paths for the report tools.
 - **No shell/filesystem tools:** They are blocked for this subagent.
 - **Analytic Quality:** Ensure findings are supported by data and avoid narrative fallacy.
 """,

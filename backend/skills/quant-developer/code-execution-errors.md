@@ -12,11 +12,7 @@ triggers: [error, fix, retry, pandas, KeyError, FileNotFoundError]
 
 ## File Paths
 - **Error:** `FileNotFoundError`
-- **Fix:** Always use the Windows absolute path provided by the Orchestrator for `read_csv`.
-
-## Filesystem Tool Paths
-- **Error:** `Windows absolute paths are not supported`
-- **Fix:** `read_file`, `write_file`, `edit_file`, `ls`, and `glob` must use virtual `/projects/...` paths. Convert `C:\projects\DeepResearchAgent\...` to `/projects/DeepResearchAgent/...` first.
+- **Fix:** Always use the absolute path provided by the Orchestrator for `read_csv` and all filesystem tools.
 
 ## Date Labels
 - **Error:** Unsupported `strftime` directives such as `%Q`

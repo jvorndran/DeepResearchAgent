@@ -78,6 +78,8 @@ import time as _time
 
 _de_logger = _logging.getLogger(__name__)
 
+_MCP_INLINE_LIMIT = 800  # chars — MCP results longer than this go to a temp file
+
 
 def _sanitize_nan(result: str) -> str:
     """Replace bare NaN/Infinity tokens so Gemini accepts the JSON payload."""
@@ -89,7 +91,14 @@ def _sanitize_nan(result: str) -> str:
 
 async def _auto_save_result(result: str, tool_name: str) -> str:
     """
-    If the tool result is a raw data array, auto-save it to CSV and return a pointer.
+    Prevent large MCP tool results from entering the LLM message history.
+
+    Two-stage interception:
+    1. Structured data arrays (FRED/FMP time-series): saved to a job-scoped CSV via
+       _save_data_to_storage so save_data can pick it up later.
+    2. Any other result exceeding _MCP_INLINE_LIMIT chars: written verbatim to a raw
+       JSON file under DATA_STORAGE_DIR/_mcp_raw/; the LLM only sees a small preview
+       dict with the file path and the first 400 chars.
     """
     if not isinstance(result, str):
         return result
@@ -97,38 +106,56 @@ async def _auto_save_result(result: str, tool_name: str) -> str:
     try:
         data = json.loads(result)
     except Exception:
-        return result
+        # Not valid JSON — apply size limit to raw string too
+        data = None
 
-    is_data_array = isinstance(data, list) and len(data) > 0
-    is_data_dict = (
-        isinstance(data, dict)
-        and "data" in data
-        and isinstance(data["data"], list)
-        and len(data["data"]) > 0
-    )
+    if data is not None:
+        is_data_array = isinstance(data, list) and len(data) > 0
+        is_data_dict = (
+            isinstance(data, dict)
+            and "data" in data
+            and isinstance(data["data"], list)
+            and len(data["data"]) > 0
+        )
 
-    if not (is_data_array or is_data_dict):
-        return result
+        if is_data_array or is_data_dict:
+            try:
+                timestamp = int(_time.time())
+                file_path = DATA_STORAGE_DIR / "_auto" / f"{tool_name}_{timestamp}.csv"
+                meta = _run_async(_save_data_to_storage(data, file_path))
+                saved_path = meta["storage_path"]
+                pointer = {
+                    "status": "auto_saved",
+                    "file_path": saved_path,
+                    "row_count": meta["row_count"],
+                    "columns": meta["columns"],
+                    "note": "Raw data auto-saved. Pass this entire JSON to save_data.",
+                }
+                return json.dumps(pointer)
+            except Exception as e:
+                _de_logger.warning("Auto-save failed for tool '%s': %s", tool_name, e)
+                # Fall through to the size-limit check below
 
-    try:
-        timestamp = int(_time.time())
-        file_path = DATA_STORAGE_DIR / "_auto" / f"{tool_name}_{timestamp}.csv"
-        # We'll use the pointer format that _save_data_to_storage already knows
-        meta = _run_async(_save_data_to_storage(data, file_path))
-        saved_path = meta["storage_path"].replace("\\", "/")
-        
-        # Return a pointer JSON that save_data will resolve
-        pointer = {
-            "status": "auto_saved",
-            "file_path": saved_path,
-            "row_count": meta["row_count"],
-            "columns": meta["columns"],
-            "note": "Raw data auto-saved. Pass this entire JSON to save_data."
-        }
-        return json.dumps(pointer)
-    except Exception as e:
-        _de_logger.warning("Auto-save failed for tool '%s': %s", tool_name, e)
-        return result
+    # Fallback: any result still longer than the inline limit goes to a raw file.
+    if len(result) > _MCP_INLINE_LIMIT:
+        try:
+            timestamp = int(_time.time())
+            raw_dir = DATA_STORAGE_DIR / "_mcp_raw"
+            raw_dir.mkdir(parents=True, exist_ok=True)
+            raw_path = raw_dir / f"{tool_name}_{timestamp}.json"
+            raw_path.write_text(result, encoding="utf-8")
+            rel = raw_path.relative_to(Path.cwd()).as_posix()
+            preview = {
+                "file_path": rel,
+                "preview": result[:400],
+                "byte_size": len(result.encode()),
+                "note": "Full MCP response saved to file. Read it only if you need specific fields.",
+            }
+            return json.dumps(preview)
+        except Exception as e:
+            _de_logger.warning("MCP raw save failed for tool '%s': %s", tool_name, e)
+
+    return result
 
 
 def _with_timeout(mcp_tool, timeout_secs: float):
@@ -238,7 +265,7 @@ async def _save_data_to_storage(data: Any, file_path: Path) -> dict:
             pointer_path = pointer.get("file_path")
             if pointer_path:
                 # Resolve physical path to the large result
-                temp_dir = Path(os.getenv("TEMP_DIR", "C:/Users/jvorn/.gemini/tmp/deepresearchagent"))
+                temp_dir = Path(os.getenv("TEMP_DIR", str(Path.home() / ".gemini" / "tmp" / "deepresearchagent")))
                 filename = Path(pointer_path).name
                 physical_path = temp_dir / "large_tool_results" / filename
                 if physical_path.exists():
@@ -335,9 +362,6 @@ def save_data(
 
     try:
         result = _run_async(_save())
-        # Convert path to forward slashes to avoid escaping issues
-        if "storage_path" in result:
-            result["storage_path"] = result["storage_path"].replace("\\", "/")
 
         return json.dumps({
             "status": "success",
@@ -390,17 +414,15 @@ def extract_schema(file_paths: str | list[str]) -> str:
 
     for file_path in file_paths:
         try:
-            # Convert any backslashes to forward slashes
-            clean_path = file_path.replace("\\", "/")
-            df = pd.read_csv(clean_path)
+            df = pd.read_csv(file_path)
             schema = {
-                "file_path": clean_path,
+                "file_path": file_path,
                 "columns": df.columns.tolist(),
                 "dtypes": {col: str(dtype) for col, dtype in df.dtypes.items()},
                 "sample_rows": df.head(2).to_dict('records'),
                 "shape": list(df.shape)
             }
-            schemas[clean_path] = schema
+            schemas[file_path] = schema
 
         except Exception as e:
             schemas[file_path] = {
