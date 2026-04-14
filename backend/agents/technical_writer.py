@@ -29,7 +29,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core.report_schema import ResearchReport, DataSource, ReportMetadata
-from .subagent_tool_guard import FILESYSTEM_AND_SHELL_TOOLS, ToolBlocklistMiddleware
 
 # Absolute output base dir — avoids CWD ambiguity when running as a subagent
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
@@ -154,10 +153,10 @@ def plan_report_structure(
 
     Returns:
         JSON string with:
-        - outline: List of section dicts (title, description, chart_id or null)
+        - general_rules: High-level instructions on how to structure the report
         - query_type: Echoed back
         - chart_ids: List of chart IDs discovered from charts.json
-        - recommended_sections: Count
+        - recommended_word_count: Target word count for the report
     """
     _LAST_REPORT_CONTEXT["charts_json_path"] = charts_json_path
     _LAST_REPORT_CONTEXT["original_query"] = original_query
@@ -180,41 +179,31 @@ def plan_report_structure(
     is_macro = query_type in macro_types
 
     if is_macro:
-        outline = [
-            {"title": "Executive Summary", "description": "Macro View and Key Findings (2-3 sentences)", "chart_id": None},
-            {"title": "Research Query", "description": "Original user question restated", "chart_id": None},
-            {"title": "Data Sources", "description": "APIs, tickers, date ranges, row counts", "chart_id": None},
-            {"title": "Macro Environment & Policy Context", "description": "Current macroeconomic conditions and relevant policy", "chart_id": None},
-            {"title": "Indicator Analysis & Market Implications", "description": "Trends in data and how they affect the broader market", "chart_id": None},
-            {"title": "Structural Risks", "description": "Risks to the thesis and economic headwinds", "chart_id": None},
-            {"title": "Methodology", "description": "Data collection and analysis approach", "chart_id": None},
-            {"title": "Limitations", "description": "What the analysis does not cover", "chart_id": None},
-            {"title": "Disclaimer", "description": "Financial disclaimer and past performance notice", "chart_id": None},
-        ]
+        general_rules = (
+            "You are writing a Macro Report. Structure the report as you see fit using your own headings and subheadings. "
+            "However, you MUST start with an 'Executive Summary' (Macro View and Key Findings). "
+            "Following that, weave your analysis covering the macro environment, policy context, indicator analysis, "
+            "market implications, and structural risks. "
+            "At the very bottom, include 'Research Query' (restating the original question) and a 'Disclaimer'. "
+            "CRITICAL: You MUST include every chart from the `chart_ids` list in your markdown using the syntax `<!-- CHART:id -->`. "
+            "Place each chart marker immediately after the paragraph that discusses its data."
+        )
     else:
-        outline = [
-            {"title": "Executive Summary", "description": "The 'Call', Price Target Implications, and Key Findings", "chart_id": None},
-            {"title": "Research Query", "description": "Original user question restated", "chart_id": None},
-            {"title": "Data Sources", "description": "APIs, tickers, date ranges, row counts", "chart_id": None},
-            {"title": "Investment Thesis & Catalysts", "description": "Core thesis and upcoming catalysts for the asset", "chart_id": None},
-            {"title": "Financial Analysis & Valuation", "description": "Historical performance, forecasts, and valuation", "chart_id": None},
-            {"title": "Investment Risks", "description": "Company-specific, operational, and macro risks", "chart_id": None},
-            {"title": "Methodology", "description": "Data collection and analysis approach", "chart_id": None},
-            {"title": "Limitations", "description": "What the analysis does not cover", "chart_id": None},
-            {"title": "Disclaimer", "description": "Financial disclaimer and past performance notice", "chart_id": None},
-        ]
-
-    # Distribute discovered chart IDs across middle sections (indices 3, 4, 5)
-    chart_queue = list(chart_ids)
-    for i in range(3, 6):
-        if chart_queue:
-            outline[i]["chart_id"] = chart_queue.pop(0)
+        general_rules = (
+            "You are writing an Equity Report. Structure the report as you see fit using your own headings and subheadings. "
+            "However, you MUST start with an 'Executive Summary' (The 'Call', Price Target Implications, and Key Findings). "
+            "Following that, weave your analysis covering the investment thesis, catalysts, financial analysis, "
+            "valuation, and investment risks. "
+            "At the very bottom, include 'Research Query' (restating the original question) and a 'Disclaimer'. "
+            "CRITICAL: You MUST include every chart from the `chart_ids` list in your markdown using the syntax `<!-- CHART:id -->`. "
+            "Place each chart marker immediately after the paragraph that discusses its data."
+        )
 
     return json.dumps({
-        "outline": outline,
+        "general_rules": general_rules,
         "query_type": query_type,
         "chart_ids": chart_ids,
-        "recommended_sections": len(outline)
+        "recommended_word_count": "1000+ words"
     })
 
 
@@ -238,14 +227,11 @@ def write_research_report(
 
     Args:
         markdown: The COMPLETE markdown narrative you have written. Must include:
-                  - ## Executive Summary (2-3 sentences with specific numbers)
-                  - ## Research Query (verbatim original query)
-                  - ## Data Sources (provider, series IDs, date ranges, row counts)
-                  - Content sections (each unique, citing specific statistics)
+                  - ## Executive Summary (at the top, 2-3 sentences with specific numbers)
+                  - Your own analysis sections with custom headings and subheadings
                   - <!-- CHART:id --> markers placed inline after the text that
                     references each chart (NOT clustered at the bottom)
-                  - ## Methodology
-                  - ## Limitations
+                  - ## Research Query (verbatim original query, moved to the bottom)
                   - ## Disclaimer (MUST contain "does not constitute financial advice"
                     AND "Past performance is not indicative of future results")
         charts_json_path: Path to charts.json on disk (e.g. "outputs/abc123/charts.json")
@@ -304,14 +290,7 @@ def write_research_report(
     # -------------------------------------------------------------------------
     # 2. Append footer to the LLM-written markdown
     # -------------------------------------------------------------------------
-    footer = (
-        "\n\n---\n\n"
-        f"*Generated by Deep Research Agent*  \n"
-        f"*Job ID: {job_id}*  \n"
-        f"*Generated at: {datetime.now(timezone.utc).isoformat()}*"
-    )
-    if "Generated by Deep Research Agent" not in markdown:
-        markdown = markdown.rstrip() + footer
+    # (Footer has been removed per user request)
 
     # -------------------------------------------------------------------------
     # 3. Build DataSource objects
@@ -411,9 +390,6 @@ def _save_report(report: ResearchReport, output_path: str) -> list[str]:
         if mid not in report.charts:
             issues.append(f"Chart marker <!-- CHART:{mid} --> references unknown chart ID '{mid}'")
 
-    if "Generated by Deep Research Agent" not in report.markdown:
-        issues.append("Missing footer in markdown")
-
     try:
         path = Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -454,13 +430,14 @@ You are the Technical Writer. You synthesize research reports by reading `charts
 2. `write_research_report`: Save your finalized markdown to `report.json`.
 
 # WORKFLOW
-1. **Plan:** Call `plan_report_structure`. Note the available `chart_ids` and the `outline`.
-2. **Draft:** Write the full markdown narrative in your response, following the sections exactly as provided by `plan_report_structure`. The `execution_summary` contains a
+1. **Plan:** Call `plan_report_structure`. Note the available `chart_ids` and the `general_rules`.
+2. **Draft:** Write the full markdown narrative in your response, following the general rules provided by `plan_report_structure`. The `execution_summary` contains a
    `statistical_summary` field: 1-2 paragraphs of dense computed numbers from the quant developer.
    READ this carefully and weave every specific number into the relevant analysis sections —
    exact slopes, r values, peak dates, deltas, p-values, etc. Do not paraphrase vaguely;
    cite the actual computed values in parentheticals (e.g., "slope of -0.05 pp/month", "r = -0.44, p < 0.001").
    - Disclaimer must include: "does not constitute financial advice" and "Past performance is not indicative of future results".
+   - Make sure to place the "Research Query" and "Disclaimer" at the very bottom.
 3. **Save:** Call `write_research_report` exactly once with this shape:
    - `markdown`
    - `charts_json_path`
@@ -473,18 +450,12 @@ You are the Technical Writer. You synthesize research reports by reading `charts
 - **YOU write the prose.** The tool only saves it.
 - **No data through context:** Read `charts.json` through the provided report tools only.
 - **No shell/filesystem tools:** They are blocked for this subagent.
-- **Inline Charts:** Place `<!-- CHART:id -->` markers immediately after the referencing text.
-- **Word Count:** Aim for 600-800+ words of dense, analytical content in investment bank style.
+- **Inline Charts:** CRITICAL! Place `<!-- CHART:id -->` markers immediately after the referencing text. You MUST embed all provided `chart_ids`.
+- **Word Count:** Aim for 1000+ words of dense, analytical content in investment bank style.
 - **No fallback thrashing:** If `write_research_report` returns an argument error, call it again with the exact required fields above. Do not try `read_file` or `execute`.
 """,
 
     "tools": [plan_report_structure, write_research_report],
-    "middleware": [
-        ToolBlocklistMiddleware(
-            FILESYSTEM_AND_SHELL_TOOLS,
-            "Use plan_report_structure and write_research_report for artifact access instead.",
-        )
-    ],
 
     "model": "google_genai:gemini-3-flash-preview",
 

@@ -34,7 +34,6 @@ from pathlib import Path
 from mcp_clients.fmp_mcp_client import create_fmp_mcp_client, get_fmp_mcp_config, list_fmp_tools as list_fmp_tools_async
 from mcp_clients.fred_mcp_client import create_fred_mcp_client
 from core.context import ResearchContext
-from .subagent_tool_guard import FILESYSTEM_AND_SHELL_TOOLS, ToolBlocklistMiddleware
 
 
 # =============================================================================
@@ -568,12 +567,6 @@ async def get_data_engineer_subagent():
         "description": description,
         "system_prompt": _build_system_prompt(),
         "tools": [save_data, extract_schema] + fmp_tools + fred_tools,
-        "middleware": [
-            ToolBlocklistMiddleware(
-                FILESYSTEM_AND_SHELL_TOOLS,
-                "Fetch and save data through the provided MCP tools and storage helpers instead.",
-            )
-        ],
         "model": "google_genai:gemini-3-flash-preview",
         "skills": [str(_BACKEND_DIR / "skills" / "data-engineer")]
     }

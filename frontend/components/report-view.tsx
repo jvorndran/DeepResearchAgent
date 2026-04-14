@@ -13,30 +13,8 @@ interface ReportViewProps {
 }
 
 const DataSourceCard = memo(function DataSourceCard({ source }: { source: ResearchReport["data_sources"][number] }) {
-  const { ref: containerRef, width: containerWidth } = useElementWidth<HTMLDivElement>();
-
-  // Use Pretext to find the "shrink-wrap" width — the tightest width that fits the longest line.
-  // Font: 14px sans-serif (text-sm font-sans)
-  const font = "14px var(--font-manrope), sans-serif";
-  const horizontalPadding = 40; // p-5 = 20px each side
-  
-  const shrinkWrapWidth = useMemo(() => {
-    if (!source.description || containerWidth <= 0) return undefined;
-    
-    const prepared = prepare(source.description, font);
-    // Measure line stats at the current container width
-    const { maxLineWidth } = measureLineStats(prepared as any, containerWidth - horizontalPadding);
-    
-    // Add back the padding
-    return Math.ceil(maxLineWidth + horizontalPadding);
-  }, [source.description, containerWidth, font]);
-
   return (
-    <div 
-      ref={containerRef}
-      style={{ maxWidth: shrinkWrapWidth ? `${shrinkWrapWidth}px` : "100%" }}
-      className="flex flex-col gap-2 p-5 bg-muted/30 rounded-sm border border-border/50 transition-[max-width] duration-500 ease-out"
-    >
+    <div className="flex flex-col gap-2 p-5 bg-muted/30 rounded-sm border border-border/50">
       <span className="font-sans font-bold text-foreground">{source.provider}</span>
       <span className="font-sans text-sm text-muted-foreground leading-relaxed">{source.description}</span>
       <div className="flex flex-wrap gap-2 mt-3">

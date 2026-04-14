@@ -51,7 +51,6 @@ from .quantitative_developer import QUANT_DEVELOPER_SUBAGENT
 from .technical_writer import TECHNICAL_WRITER_SUBAGENT
 from .quality_analyst import QUALITY_ANALYST_SUBAGENT
 from .chat_surface_tool import emit_chat_message
-from .subagent_tool_guard import FILESYSTEM_AND_SHELL_TOOLS, ToolBlocklistMiddleware
 from core.context import ResearchContext
 
 
@@ -129,12 +128,6 @@ Filesystem and shell tools are blocked for this subagent. Return concise summari
 """,
     "tools": [],
     "model": "google_genai:gemini-3-flash-preview",
-    "middleware": [
-        ToolBlocklistMiddleware(
-            FILESYSTEM_AND_SHELL_TOOLS,
-            "Use reasoning only and return a concise summary to the orchestrator.",
-        )
-    ],
 }
 
 
