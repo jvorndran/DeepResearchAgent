@@ -30,6 +30,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+import google.genai.errors
 
 from agents.orchestrator import create_orchestrator, stream_research
 
@@ -106,6 +107,123 @@ async def _publish_done(job_state: JobState) -> None:
     """Push the done sentinel to every subscriber queue (not logged)."""
     for q in list(job_state._subscriber_queues):
         await q.put(_JOB_DONE)
+
+
+def _preview_text(value: str, limit: int = 180) -> str:
+    value = " ".join(value.split())
+    if len(value) <= limit:
+        return value
+    return value[: limit - 3] + "..."
+
+
+def _classify_exception(exc: BaseException) -> tuple[str, bool, str]:
+    message = str(exc)
+    lowered = message.lower()
+
+    if (
+        "fred api error (400)" in lowered and "the series does not exist" in lowered
+    ) or (
+        "failed to retrieve series data" in lowered and "series does not exist" in lowered
+    ):
+        return (
+            "data_provider_bad_request",
+            True,
+            "The upstream data provider rejected a generated request. Retrying may succeed.",
+        )
+    if isinstance(exc, google.genai.errors.ServerError) or "500 internal" in lowered:
+        return (
+            "llm_internal",
+            True,
+            "The model provider returned an internal error while processing your request.",
+        )
+    if "503 service unavailable" in lowered:
+        return (
+            "llm_unavailable",
+            True,
+            "The model provider is temporarily unavailable.",
+        )
+    if "rate limit" in lowered or "429" in lowered:
+        return (
+            "rate_limit",
+            True,
+            "The upstream provider rate-limited this request.",
+        )
+    if "mcp request '" in lowered and "failed:" in lowered:
+        return (
+            "mcp_request_failed",
+            True,
+            "A tool or data provider request failed, and the agent may retry with a corrected request.",
+        )
+    if "mcp timeout" in lowered:
+        return (
+            "mcp_timeout",
+            True,
+            "A tool or data provider timed out while processing your request.",
+        )
+    if "mcp request '" in lowered and "timeout" in lowered:
+        return (
+            "mcp_timeout",
+            True,
+            "A tool or data provider timed out while processing your request.",
+        )
+    if isinstance(exc, asyncio.TimeoutError) or "timeout" in lowered:
+        return (
+            "timeout",
+            True,
+            "The request timed out while waiting for a response.",
+        )
+    return (
+        "internal_error",
+        False,
+        "The server hit an unexpected error while processing your request.",
+    )
+
+
+def _build_error_event(
+    *,
+    job_id: str,
+    detail: str,
+    error_type: str,
+    retryable: bool,
+    stage: str,
+) -> dict[str, Any]:
+    return {
+        "type": "error",
+        "job_id": job_id,
+        "errorType": error_type,
+        "retryable": retryable,
+        "stage": stage,
+        "errorText": f"{detail} [job_id={job_id}, stage={stage}, retryable={str(retryable).lower()}]",
+    }
+
+
+def _build_exception_error_event(job_id: str, stage: str, exc: BaseException) -> dict[str, Any]:
+    error_type, retryable, detail = _classify_exception(exc)
+    return _build_error_event(
+        job_id=job_id,
+        detail=f"{detail} Upstream detail: {exc}",
+        error_type=error_type,
+        retryable=retryable,
+        stage=stage,
+    )
+
+
+def _normalize_stream_error(job_id: str, stage: str, error: Any) -> dict[str, Any]:
+    if isinstance(error, dict):
+        detail = str(error.get("message") or error.get("detail") or error)
+        error_type = str(error.get("type") or "stream_error")
+    else:
+        detail = str(error)
+        error_type = "stream_error"
+
+    retryable = error_type in {"mcp_timeout", "timeout", "llm_internal", "llm_unavailable", "rate_limit"}
+    return _build_error_event(
+        job_id=job_id,
+        detail=detail,
+        error_type=error_type,
+        retryable=retryable,
+        stage=stage,
+    )
 
 
 # =============================================================================
@@ -374,6 +492,12 @@ async def _run_job_background(
     job_id: str, query: str, messages_dict: list, agent: Any, job_state: JobState
 ) -> None:
     try:
+        logger.info(
+            "Starting background research job job_id=%s message_count=%d query=%r",
+            job_id,
+            len(messages_dict),
+            _preview_text(query),
+        )
         raw_stream = stream_research(query=query, job_id=job_id, messages=messages_dict, agent=agent)
         async for event_dict in _process_research_chunks(raw_stream):
             await _publish(job_state, event_dict)
@@ -387,8 +511,16 @@ async def _run_job_background(
     except Exception as e:
         job_state.status = JobStatus.FAILED
         _write_status(job_id, JobStatus.FAILED, query)
-        logger.error("Job %s failed: %s", job_id, e, exc_info=True)
-        await _publish(job_state, {"__bg_error__": str(e)})
+        error_event = _build_exception_error_event(job_id, "background_research", e)
+        logger.exception(
+            "Background research job failed job_id=%s message_count=%d query=%r error_type=%s retryable=%s",
+            job_id,
+            len(messages_dict),
+            _preview_text(query),
+            error_event["errorType"],
+            error_event["retryable"],
+        )
+        await _publish(job_state, {"__bg_error__": error_event})
     finally:
         await _publish_done(job_state)
         _JOBS.pop(job_id, None)
@@ -437,7 +569,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3001"],
+    allow_origins=["http://localhost:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -448,6 +580,7 @@ class Message(BaseModel):
     role: str
     content: Optional[str] = None
     parts: Optional[List[Dict[str, Any]]] = None
+    metadata: Optional[Dict[str, Any]] = None
 
 
 class ChatRequest(BaseModel):
@@ -503,6 +636,8 @@ async def get_report(job_id: str):
         raise HTTPException(status_code=410, detail="Job was interrupted — server was restarted mid-job")
     if on_disk == JobStatus.FAILED.value:
         raise HTTPException(status_code=500, detail="Research job failed")
+    if on_disk == JobStatus.COMPLETED.value:
+        raise HTTPException(status_code=500, detail="Job completed but report was not saved — the pipeline may have failed during report generation")
 
     raise HTTPException(status_code=202, detail="Report not yet available")
 
@@ -570,7 +705,10 @@ async def chat_stream(request: ChatRequest, req: Request):
         if not content and msg.parts:
             text_parts = [p.get("text", "") for p in msg.parts if p.get("type") == "text"]
             content = "".join(text_parts)
-        messages_dict.append({"role": msg.role, "content": content or ""})
+        message_dict = {"role": msg.role, "content": content or ""}
+        if msg.metadata:
+            message_dict["metadata"] = msg.metadata
+        messages_dict.append(message_dict)
 
     query = ""
     for msg in reversed(messages_dict):
@@ -583,6 +721,14 @@ async def chat_stream(request: ChatRequest, req: Request):
     # Research phase: stream_telemetry is None or True (chat page after "Commence Deep Research").
     # These are long-running and benefit from background task + status.json persistence.
     is_research = request.stream_telemetry is not False
+    logger.info(
+        "Incoming chat stream request job_id=%s mode=%s message_count=%d query=%r client=%s",
+        job_id,
+        "research" if is_research else "qa",
+        len(messages_dict),
+        _preview_text(query),
+        req.client.host if req.client else "unknown",
+    )
 
     if is_research:
         # Guard: second SSE connection to a running job gets a redirect
@@ -626,7 +772,8 @@ async def chat_stream(request: ChatRequest, req: Request):
                 # ── Research mode: relay pre-processed events from the subscriber queue ──
                 async for event in _relay_subscriber_queue(q):
                     if isinstance(event, dict) and "__bg_error__" in event:
-                        yield _sse({"type": "error", "errorText": event["__bg_error__"]})
+                        bg_error = event["__bg_error__"]
+                        yield _sse(bg_error if isinstance(bg_error, dict) else _normalize_stream_error(job_id, "background_research", bg_error))
                         yield "data: [DONE]\n\n"
                         return
                     yield _sse(event)
@@ -649,6 +796,18 @@ async def chat_stream(request: ChatRequest, req: Request):
                     messages=messages_dict,
                     agent=req.app.state.agent,
                 ):
+                    if "error" in chunk:
+                        error_event = _normalize_stream_error(job_id, "qa_stream", chunk["error"])
+                        logger.warning(
+                            "Inline QA stream yielded error job_id=%s error_type=%s detail=%r",
+                            job_id,
+                            error_event["errorType"],
+                            error_event["errorText"],
+                        )
+                        yield _sse(error_event)
+                        yield "data: [DONE]\n\n"
+                        return
+
                     chunk_type = chunk.get("type")
                     logger.debug("[STREAM] chunk type=%s ns=%s", chunk_type, chunk.get("ns", []))
 
@@ -750,8 +909,21 @@ async def chat_stream(request: ChatRequest, req: Request):
             return
 
         except Exception as e:
-            logger.error(f"Error in stream: {e}")
-            yield _sse({"type": "error", "errorText": str(e)})
+            error_event = _build_exception_error_event(
+                job_id,
+                "research_sse" if is_research else "qa_sse",
+                e,
+            )
+            logger.exception(
+                "Chat stream failed job_id=%s mode=%s message_count=%d query=%r error_type=%s retryable=%s",
+                job_id,
+                "research" if is_research else "qa",
+                len(messages_dict),
+                _preview_text(query),
+                error_event["errorType"],
+                error_event["retryable"],
+            )
+            yield _sse(error_event)
             yield "data: [DONE]\n\n"
 
         finally:

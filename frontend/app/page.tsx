@@ -7,6 +7,16 @@ import AppHeader from "@/components/app-header";
 import ChatInterface from "@/components/chat-interface";
 import type { Message } from "@/lib/types";
 
+const APPROVAL_MESSAGE_CONTENT = "Please begin the research now with the parameters discussed.";
+
+function buildApprovalMessage(): Message {
+  return {
+    role: "user",
+    content: APPROVAL_MESSAGE_CONTENT,
+    metadata: { action: "commence_research" },
+  } as unknown as Message;
+}
+
 export default function Home() {
   const router = useRouter();
   const [messages, setMessages] = useState<Message[]>([]);
@@ -31,21 +41,21 @@ export default function Home() {
 
   const handleSend = (forceResearch = false) => {
     if (!forceResearch && !inputValue.trim()) return;
+    const approvalMessage = buildApprovalMessage();
     if (forceResearch && pendingApprovalJobId) {
-      // Store a single "begin" message and navigate to the chat page.
+      // Store a single approval action message and navigate to the chat page.
       // The chat page sends this message to the same LangGraph thread,
-      // and the orchestrator (seeing it) calls task() to start the pipeline.
+      // and the orchestrator resumes the interrupt checkpoint.
       sessionStorage.setItem(
         "pending_messages",
-        JSON.stringify([{ role: "user", content: "Please begin the research now with the parameters discussed." }])
+        JSON.stringify([approvalMessage])
       );
       router.push(`/chat/${sessionJobId}`);
       return;
     }
-    const userMsg = forceResearch
-      ? "Please begin the research now with the parameters discussed."
-      : inputValue.trim();
-    const newMessages: Message[] = [...messages, { role: "user", content: userMsg }];
+    const newMessages: Message[] = forceResearch
+      ? [...messages, approvalMessage]
+      : [...messages, { role: "user", content: inputValue.trim() }];
     setMessages(newMessages);
     setSubmittedMessages(newMessages);
     if (!forceResearch) setInputValue("");

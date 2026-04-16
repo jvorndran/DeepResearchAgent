@@ -131,4 +131,3 @@ backend/data/
 data/
 tmpclaude*
 outputs
-.pytest-tmp*

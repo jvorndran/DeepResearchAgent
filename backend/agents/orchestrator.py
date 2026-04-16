@@ -26,6 +26,10 @@ Subagents it can delegate to:
 import logging
 import warnings
 from pathlib import Path
+import asyncio
+import google.genai.errors
+
+logger = logging.getLogger(__name__)
 
 # Suppress langchain_google_genai schema-key warnings ($schema, additionalProperties
 # are stripped when converting Pydantic tool schemas for the Gemini API — harmless)
@@ -40,10 +44,11 @@ warnings.filterwarnings(
     category=UserWarning,
 )
 
-from typing import Any, Dict, AsyncIterator  # Dict kept for graph_input annotation
+from typing import Any, Dict, AsyncIterator, Union  # Dict/Union kept for graph_input annotation
 from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.types import Command
 
 # Import subagent configurations from separate files
 from .data_engineer import get_data_engineer_subagent, MCPTimeoutError
@@ -51,12 +56,26 @@ from .quantitative_developer import QUANT_DEVELOPER_SUBAGENT
 from .technical_writer import TECHNICAL_WRITER_SUBAGENT
 from .quality_analyst import QUALITY_ANALYST_SUBAGENT
 from .chat_surface_tool import emit_chat_message
+from .request_research_approval_tool import request_research_approval
 from core.context import ResearchContext
 
 
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
 _WORKSPACE_DIR = _BACKEND_DIR.parent
 _CHECKPOINTER = MemorySaver()
+
+
+def _get_last_user_message(messages: list[dict] | None) -> dict[str, Any] | None:
+    if messages and messages[-1].get("role") == "user":
+        return messages[-1]
+    return None
+
+
+def _is_research_approval_message(message: dict[str, Any] | None) -> bool:
+    if not message:
+        return False
+    metadata = message.get("metadata")
+    return isinstance(metadata, dict) and metadata.get("action") == "commence_research"
 
 
 # =============================================================================
@@ -77,8 +96,8 @@ You are the **Orchestrator (Research Director)**. You coordinate end-to-end fina
 - **Clarify:** If tickers, metrics, or horizon are missing/vague, ask questions via `emit_chat_message`. Do NOT call `task()`.
 - **Confirm:** Once fully specified (tickers, metrics, and horizon provided), call `emit_chat_message` with:
   *I now have what I need to proceed. Please click **Commence Deep Research** below to begin.*
-  **Then STOP.** Do not call `task()` on this turn.
-- **Execute:** On the NEXT turn (after user confirms), call `task(subagent_type="data-engineer", description="...", data={})` to delegate to **data-engineer**.
+  Then immediately call `request_research_approval(summary="<one-sentence summary of what will be researched>")`. This pauses the graph at the graph level — do NOT call `task()` before `request_research_approval` returns.
+- **Execute:** After `request_research_approval` returns, call `task(subagent_type="data-engineer", description="...", data={})` to delegate to **data-engineer**.
 
 # PHASE 2-6: EXECUTION WORKFLOW
 
@@ -127,7 +146,7 @@ code when one of the named specialist agents can do that better.
 Filesystem and shell tools are blocked for this subagent. Return concise summaries only.
 """,
     "tools": [],
-    "model": "google_genai:gemini-3-flash-preview",
+    "model": "google_genai:gemini-3.1-flash-lite-preview",
 }
 
 
@@ -140,9 +159,9 @@ async def create_orchestrator():
     data_engineer = await get_data_engineer_subagent()
 
     return create_deep_agent(
-        model="google_genai:gemini-3-flash-preview",
+        model="google_genai:gemini-3.1-flash-lite-preview",
         system_prompt=ORCHESTRATOR_SYSTEM_PROMPT,
-        tools=[emit_chat_message],
+        tools=[emit_chat_message, request_research_approval],
         subagents=[
             GENERAL_PURPOSE_SUBAGENT,
             data_engineer,
@@ -214,7 +233,26 @@ async def run_research(
         )
 
         config = {"configurable": {"thread_id": job_id}}
-        result = await agent.ainvoke({"messages": messages}, context=ctx, config=config)
+
+        try:
+            state = await agent.aget_state(config)
+            is_interrupted = bool(state.next)
+        except Exception:
+            is_interrupted = False
+
+        if is_interrupted:
+            last_user_message = _get_last_user_message(messages)
+            last_content = last_user_message.get("content", "") if last_user_message else ""
+            if _is_research_approval_message(last_user_message):
+                graph_input: Union[Command, Dict[str, Any]] = Command(resume="approved")
+            else:
+                graph_input = Command(
+                    resume=last_content,
+                    update={"messages": [last_user_message]} if last_user_message else {},
+                )
+        else:
+            graph_input = {"messages": messages}
+        result = await agent.ainvoke(graph_input, context=ctx, config=config)
 
         messages = result.get("messages", [])
         if messages:
@@ -302,17 +340,71 @@ async def stream_research(
 
     try:
         config = {"configurable": {"thread_id": job_id}}
-        graph_input: Dict[str, Any] = {"messages": messages}
 
-        async for event in agent.astream(
-            graph_input,
-            context=ctx,
-            config=config,
-            stream_mode=["updates", "messages", "custom"],
-            subgraphs=True,
-            version="v2",
-        ):
-            yield event
+        # Detect whether the graph is paused at a human-in-the-loop interrupt
+        # (i.e. the orchestrator called request_research_approval() on the intake
+        # turn and the graph saved a checkpoint). If so, resume with approval
+        # instead of injecting new messages — the checkpointer already has the
+        # full Q&A history and the model just needs the interrupt to resolve.
+        try:
+            state = await agent.aget_state(config)
+            is_interrupted = bool(state.next)
+        except Exception:
+            is_interrupted = False
+
+        if is_interrupted:
+            last_user_message = _get_last_user_message(messages)
+            last_content = last_user_message.get("content", "") if last_user_message else ""
+            if _is_research_approval_message(last_user_message):
+                graph_input: Union[Command, Dict[str, Any]] = Command(resume="approved")
+            else:
+                # User sent a new message instead of clicking the button — relay it
+                # as feedback so the model can adjust parameters and re-prompt.
+                graph_input = Command(
+                    resume=last_content,
+                    update={"messages": [last_user_message]} if last_user_message else {},
+                )
+        else:
+            graph_input = {"messages": messages}
+
+        max_retries = 3
+        retry_delay = 2
+        for attempt in range(max_retries + 1):
+            try:
+                # If we are retrying (attempt > 0), pass None as graph input to resume
+                # from the last checkpoint.
+                current_input = graph_input if attempt == 0 else None
+                async for event in agent.astream(
+                    current_input,
+                    context=ctx,
+                    config=config,
+                    stream_mode=["updates", "messages", "custom"],
+                    subgraphs=True,
+                    version="v2",
+                ):
+                    yield event
+                break  # Success
+            except Exception as e:
+                # Catch transient 500/503 errors from Google GenAI SDK.
+                err_msg = str(e).lower()
+                is_transient = (
+                    "500 internal" in err_msg
+                    or "503 service unavailable" in err_msg
+                    or isinstance(e, google.genai.errors.ServerError)
+                )
+                if is_transient and attempt < max_retries:
+                    logger.warning(
+                        "Transient API error for job %s (attempt %d/%d): %s. Retrying in %ds...",
+                        job_id,
+                        attempt + 1,
+                        max_retries,
+                        e,
+                        retry_delay,
+                    )
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2
+                    continue
+                raise
     except MCPTimeoutError as e:
         yield {"error": {"type": "mcp_timeout", "message": str(e)}}
 

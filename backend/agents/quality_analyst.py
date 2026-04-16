@@ -451,7 +451,7 @@ You are the Quality Analyst. You are the final gatekeeper for research reports.
         reject_report
     ],
 
-    "model": "google_genai:gemini-3-flash-preview",
+    "model": "google_genai:gemini-3.1-flash-lite-preview",
 
     "skills": [str(_BACKEND_DIR / "skills" / "quality-analyst")]
 }

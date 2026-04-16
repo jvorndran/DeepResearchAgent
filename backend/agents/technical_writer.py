@@ -457,7 +457,7 @@ You are the Technical Writer. You synthesize research reports by reading `charts
 
     "tools": [plan_report_structure, write_research_report],
 
-    "model": "google_genai:gemini-3-flash-preview",
+    "model": "google_genai:gemini-3.1-flash-lite-preview",
 
     "skills": [str(_BACKEND_DIR / "skills" / "technical-writer")]
 }

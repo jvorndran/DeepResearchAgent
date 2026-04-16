@@ -21,7 +21,7 @@ The MCP server provides tools for stock quotes, financial statements, market dat
 technical indicators, and much more.
 """
 
-from typing import Dict, Any, List, Optional, Union
+from typing import Dict, Any, List, Optional, Union, Callable, Awaitable
 from langchain_core.tools import tool
 from langchain_core.runnables import RunnableConfig
 from langchain_core.callbacks import AsyncCallbackManagerForToolRun
@@ -30,6 +30,7 @@ import pandas as pd
 import os
 import json
 import asyncio
+import math
 from pathlib import Path
 from mcp_clients.fmp_mcp_client import create_fmp_mcp_client, get_fmp_mcp_config, list_fmp_tools as list_fmp_tools_async
 from mcp_clients.fred_mcp_client import create_fred_mcp_client
@@ -40,12 +41,15 @@ from core.context import ResearchContext
 # MCP TIMEOUT HANDLING
 # =============================================================================
 
-# Inherits from BaseException (not Exception) so LangGraph's ToolNode — which
-# catches `except Exception` — cannot swallow it.  The exception propagates
-# straight through the subagent graph and out of stream_research / run_research,
-# where it is caught and turned into a clean error response.
-class MCPTimeoutError(BaseException):
-    """Raised when an FMP or FRED MCP tool call exceeds its timeout."""
+# Raised after repeated MCP request timeouts. This is a normal Exception so the
+# tool error can flow back into the subagent and the agent can reformulate the
+# request instead of aborting the whole workflow immediately.
+class MCPTimeoutError(Exception):
+    """Raised when an FMP or FRED MCP tool call times out."""
+
+
+class MCPRequestError(Exception):
+    """Raised when an FMP or FRED MCP tool call fails and should be corrected by the agent."""
 
 _FMP_TIMEOUT = 30   # seconds per tool call (FMP is a hosted remote API)
 _FRED_TIMEOUT = 30  # seconds per tool call (FRED local server)
@@ -88,7 +92,123 @@ def _sanitize_nan(result: str) -> str:
     return result
 
 
-async def _auto_save_result(result: str, tool_name: str) -> str:
+def _sanitize_jsonish(value: Any) -> Any:
+    """Recursively replace non-finite floats so JSON serialization is safe."""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, list):
+        return [_sanitize_jsonish(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_sanitize_jsonish(item) for item in value)
+    if isinstance(value, dict):
+        return {key: _sanitize_jsonish(item) for key, item in value.items()}
+    return value
+
+
+def _json_dumps_compact(value: Any) -> str:
+    return json.dumps(_sanitize_jsonish(value), ensure_ascii=False)
+
+
+def _json_loads_safe(value: str) -> Any | None:
+    try:
+        return json.loads(value)
+    except Exception:
+        return None
+
+
+def _looks_like_content_blocks(value: Any) -> bool:
+    return (
+        isinstance(value, list)
+        and len(value) > 0
+        and all(isinstance(block, dict) and "type" in block for block in value)
+    )
+
+
+def _content_blocks_to_text(blocks: list[dict[str, Any]]) -> str:
+    text_parts: list[str] = []
+    for block in blocks:
+        if block.get("type") == "text":
+            text = block.get("text")
+            if isinstance(text, str) and text:
+                text_parts.append(text)
+            continue
+        text_parts.append(_json_dumps_compact(block))
+    return "\n".join(part for part in text_parts if part)
+
+
+def _extract_structured_content(artifact: Any) -> Any | None:
+    if artifact is None:
+        return None
+    if isinstance(artifact, dict):
+        if "structured_content" in artifact:
+            return artifact["structured_content"]
+        if "structuredContent" in artifact:
+            return artifact["structuredContent"]
+    structured = getattr(artifact, "structured_content", None)
+    if structured is not None:
+        return structured
+    return getattr(artifact, "structuredContent", None)
+
+
+def _resolve_pointer_path(pointer_path: str) -> Path | None:
+    path = Path(pointer_path)
+    candidates = [path]
+    if not path.is_absolute():
+        candidates.append(Path.cwd() / path)
+        candidates.append(_BACKEND_DIR / path)
+        candidates.append(_BACKEND_DIR.parent / path)
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate.resolve()
+    return None
+
+
+def _fail_closed_large_result(tool_name: str, byte_size: int, reason: str) -> str:
+    return json.dumps(
+        {
+            "status": "mcp_result_omitted",
+            "tool": tool_name,
+            "byte_size": byte_size,
+            "reason": reason,
+            "note": "Large MCP payload omitted to protect model context.",
+        }
+    )
+
+
+def _compact_artifact(artifact: Any, compact_content: str, tool_name: str) -> Any:
+    if artifact is None:
+        return None
+
+    structured = _extract_structured_content(artifact)
+    content_pointer = _json_loads_safe(compact_content)
+    if structured is not None:
+        compact: dict[str, Any] = {}
+        if isinstance(artifact, dict):
+            for key, value in artifact.items():
+                if key in {"structured_content", "structuredContent"}:
+                    continue
+                serialized = _json_dumps_compact(value)
+                if len(serialized) <= _MCP_INLINE_LIMIT:
+                    compact[key] = _sanitize_jsonish(value)
+        compact["structured_content_pointer"] = (
+            content_pointer
+            if isinstance(content_pointer, dict)
+            else {"tool": tool_name, "status": "saved_to_file"}
+        )
+        return compact
+
+    serialized = _json_dumps_compact(artifact)
+    if len(serialized) > _MCP_INLINE_LIMIT:
+        return {
+            "status": "artifact_omitted",
+            "tool": tool_name,
+            "byte_size": len(serialized.encode("utf-8")),
+        }
+    return _sanitize_jsonish(artifact)
+
+
+async def _auto_save_result(result: Any, tool_name: str) -> str:
     """
     Prevent large MCP tool results from entering the LLM message history.
 
@@ -99,14 +219,17 @@ async def _auto_save_result(result: str, tool_name: str) -> str:
        JSON file under DATA_STORAGE_DIR/_mcp_raw/; the LLM only sees a small preview
        dict with the file path and the first 400 chars.
     """
-    if not isinstance(result, str):
-        return result
-
-    try:
-        data = json.loads(result)
-    except Exception:
-        # Not valid JSON — apply size limit to raw string too
-        data = None
+    data = None
+    if isinstance(result, str):
+        result_str = _sanitize_nan(result)
+        data = _json_loads_safe(result_str)
+    else:
+        result = _sanitize_jsonish(result)
+        data = result
+        try:
+            result_str = _json_dumps_compact(result)
+        except Exception:
+            result_str = str(result)
 
     if data is not None:
         is_data_array = isinstance(data, list) and len(data) > 0
@@ -121,7 +244,7 @@ async def _auto_save_result(result: str, tool_name: str) -> str:
             try:
                 timestamp = int(_time.time())
                 file_path = DATA_STORAGE_DIR / "_auto" / f"{tool_name}_{timestamp}.csv"
-                meta = _run_async(_save_data_to_storage(data, file_path))
+                meta = await _save_data_to_storage(data, file_path)
                 saved_path = meta["storage_path"]
                 pointer = {
                     "status": "auto_saved",
@@ -133,41 +256,97 @@ async def _auto_save_result(result: str, tool_name: str) -> str:
                 return json.dumps(pointer)
             except Exception as e:
                 _de_logger.warning("Auto-save failed for tool '%s': %s", tool_name, e)
-                # Fall through to the size-limit check below
 
     # Fallback: any result still longer than the inline limit goes to a raw file.
-    if len(result) > _MCP_INLINE_LIMIT:
+    if len(result_str) > _MCP_INLINE_LIMIT:
         try:
             timestamp = int(_time.time())
             raw_dir = DATA_STORAGE_DIR / "_mcp_raw"
             raw_dir.mkdir(parents=True, exist_ok=True)
             raw_path = raw_dir / f"{tool_name}_{timestamp}.json"
-            raw_path.write_text(result, encoding="utf-8")
+            raw_path.write_text(result_str, encoding="utf-8")
             rel = raw_path.relative_to(Path.cwd()).as_posix()
             preview = {
                 "file_path": rel,
-                "preview": result[:400],
-                "byte_size": len(result.encode()),
+                "preview": result_str[:400],
+                "byte_size": len(result_str.encode()),
                 "note": "Full MCP response saved to file. Read it only if you need specific fields.",
             }
             return json.dumps(preview)
         except Exception as e:
             _de_logger.warning("MCP raw save failed for tool '%s': %s", tool_name, e)
+            return _fail_closed_large_result(
+                tool_name,
+                len(result_str.encode("utf-8")),
+                "Failed to persist oversized MCP payload to disk.",
+            )
 
-    return result
+    return result_str
 
 
-def _with_timeout(mcp_tool, timeout_secs: float):
+async def _normalize_mcp_result_for_llm(result: Any, tool_name: str) -> Any:
     """
-    Wrap an MCP BaseTool so any call exceeding *timeout_secs* raises
-    MCPTimeoutError instead of hanging indefinitely.
+    Normalize adapter-specific MCP return shapes before LangChain formats them
+    into ToolMessages. This is where we enforce file-backed spill behavior.
+    """
+    if isinstance(result, tuple) and len(result) == 2:
+        content, artifact = result
+        structured = _extract_structured_content(artifact)
+        payload = structured
+        if payload is None:
+            payload = _content_blocks_to_text(content) if _looks_like_content_blocks(content) else content
+        compact_content = await _auto_save_result(payload, tool_name)
+        compact_artifact = _compact_artifact(artifact, compact_content, tool_name)
+        return compact_content, compact_artifact
+
+    if _looks_like_content_blocks(result):
+        return await _auto_save_result(_content_blocks_to_text(result), tool_name)
+
+    return await _auto_save_result(result, tool_name)
+
+
+async def _run_mcp_request(
+    *,
+    provider: str,
+    operation: str,
+    timeout_secs: float,
+    request_factory: Callable[[], Awaitable[Any]],
+) -> Any:
+    try:
+        return await asyncio.wait_for(request_factory(), timeout=timeout_secs)
+    except asyncio.TimeoutError as last_error:
+        raise MCPTimeoutError(
+            f"{provider} MCP request '{operation}' timed out after {timeout_secs}s. "
+            "Use the error to adjust the next request instead of repeating it unchanged."
+        ) from last_error
+    except Exception as last_error:
+        raise MCPRequestError(
+            f"{provider} MCP request '{operation}' failed: {last_error}. "
+            "Use the exact error to adjust the next request instead of repeating it unchanged."
+        ) from last_error
+
+
+def _build_mcp_tool_error_payload(provider: str, tool_name: str, error: Exception) -> dict[str, Any]:
+    return {
+        "status": "error",
+        "provider": provider,
+        "tool": tool_name,
+        "error": str(error),
+        "retryable": True,
+        "hint": "Read the exact error, then change the next series/query/parameters instead of repeating the same request.",
+    }
+
+
+def _with_timeout(mcp_tool, timeout_secs: float, provider: str):
+    """
+    Wrap an MCP BaseTool so any call surfaces a tool-visible failure quickly.
 
     Also normalises the `period` kwarg for FMP statement tools — the FMP MCP
     server only accepts "FY"|"Q1"|"Q2"|"Q3"|"Q4"; the LLM sometimes passes
     "annual" or "quarter" which causes a -32602 validation error.
 
-    MCPTimeoutError(BaseException) bypasses LangGraph's ToolNode error
-    handler and aborts the entire agent workflow immediately.
+    Tool failures are raised as normal Exceptions so the subagent can see the
+    exact error immediately and choose a corrected follow-up request.
     """
     original_arun = mcp_tool._arun
     tool_name = getattr(mcp_tool, "name", "")
@@ -208,22 +387,33 @@ def _with_timeout(mcp_tool, timeout_secs: float):
                     args = (fixed,) + args[1:]
 
         try:
-            result = await asyncio.wait_for(
-                original_arun(*args, config=config, run_manager=run_manager, **kwargs),
-                timeout=timeout_secs,
+            result = await _run_mcp_request(
+                provider=provider,
+                operation=tool_name,
+                timeout_secs=timeout_secs,
+                request_factory=lambda: original_arun(
+                    *args,
+                    config=config,
+                    run_manager=run_manager,
+                    **kwargs,
+                ),
             )
-        except asyncio.TimeoutError:
-            raise MCPTimeoutError(
-                f"MCP tool '{mcp_tool.name}' did not respond within {timeout_secs}s. "
-                "The MCP server is unresponsive — aborting workflow."
-            )
+        except (MCPTimeoutError, MCPRequestError) as exc:
+            _de_logger.warning("%s tool '%s' returned recoverable error: %s", provider, tool_name, exc)
+            error_payload = _build_mcp_tool_error_payload(provider, tool_name, exc)
+            if getattr(mcp_tool, "response_format", "") == "content_and_artifact":
+                return await _normalize_mcp_result_for_llm(
+                    (
+                        json.dumps(error_payload),
+                        {"structured_content": error_payload},
+                    ),
+                    tool_name,
+                )
+            return json.dumps(error_payload)
 
-        # Fix 2: sanitize NaN/Infinity tokens before they reach Gemini (causes 400 errors)
-        if isinstance(result, str):
-            result = _sanitize_nan(result)
-
-        # Fix 1: auto-save raw data arrays to CSV — never expose them to the LLM context
-        result = await _auto_save_result(result, tool_name)
+        # Normalize tuple/content-block MCP results before LangChain builds the
+        # final ToolMessage so only compact pointers/previews enter model context.
+        result = await _normalize_mcp_result_for_llm(result, tool_name)
 
         return result
 
@@ -257,18 +447,28 @@ async def _save_data_to_storage(data: Any, file_path: Path) -> dict:
     # Ensure parent directory exists
     file_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Handle large tool result pointers
-    if isinstance(data, str) and '"file_path": "/large_tool_results/' in data:
+    # Handle large tool result pointers from Gemini temp files or our own spill-to-disk flow.
+    if isinstance(data, str) and '"file_path"' in data:
         try:
             pointer = json.loads(data)
             pointer_path = pointer.get("file_path")
             if pointer_path:
-                # Resolve physical path to the large result
-                temp_dir = Path(os.getenv("TEMP_DIR", str(Path.home() / ".gemini" / "tmp" / "deepresearchagent")))
-                filename = Path(pointer_path).name
-                physical_path = temp_dir / "large_tool_results" / filename
-                if physical_path.exists():
-                    data = physical_path.read_text(encoding="utf-8")
+                resolved = _resolve_pointer_path(pointer_path)
+                if resolved and resolved.exists():
+                    if resolved.suffix.lower() == ".csv":
+                        data = pd.read_csv(resolved)
+                    elif resolved.suffix.lower() == ".json":
+                        data = resolved.read_text(encoding="utf-8")
+                    else:
+                        data = resolved.read_text(encoding="utf-8")
+                else:
+                    temp_dir = Path(
+                        os.getenv("TEMP_DIR", str(Path.home() / ".gemini" / "tmp" / "deepresearchagent"))
+                    )
+                    filename = Path(pointer_path).name
+                    physical_path = temp_dir / "large_tool_results" / filename
+                    if physical_path.exists():
+                        data = physical_path.read_text(encoding="utf-8")
         except Exception as e:
             _de_logger.warning("Failed to resolve large tool result pointer: %s", e)
 
@@ -451,7 +651,7 @@ You are the Data Engineer. You fetch financial data and extract deterministic sc
 | Macroeconomic series (GDP, CPI, unemployment, rates, payrolls…) | **FRED** | `fred_search`, `fred_get_series` |
 
 # CORE RULES
-1. **NO RAW DATA:** NEVER return raw data arrays. ALWAYS call `save_data` and return only the storage path + metadata.
+1. **NO RAW DATA:** NEVER return raw data arrays. After a successful fetch, call `save_data` and return only the storage path + metadata.
 2. **TOOL BOUNDARY:** Filesystem and shell tools are blocked. Use only MCP tools plus `save_data` and `extract_schema`.
 3. **FMP TOOLS:** Call FMP tools directly as functions.
    - `limit ≤ 5` for statement tools.
@@ -461,11 +661,16 @@ You are the Data Engineer. You fetch financial data and extract deterministic sc
    interest rates, payrolls, wages, participation rate, etc.) prefer FRED tools
    (`fred_search`, `fred_get_series`) over FMP economics tools. FMP economics tools
    exist but FRED provides richer historical macro data.
-6. **CONCISENESS:** Final response must be under 150 words. Return ONLY the JSON result (data_files, row_counts, metadata).
+   **ALWAYS call `fred_search` first** to confirm the exact series ID before calling
+   `fred_get_series`. Never call `fred_get_series` with an assumed or remembered series
+   ID — always verify it via `fred_search` first, even for common series like GDP or CPI.
+6. **TOOL ERROR PAYLOADS:** If an MCP tool returns JSON with `"status":"error"`, treat it as feedback from the provider. Do NOT pass it to `save_data`. Read `error`, correct the request, and try again.
+7. **MCP FAILURES:** For each fetch objective, you may make up to 3 MCP attempts total. If a tool fails, read the exact error, then change the series/query/parameters before trying again. NEVER repeat the same failed request verbatim.
+8. **CONCISENESS:** Final response must be under 150 words. Return ONLY the JSON result (data_files, row_counts, metadata).
 
 # INTEGRATION
 - **FMP:** `statements` toolset is pre-enabled. Call `enable_toolset(name=...)` for other FMP toolsets.
-- **FRED:** Use `fred_search(query=...)` to find a series ID, then `fred_get_series(series_id=...)`. Pass series ID as `ticker` in `save_data`.
+- **FRED:** ALWAYS call `fred_search(query=...)` first to confirm the exact series ID, then call `fred_get_series(series_id=...)` with the ID returned by the search. Never skip `fred_search` — even for well-known series IDs. Pass the confirmed series ID as `ticker` in `save_data`.
 - **Workflow:** Fetch → `save_data` → `extract_schema` (if requested) → Return JSON summary.
 
 # OUTPUT FORMAT
@@ -493,30 +698,44 @@ async def get_data_engineer_subagent():
 
     # FMP (required, hosted — never degraded)
     fmp_client = await create_fmp_mcp_client()
-    fmp_tools = await fmp_client.get_tools()
+    fmp_tools = await _run_mcp_request(
+        provider="FMP",
+        operation="get_tools",
+        timeout_secs=_FMP_TIMEOUT,
+        request_factory=fmp_client.get_tools,
+    )
 
     # Pre-enable `statements` so financial statement tools are available from turn 1.
     enable_tool = next((t for t in fmp_tools if getattr(t, "name", "") == "enable_toolset"), None)
     if enable_tool:
         try:
-            await asyncio.wait_for(
-                enable_tool.ainvoke({"name": "statements"}),
-                timeout=_FMP_TIMEOUT,
+            await _run_mcp_request(
+                provider="FMP",
+                operation="enable_toolset(statements)",
+                timeout_secs=_FMP_TIMEOUT,
+                request_factory=lambda: enable_tool.ainvoke({"name": "statements"}),
             )
         except Exception as _e:
             logger.warning("Failed to pre-enable FMP 'statements' toolset: %s", _e)
-    fmp_tools = await fmp_client.get_tools()  # re-fetch with statements tools included
+    fmp_tools = await _run_mcp_request(
+        provider="FMP",
+        operation="get_tools",
+        timeout_secs=_FMP_TIMEOUT,
+        request_factory=fmp_client.get_tools,
+    )  # re-fetch with statements tools included
 
-    # Wrap all FMP tools so any single call that hangs raises MCPTimeoutError
-    fmp_tools = [_with_timeout(t, _FMP_TIMEOUT) for t in fmp_tools]
+    # Wrap all FMP tools so each MCP call gets bounded retries and compact results.
+    fmp_tools = [_with_timeout(t, _FMP_TIMEOUT, "FMP") for t in fmp_tools]
 
     # FRED (optional, local server)
     fred_tools = []
     try:
         fred_client = await create_fred_mcp_client()
-        fred_tools = await asyncio.wait_for(
-            fred_client.get_tools(),
-            timeout=_FRED_TIMEOUT,
+        fred_tools = await _run_mcp_request(
+            provider="FRED",
+            operation="get_tools",
+            timeout_secs=_FRED_TIMEOUT,
+            request_factory=fred_client.get_tools,
         )
 
         # Validate the FRED MCP server can actually call FRED by invoking fred_get_series.
@@ -528,9 +747,11 @@ async def get_data_engineer_subagent():
         )
         if probe_tool:
             try:
-                await asyncio.wait_for(
-                    probe_tool.ainvoke({"series_id": "GDP"}),
-                    timeout=_FRED_TIMEOUT,
+                await _run_mcp_request(
+                    provider="FRED",
+                    operation="fred_get_series(GDP)",
+                    timeout_secs=_FRED_TIMEOUT,
+                    request_factory=lambda: probe_tool.ainvoke({"series_id": "GDP"}),
                 )
             except Exception as probe_err:
                 logger.warning(
@@ -547,7 +768,7 @@ async def get_data_engineer_subagent():
         )
 
     # Wrap all FRED tools the same way
-    fred_tools = [_with_timeout(t, _FRED_TIMEOUT) for t in fred_tools]
+    fred_tools = [_with_timeout(t, _FRED_TIMEOUT, "FRED") for t in fred_tools]
 
     description = """Use this subagent to fetch financial or macroeconomic data, or extract schemas from saved data files.
 
@@ -567,6 +788,6 @@ async def get_data_engineer_subagent():
         "description": description,
         "system_prompt": _build_system_prompt(),
         "tools": [save_data, extract_schema] + fmp_tools + fred_tools,
-        "model": "google_genai:gemini-3-flash-preview",
+        "model": "google_genai:gemini-3.1-flash-lite-preview",
         "skills": [str(_BACKEND_DIR / "skills" / "data-engineer")]
     }

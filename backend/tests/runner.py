@@ -214,6 +214,13 @@ ANSWER: [your answer to the actual question]"""
     return verdict, reason, answer
 
 
+def build_user_reply_message(answer: str, actual_question: str) -> Dict[str, Any]:
+    message: Dict[str, Any] = {"role": "user", "content": answer}
+    if "Commence Deep Research" in actual_question:
+        message["metadata"] = {"action": "commence_research"}
+    return message
+
+
 _SUBAGENT_NAMES = {"data-engineer", "quant-developer", "technical-writer", "quality-analyst"}
 _PHASE_MAP = {
     "data-engineer": "PHASE 2: DATA ACQUISITION",
@@ -521,18 +528,19 @@ async def run_streaming(
 
                     # Build extended conversation history for next turn
                     initial_user_msg = {"role": "user", "content": f"Job ID: {job_id}\n\nResearch Query: {query}"}
+                    user_reply = build_user_reply_message(answer, last_orchestrator_message)
                     if conversation_messages is None:
                         # First clarification round
                         conversation_messages = [
                             initial_user_msg,
                             {"role": "assistant", "content": last_orchestrator_message},
-                            {"role": "user", "content": answer},
+                            user_reply,
                         ]
                     else:
                         # Subsequent rounds: append to existing history
                         conversation_messages = conversation_messages + [
                             {"role": "assistant", "content": last_orchestrator_message},
-                            {"role": "user", "content": answer},
+                            user_reply,
                         ]
                 else:
                     elapsed = time.monotonic() - start
@@ -640,16 +648,17 @@ async def run_simple(query: str, job_id: str, max_turns: int = 3, expected_quest
             print(f" [{elapsed:5.1f}s] [LLM ANSWER]   {_truncate(answer, 200)}")
 
             initial_user_msg = {"role": "user", "content": f"Job ID: {job_id}\n\nResearch Query: {query}"}
+            user_reply = build_user_reply_message(answer, response)
             if conversation_messages is None:
                 conversation_messages = [
                     initial_user_msg,
                     {"role": "assistant", "content": response},
-                    {"role": "user", "content": answer},
+                    user_reply,
                 ]
             else:
                 conversation_messages = conversation_messages + [
                     {"role": "assistant", "content": response},
-                    {"role": "user", "content": answer},
+                    user_reply,
                 ]
         else:
             break

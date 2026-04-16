@@ -70,6 +70,9 @@ export function useResearchStream({
         if (!cancelled) { setReport(data); setStatus("report_ready"); }
       };
 
+      let sseRetries = 0;
+      const MAX_SSE_RETRIES = 3;
+
       // Main entry: check status then either reconnect to SSE or poll.
       const checkAndConnect = async (): Promise<void> => {
         if (cancelled) return;
@@ -108,7 +111,12 @@ export function useResearchStream({
         if (statusRes.status === 500) {
           if (!cancelled) {
             setStatus("error");
-            setErrorText("Research job failed on the server.");
+            let errMsg = "Research job failed on the server.";
+            try {
+              const body = await statusRes.json();
+              if (body?.detail) errMsg = body.detail;
+            } catch { /* ignore */ }
+            setErrorText(errMsg);
           }
           return;
         }
@@ -135,7 +143,17 @@ export function useResearchStream({
         }
 
         if (sseRes.status === 404) {
-          // Job finished between status check and SSE connect — poll once more
+          // Job finished between status check and SSE connect — retry the status check.
+          // Guard against infinite loops when the backend incorrectly reports the job as
+          // still running (202) even though the SSE stream is gone (404).
+          sseRetries += 1;
+          if (sseRetries > MAX_SSE_RETRIES) {
+            if (!cancelled) {
+              setStatus("error");
+              setErrorText(`Could not reconnect to job ${jobId} — the job may have completed without saving a report.`);
+            }
+            return;
+          }
           await new Promise<void>((r) => setTimeout(r, 1000));
           if (!cancelled) checkAndConnect();
           return;

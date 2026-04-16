@@ -1,7 +1,7 @@
 ---
 name: chart-generation
 description: Concise rules for Recharts JSON generation
-triggers: [chart, Recharts, AxisChartDef, ScatterChartDef, PieChartDef, JSON]
+triggers: [chart, Recharts, AxisChartDef, ScatterChartDef, PieChartDef, TreemapChartDef, JSON]
 ---
 
 # Chart Rules
@@ -11,23 +11,32 @@ triggers: [chart, Recharts, AxisChartDef, ScatterChartDef, PieChartDef, JSON]
 3. **Palette:** `["#3b82f6", "#f59e0b", "#10b981", "#ef4444", "#8b5cf6"]`.
 4. **Period labels:** For quarterly data, format labels as `YYYY Qn`. Never use unsupported directives like `%Q`.
 
-## AxisChart (Line, Bar, Area)
+## AxisChart (Line, Bar, Area, Composed)
 ```json
 {
   "id": "revenue_trend",
-  "type": "line",
-  "title": "Revenue",
-  "description": "Revenue trend over time.",
+  "type": "composed",
+  "title": "Revenue vs Margin",
+  "description": "Revenue trend over time compared to profit margin.",
   "xAxisKey": "date",
-  "data": [{"date": "2024", "value": 100}],
-  "series": [{"dataKey": "value", "label": "Revenue", "color": "#3b82f6"}],
+  "data": [{"date": "2024", "revenue": 100, "margin": 15}],
+  "series": [
+    {"dataKey": "revenue", "label": "Revenue", "color": "#3b82f6", "type": "bar", "yAxisId": "left"},
+    {"dataKey": "margin", "label": "Margin (%)", "color": "#f59e0b", "type": "line", "yAxisId": "right"}
+  ],
   "referenceLines": [
     {"axis": "y", "value": 80, "label": "Baseline", "color": "#888", "dashed": true},
     {"axis": "x", "value": "2023", "label": "Policy Change", "color": "#ef4444", "dashed": false}
+  ],
+  "referenceAreas": [
+    {"x1": "2020-03", "x2": "2020-06", "label": "Pandemic", "fill": "#fee2e2", "opacity": 0.5}
   ]
 }
 ```
-**`referenceLines` is optional** but should be included whenever it adds analytical value — e.g., historical averages, targets, crisis dates, rate decisions, or regime changes. Each entry: `axis` (`"x"` or `"y"`), `value` (the data-domain value), `label` (short string), `color` (hex), `dashed` (bool).
+**`type` field in `series`:** For `"composed"` charts, explicitly set `"type": "line" | "bar" | "area"` on each series.
+**`yAxisId` field in `series`:** Optionally use `"left"` or `"right"` to map series to specific axes when displaying data with different scales.
+**`shape` field in `series`:** Optionally use `"shape": "candlestick"` for bar charts representing financial OHLC data.
+**`referenceLines` and `referenceAreas` are optional** but should be included whenever they add analytical value — e.g., historical averages, targets, crisis dates, rate decisions, or regime changes.
 
 ## ScatterChart
 ```json
@@ -53,6 +62,17 @@ triggers: [chart, Recharts, AxisChartDef, ScatterChartDef, PieChartDef, JSON]
   "title": "Revenue Mix",
   "description": "Revenue share by segment.",
   "data": [{"name": "A", "value": 40, "color": "#3b82f6"}]
+}
+```
+
+## TreemapChart
+```json
+{
+  "id": "portfolio_allocation",
+  "type": "treemap",
+  "title": "Portfolio Weights",
+  "description": "Allocation by sector.",
+  "data": [{"name": "Tech", "size": 45, "color": "#3b82f6"}]
 }
 ```
 

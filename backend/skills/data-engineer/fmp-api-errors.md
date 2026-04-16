@@ -59,12 +59,13 @@ Common toolset → tool mappings:
 ## Error: MCP Timeout
 
 **Cause**: FMP server took longer than 30 seconds.
-**Effect**: `MCPTimeoutError` is raised and **aborts the entire workflow**. This is intentional.
-**Action**: Report the timeout to the orchestrator. Do not retry in a loop.
+**Effect**: The tool error is surfaced immediately so you can see the timeout message.
+**Action**: Simplify or correct the request, then try a different call. Do not repeat the exact same timed-out request.
 
 ## General Retry Strategy
 
 1. Read the exact error message
 2. Identify which fix applies above
-3. Retry **once** with the corrected call
-4. If it fails again → return the error to the orchestrator with the exact message
+3. You may make up to 3 MCP attempts total for the same data objective
+4. After each failure, change the request based on the error message
+5. If the 3rd corrected attempt still fails, return the exact error to the orchestrator
