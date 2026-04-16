@@ -19,7 +19,6 @@ import os
 import sys
 from pathlib import Path
 
-
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
 DATA_STORAGE_DIR = os.getenv("DATA_STORAGE_DIR", str(_BACKEND_DIR / "data"))
 
@@ -48,6 +47,7 @@ You are a Senior Quantitative Analyst and Developer. Your job is not just to gen
 - Use absolute paths for all tools (`write_file`, `read_file`, `ls`, `glob`, `edit_file`, `execute`, and `pandas.read_csv`).
 - Interpreter for execution: `{PYTHON_EXECUTABLE}`
 - Output base: `{OUTPUT_BASE_DIR}`
+- **Job folder name:** Use the exact `{{job_id}}` string the orchestrator gives you in the task description (including any `job_` prefix). Never truncate to hex-only or rename the folder — `charts.json` must land in the same directory the orchestrator uses for this run.
 
 # WORKFLOW
 1. `write_file` `{OUTPUT_BASE_DIR}/{{job_id}}/code/analysis.py` → 2. `execute` code → 3. If error, `read_file` stderr, `edit_file`, retry (max 3) → 4. `read_file` charts.json.
@@ -91,7 +91,6 @@ Under 400 words. Return ONLY the JSON result:
 
 QUANT_DEVELOPER_SUBAGENT = {
     "name": "quant-developer",
-
     "description": """Use this subagent to generate and execute Python analysis code.
 
     Delegate when you need to:
@@ -103,12 +102,8 @@ QUANT_DEVELOPER_SUBAGENT = {
     Provide the exact data schemas, file paths, and analysis goal.
     The quant developer will write code, run it, fix any errors, and return
     a charts.json path, chart IDs, and a dense `statistical_summary` with exact computed values.""",
-
     "system_prompt": QUANT_DEVELOPER_SYSTEM_PROMPT,
-
     "tools": [],
-
     "model": "google_genai:gemini-3-flash-preview",
-
-    "skills": [str(_BACKEND_DIR / "skills" / "quant-developer")]
+    "skills": [str(_BACKEND_DIR / "skills" / "quant-developer")],
 }

@@ -21,7 +21,7 @@ The MCP server provides tools for stock quotes, financial statements, market dat
 technical indicators, and much more.
 """
 
-from typing import Dict, Any, List, Optional, Union, Callable, Awaitable
+from typing import Dict, Any, Optional, Callable, Awaitable
 from langchain_core.tools import tool
 from langchain_core.runnables import RunnableConfig
 from langchain_core.callbacks import AsyncCallbackManagerForToolRun
@@ -32,14 +32,14 @@ import json
 import asyncio
 import math
 from pathlib import Path
-from mcp_clients.fmp_mcp_client import create_fmp_mcp_client, get_fmp_mcp_config, list_fmp_tools as list_fmp_tools_async
+from mcp_clients.fmp_mcp_client import create_fmp_mcp_client
 from mcp_clients.fred_mcp_client import create_fred_mcp_client
 from core.context import ResearchContext
-
 
 # =============================================================================
 # MCP TIMEOUT HANDLING
 # =============================================================================
+
 
 # Raised after repeated MCP request timeouts. This is a normal Exception so the
 # tool error can flow back into the subagent and the agent can reformulate the
@@ -51,7 +51,8 @@ class MCPTimeoutError(Exception):
 class MCPRequestError(Exception):
     """Raised when an FMP or FRED MCP tool call fails and should be corrected by the agent."""
 
-_FMP_TIMEOUT = 30   # seconds per tool call (FMP is a hosted remote API)
+
+_FMP_TIMEOUT = 30  # seconds per tool call (FMP is a hosted remote API)
 _FRED_TIMEOUT = 30  # seconds per tool call (FRED local server)
 
 
@@ -63,15 +64,22 @@ _PERIOD_ALIASES = {
     "annual": "FY",
     "yearly": "FY",
     "fy": "FY",
-    "quarter": "Q1",   # best-effort: map generic "quarter" to Q1 so the call succeeds
+    "quarter": "Q1",  # best-effort: map generic "quarter" to Q1 so the call succeeds
     "quarterly": "Q1",
-    "q1": "Q1", "q2": "Q2", "q3": "Q3", "q4": "Q4",
+    "q1": "Q1",
+    "q2": "Q2",
+    "q3": "Q3",
+    "q4": "Q4",
 }
 _STATEMENT_TOOLS = {
-    "getIncomeStatement", "getBalanceSheetStatement",
-    "getCashFlowStatement", "getKeyMetrics", "getRatios",
+    "getIncomeStatement",
+    "getBalanceSheetStatement",
+    "getCashFlowStatement",
+    "getKeyMetrics",
+    "getRatios",
     # AsReported variants also accept a period param (though they need premium tier)
-    "getIncomeStatementAsReported", "getBalanceSheetStatementAsReported",
+    "getIncomeStatementAsReported",
+    "getBalanceSheetStatementAsReported",
     "getCashFlowStatementAsReported",
 }
 
@@ -86,9 +94,9 @@ _MCP_INLINE_LIMIT = 800  # chars — MCP results longer than this go to a temp f
 
 def _sanitize_nan(result: str) -> str:
     """Replace bare NaN/Infinity tokens so Gemini accepts the JSON payload."""
-    result = _re.sub(r'\bNaN\b', 'null', result)
-    result = _re.sub(r'\bInfinity\b', 'null', result)
-    result = _re.sub(r'\b-Infinity\b', 'null', result)
+    result = _re.sub(r"\bNaN\b", "null", result)
+    result = _re.sub(r"\bInfinity\b", "null", result)
+    result = _re.sub(r"\b-Infinity\b", "null", result)
     return result
 
 
@@ -294,7 +302,9 @@ async def _normalize_mcp_result_for_llm(result: Any, tool_name: str) -> Any:
         structured = _extract_structured_content(artifact)
         payload = structured
         if payload is None:
-            payload = _content_blocks_to_text(content) if _looks_like_content_blocks(content) else content
+            payload = (
+                _content_blocks_to_text(content) if _looks_like_content_blocks(content) else content
+            )
         compact_content = await _auto_save_result(payload, tool_name)
         compact_artifact = _compact_artifact(artifact, compact_content, tool_name)
         return compact_content, compact_artifact
@@ -326,7 +336,9 @@ async def _run_mcp_request(
         ) from last_error
 
 
-def _build_mcp_tool_error_payload(provider: str, tool_name: str, error: Exception) -> dict[str, Any]:
+def _build_mcp_tool_error_payload(
+    provider: str, tool_name: str, error: Exception
+) -> dict[str, Any]:
     return {
         "status": "error",
         "provider": provider,
@@ -364,13 +376,16 @@ def _with_timeout(mcp_tool, timeout_secs: float, provider: str):
         #   - kwargs['input']['period'] dict packed under 'input' kwarg
         #   - args[0]['period']         dict passed as first positional arg
         if tool_name in _STATEMENT_TOOLS:
+
             def _fix(d: dict) -> tuple[dict, bool]:
                 raw = str(d.get("period", ""))
                 if raw and raw not in _VALID_FMP_PERIODS:
                     corrected = _PERIOD_ALIASES.get(raw.lower(), "FY")
                     _de_logger.warning(
                         "FMP tool '%s': invalid period=%r — correcting to %r",
-                        tool_name, raw, corrected,
+                        tool_name,
+                        raw,
+                        corrected,
                     )
                     return {**d, "period": corrected}, True
                 return d, False
@@ -399,7 +414,9 @@ def _with_timeout(mcp_tool, timeout_secs: float, provider: str):
                 ),
             )
         except (MCPTimeoutError, MCPRequestError) as exc:
-            _de_logger.warning("%s tool '%s' returned recoverable error: %s", provider, tool_name, exc)
+            _de_logger.warning(
+                "%s tool '%s' returned recoverable error: %s", provider, tool_name, exc
+            )
             error_payload = _build_mcp_tool_error_payload(provider, tool_name, exc)
             if getattr(mcp_tool, "response_format", "") == "content_and_artifact":
                 return await _normalize_mcp_result_for_llm(
@@ -463,7 +480,9 @@ async def _save_data_to_storage(data: Any, file_path: Path) -> dict:
                         data = resolved.read_text(encoding="utf-8")
                 else:
                     temp_dir = Path(
-                        os.getenv("TEMP_DIR", str(Path.home() / ".gemini" / "tmp" / "deepresearchagent"))
+                        os.getenv(
+                            "TEMP_DIR", str(Path.home() / ".gemini" / "tmp" / "deepresearchagent")
+                        )
                     )
                     filename = Path(pointer_path).name
                     physical_path = temp_dir / "large_tool_results" / filename
@@ -475,6 +494,7 @@ async def _save_data_to_storage(data: Any, file_path: Path) -> dict:
     # Parse JSON string if needed (LLM may pass MCP tool output as a string)
     if isinstance(data, str):
         import json as _json
+
         try:
             data = _json.loads(data)
         except Exception:
@@ -487,8 +507,9 @@ async def _save_data_to_storage(data: Any, file_path: Path) -> dict:
         # with a plain pd.read_csv() — no JSON parsing needed downstream.
         if "data" in data and isinstance(data["data"], list) and data["data"]:
             records = data["data"]
-            meta = {k: v for k, v in data.items()
-                    if k != "data" and not isinstance(v, (list, dict))}
+            meta = {
+                k: v for k, v in data.items() if k != "data" and not isinstance(v, (list, dict))
+            }
             df = pd.DataFrame(records)
             for key, val in meta.items():
                 df[key] = val
@@ -513,7 +534,7 @@ async def _save_data_to_storage(data: Any, file_path: Path) -> dict:
         "storage_path": file_path.relative_to(Path.cwd()).as_posix(),
         "row_count": len(df),
         "columns": df.columns.tolist(),
-        "size_bytes": file_path.stat().st_size
+        "size_bytes": file_path.stat().st_size,
     }
 
 
@@ -523,7 +544,7 @@ def save_data(
     ticker: str,
     data_type: str,
     runtime: ToolRuntime[ResearchContext],
-    metadata: Optional[Dict[str, str | int | float | bool | None]] = None
+    metadata: Optional[Dict[str, str | int | float | bool | None]] = None,
 ) -> str:
     """
     Save data fetched from any MCP tool (FMP, FRED, or other sources) to storage.
@@ -562,18 +583,11 @@ def save_data(
     try:
         result = _run_async(_save())
 
-        return json.dumps({
-            "status": "success",
-            "ticker": ticker,
-            "data_type": data_type,
-            **result
-        })
+        return json.dumps({"status": "success", "ticker": ticker, "data_type": data_type, **result})
     except Exception as e:
-        return json.dumps({
-            "status": "error",
-            "error": str(e),
-            "message": f"Failed to save data for {ticker}"
-        })
+        return json.dumps(
+            {"status": "error", "error": str(e), "message": f"Failed to save data for {ticker}"}
+        )
 
 
 @tool
@@ -601,6 +615,7 @@ def extract_schema(file_paths: str | list[str]) -> str:
     if isinstance(file_paths, str):
         try:
             import json as _json
+
             file_paths = _json.loads(file_paths)
             if not isinstance(file_paths, list):
                 file_paths = [str(file_paths)]
@@ -618,30 +633,25 @@ def extract_schema(file_paths: str | list[str]) -> str:
                 "file_path": file_path,
                 "columns": df.columns.tolist(),
                 "dtypes": {col: str(dtype) for col, dtype in df.dtypes.items()},
-                "sample_rows": df.head(2).to_dict('records'),
-                "shape": list(df.shape)
+                "sample_rows": df.head(2).to_dict("records"),
+                "shape": list(df.shape),
             }
             schemas[file_path] = schema
 
         except Exception as e:
-            schemas[file_path] = {
-                "status": "error",
-                "error": str(e)
-            }
+            schemas[file_path] = {"status": "error", "error": str(e)}
 
-    return json.dumps({
-        "status": "success",
-        "schemas": schemas
-    })
+    return json.dumps({"status": "success", "schemas": schemas})
 
 
 # =============================================================================
 # SUBAGENT CONFIGURATION
 # =============================================================================
 
+
 def _build_system_prompt() -> str:
     """Build the data engineer system prompt."""
-    return f"""# ROLE
+    return """# ROLE
 You are the Data Engineer. You fetch financial data and extract deterministic schemas while preventing context bloat.
 
 # DATA SOURCE RULES — STRICT
@@ -674,12 +684,12 @@ You are the Data Engineer. You fetch financial data and extract deterministic sc
 - **Workflow:** Fetch → `save_data` → `extract_schema` (if requested) → Return JSON summary.
 
 # OUTPUT FORMAT
-{{
+{
     "status": "success",
-    "data_files": {{"TICKER": "path/to/file.csv"}},
-    "row_counts": {{"TICKER": 10}},
-    "metadata": {{"data_type": "income_statement", "source": "FMP"}}
-}}
+    "data_files": {"TICKER": "path/to/file.csv"},
+    "row_counts": {"TICKER": 10},
+    "metadata": {"data_type": "income_statement", "source": "FMP"}
+}
 """
 
 
@@ -694,6 +704,7 @@ async def get_data_engineer_subagent():
         Dictionary with full agent configuration
     """
     import logging
+
     logger = logging.getLogger(__name__)
 
     # FMP (required, hosted — never degraded)
@@ -742,8 +753,7 @@ async def get_data_engineer_subagent():
         # get_tools() only fetches tool definitions; it does NOT verify the API key works.
         # fred_get_series is the only tool that actually calls FRED's data API.
         probe_tool = next(
-            (t for t in fred_tools if getattr(t, "name", "") == "fred_get_series"),
-            None
+            (t for t in fred_tools if getattr(t, "name", "") == "fred_get_series"), None
         )
         if probe_tool:
             try:
@@ -757,14 +767,16 @@ async def get_data_engineer_subagent():
                 logger.warning(
                     "FRED MCP server probe failed — FRED tools not loaded. "
                     "Ensure the FRED MCP server was started with a valid FRED_API_KEY.\n"
-                    "Error: %s", probe_err
+                    "Error: %s",
+                    probe_err,
                 )
                 fred_tools = []
     except Exception as e:
         logger.error(
             "FRED MCP server unreachable at %s. Start with: "
             "cd fred-mcp-server && FRED_API_KEY=<key> node build/index.js --http\nError: %s",
-            os.getenv("FRED_MCP_URL", "http://localhost:3000/mcp"), e
+            os.getenv("FRED_MCP_URL", "http://localhost:3000/mcp"),
+            e,
         )
 
     # Wrap all FRED tools the same way
@@ -789,5 +801,5 @@ async def get_data_engineer_subagent():
         "system_prompt": _build_system_prompt(),
         "tools": [save_data, extract_schema] + fmp_tools + fred_tools,
         "model": "google_genai:gemini-3.1-flash-lite-preview",
-        "skills": [str(_BACKEND_DIR / "skills" / "data-engineer")]
+        "skills": [str(_BACKEND_DIR / "skills" / "data-engineer")],
     }

@@ -59,7 +59,6 @@ from .chat_surface_tool import emit_chat_message
 from .request_research_approval_tool import request_research_approval
 from core.context import ResearchContext
 
-
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
 _WORKSPACE_DIR = _BACKEND_DIR.parent
 _CHECKPOINTER = MemorySaver()
@@ -91,6 +90,7 @@ You are the **Orchestrator (Research Director)**. You coordinate end-to-end fina
 2. **RETRY LIMIT:** Maximum 3 retries per subagent. If a subagent fails 3 times, abort gracefully.
 3. **MANDATORY UI:** Call `emit_chat_message(markdown=...)` exactly once per turn to speak to the user.
 4. **PATH NORMALIZATION:** All paths must be absolute with forward slashes only. Never use backslashes in paths.
+5. **JOB ID STRING:** Copy the Job ID from the user message verbatim into every path (for example `.../outputs/job_a61b3825/charts.json`). Never drop a `job_` prefix, never shorten to hex-only, and never invent a different folder name.
 
 # PHASE 1: INTAKE & CLARIFICATION
 - **Clarify:** If tickers, metrics, or horizon are missing/vague, ask questions via `emit_chat_message`. Do NOT call `task()`.
@@ -110,7 +110,7 @@ You are the **Orchestrator (Research Director)**. You coordinate end-to-end fina
    - `execution_summary` (full JSON from quant-developer, including `statistical_summary`)
    - `data_sources` as JSON array, populated from data engineer output:
      `[{"provider": "FRED/FMP", "description": "...", "series_ids": [...], "date_range": {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}, "row_count": N}]`
-   - `original_query`, `job_id`
+   - `original_query` (the technical-writer tools pin artifacts to the server job id — still quote the exact same `job_...` path in your task text so quant-developer and quality-analyst use matching folders)
    TW reads charts from disk. `charts_json_path` must be an absolute path.
 4. **quality-analyst:** Validate `outputs/{job_id}/report.json`. If rejected, follow recovery skills.
 5. **Handoff:** Confirm final `report.json` is saved and approved.
@@ -154,6 +154,7 @@ Filesystem and shell tools are blocked for this subagent. Return concise summari
 # CREATE ORCHESTRATOR AGENT
 # =============================================================================
 
+
 async def create_orchestrator():
     """Create the orchestrator agent with all subagents, including FMP MCP tools."""
     data_engineer = await get_data_engineer_subagent()
@@ -167,7 +168,7 @@ async def create_orchestrator():
             data_engineer,
             QUANT_DEVELOPER_SUBAGENT,
             TECHNICAL_WRITER_SUBAGENT,
-            QUALITY_ANALYST_SUBAGENT
+            QUALITY_ANALYST_SUBAGENT,
         ],
         backend=LocalShellBackend(
             root_dir=_WORKSPACE_DIR,
@@ -178,13 +179,14 @@ async def create_orchestrator():
         checkpointer=_CHECKPOINTER,
         memory=[str(_BACKEND_DIR / "AGENTS.md")],
         skills=[str(_BACKEND_DIR / "skills" / "orchestrator")],
-        name="orchestrator"
+        name="orchestrator",
     )
 
 
 # =============================================================================
 # PUBLIC API FUNCTIONS
 # =============================================================================
+
 
 async def run_research(
     query: str,
@@ -257,7 +259,7 @@ async def run_research(
         messages = result.get("messages", [])
         if messages:
             last_message = messages[-1]
-            if hasattr(last_message, 'content'):
+            if hasattr(last_message, "content"):
                 content = last_message.content
                 if isinstance(content, list):
                     # Extract text parts from content blocks
@@ -275,27 +277,15 @@ async def run_research(
                 "status": "completed",
                 "job_id": job_id,
                 "response": response_content,
-                "result": result
+                "result": result,
             }
 
-        return {
-            "status": "completed",
-            "job_id": job_id,
-            "result": result
-        }
+        return {"status": "completed", "job_id": job_id, "result": result}
 
     except MCPTimeoutError as e:
-        return {
-            "status": "failed",
-            "job_id": job_id,
-            "error": f"MCP timeout: {e}"
-        }
+        return {"status": "failed", "job_id": job_id, "error": f"MCP timeout: {e}"}
     except Exception as e:
-        return {
-            "status": "failed",
-            "job_id": job_id,
-            "error": str(e)
-        }
+        return {"status": "failed", "job_id": job_id, "error": str(e)}
 
 
 async def stream_research(

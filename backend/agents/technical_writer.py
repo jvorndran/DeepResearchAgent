@@ -20,14 +20,15 @@ their own artifacts (charts.json, CSV files); the technical writer reads those
 artifacts and assembles the complete report independently.
 """
 
-from typing import Dict, List
 from langchain_core.tools import tool
+from langchain.tools import ToolRuntime
 import json
 import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
 
+from core.context import ResearchContext
 from core.report_schema import ResearchReport, DataSource, ReportMetadata
 
 # Absolute output base dir — avoids CWD ambiguity when running as a subagent
@@ -82,7 +83,9 @@ def _normalize_chart_definitions(charts_on_disk: dict) -> dict:
                     chart_copy["series"] = [
                         {
                             "dataKey": item.get("dataKey") or item.get("key", ""),
-                            "label": item.get("label") or item.get("name") or _labelize_key(item.get("dataKey") or item.get("key", "")),
+                            "label": item.get("label")
+                            or item.get("name")
+                            or _labelize_key(item.get("dataKey") or item.get("key", "")),
                             "color": item.get("color", "#3b82f6"),
                         }
                         for item in config_series
@@ -104,7 +107,9 @@ def _normalize_chart_definitions(charts_on_disk: dict) -> dict:
 
         if chart_copy.get("type") == "scatter" and "xKey" not in chart_copy:
             config_series = config.get("series") if isinstance(config.get("series"), list) else []
-            first_config_series = config_series[0] if config_series and isinstance(config_series[0], dict) else {}
+            first_config_series = (
+                config_series[0] if config_series and isinstance(config_series[0], dict) else {}
+            )
             x_key = config.get("xKey") or chart_copy.get("xAxisKey", "x")
             y_key = (
                 first_config_series.get("key")
@@ -115,24 +120,48 @@ def _normalize_chart_definitions(charts_on_disk: dict) -> dict:
             chart_copy["xKey"] = x_key
             chart_copy["yKey"] = y_key
             chart_copy["xLabel"] = chart_copy.get("xLabel") or _labelize_key(x_key)
-            chart_copy["yLabel"] = chart_copy.get("yLabel") or first_config_series.get("name") or _labelize_key(y_key)
-            chart_copy["color"] = chart_copy.get("color") or first_config_series.get("color") or "#3b82f6"
+            chart_copy["yLabel"] = (
+                chart_copy.get("yLabel") or first_config_series.get("name") or _labelize_key(y_key)
+            )
+            chart_copy["color"] = (
+                chart_copy.get("color") or first_config_series.get("color") or "#3b82f6"
+            )
 
         normalized[chart_id] = chart_copy
 
     return normalized
 
 
-def _extract_job_id_from_path(path: str) -> str:
-    match = re.search(r"/(test-[^/]+)/", path)
-    return match.group(1) if match else ""
+def _resolve_charts_json_path(
+    runtime: ToolRuntime[ResearchContext], charts_json_path: str
+) -> str:
+    """Pick the first existing charts.json — caller path, then canonical job output_dir."""
+    candidates: list[Path] = []
+    if charts_json_path.strip():
+        p = Path(charts_json_path).expanduser()
+        candidates.append(p)
+        if not p.is_absolute():
+            candidates.append(Path.cwd() / p)
+    od = runtime.context.output_dir
+    if od:
+        candidates.append(Path(od) / "charts.json")
+    for c in candidates:
+        try:
+            resolved = c.resolve()
+        except OSError:
+            continue
+        if resolved.is_file():
+            return str(resolved)
+    return charts_json_path.strip() or (str(Path(od) / "charts.json") if od else "")
+
 
 @tool
 def plan_report_structure(
     query_type: str,
     charts_json_path: str,
     execution_summary: str,
-    original_query: str
+    original_query: str,
+    runtime: ToolRuntime[ResearchContext],
 ) -> str:
     """
     Plan the report structure by reading charts.json from disk.
@@ -158,9 +187,10 @@ def plan_report_structure(
         - chart_ids: List of chart IDs discovered from charts.json
         - recommended_word_count: Target word count for the report
     """
+    charts_json_path = _resolve_charts_json_path(runtime, charts_json_path)
     _LAST_REPORT_CONTEXT["charts_json_path"] = charts_json_path
     _LAST_REPORT_CONTEXT["original_query"] = original_query
-    _LAST_REPORT_CONTEXT["job_id"] = _extract_job_id_from_path(charts_json_path)
+    _LAST_REPORT_CONTEXT["job_id"] = runtime.context.job_id
 
     # Load chart IDs from disk — never from caller context
     chart_ids: list[str] = []
@@ -168,7 +198,9 @@ def plan_report_structure(
         raw = Path(charts_json_path).read_text(encoding="utf-8")
         charts_data = json.loads(raw)
         if isinstance(charts_data, list):
-            chart_ids = [item["name"] for item in charts_data if isinstance(item, dict) and "name" in item]
+            chart_ids = [
+                item["name"] for item in charts_data if isinstance(item, dict) and "name" in item
+            ]
         else:
             chart_ids = list(charts_data.keys())
     except (FileNotFoundError, json.JSONDecodeError, OSError):
@@ -199,24 +231,26 @@ def plan_report_structure(
             "Place each chart marker immediately after the paragraph that discusses its data."
         )
 
-    return json.dumps({
-        "general_rules": general_rules,
-        "query_type": query_type,
-        "chart_ids": chart_ids,
-        "recommended_word_count": "1000+ words"
-    })
+    return json.dumps(
+        {
+            "general_rules": general_rules,
+            "query_type": query_type,
+            "chart_ids": chart_ids,
+            "recommended_word_count": "1000+ words",
+        }
+    )
 
 
 @tool
 def write_research_report(
     markdown: str,
+    runtime: ToolRuntime[ResearchContext],
     charts_json_path: str = "",
     data_sources: str = "[]",
     original_query: str = "",
-    job_id: str = "",
     title: str = "",
     executive_summary: str = "",
-    analysis_type: str = "custom"
+    analysis_type: str = "custom",
 ) -> str:
     """
     Validate and save the LLM-written markdown narrative as report.json.
@@ -238,7 +272,6 @@ def write_research_report(
         data_sources: JSON string containing DataSource dicts with small metadata only
                       (provider, description, tickers/series_ids, date_range, row_count)
         original_query: The user's original research question
-        job_id: Unique job identifier
         title: Descriptive report title (derived from query + key finding)
         executive_summary: 2-3 sentence plain-text summary (same content as the
                            ## Executive Summary section in markdown)
@@ -253,12 +286,12 @@ def write_research_report(
         - word_count: Approximate word count of markdown
         - validation_issues: List of non-blocking warnings (may be empty)
     """
+    canonical_job_id = runtime.context.job_id
     if not charts_json_path.strip():
         charts_json_path = _LAST_REPORT_CONTEXT["charts_json_path"]
+    charts_json_path = _resolve_charts_json_path(runtime, charts_json_path)
     if not original_query.strip():
         original_query = _LAST_REPORT_CONTEXT["original_query"]
-    if not job_id.strip():
-        job_id = _extract_job_id_from_path(charts_json_path) or _LAST_REPORT_CONTEXT["job_id"]
 
     # Normalise data_sources — may arrive as JSON string or a single dict instead of list
     if isinstance(data_sources, str):
@@ -279,7 +312,9 @@ def write_research_report(
         raw_charts = Path(charts_json_path).read_text(encoding="utf-8")
         parsed = json.loads(raw_charts)
         if isinstance(parsed, list):
-            charts_on_disk = {item["name"]: item for item in parsed if isinstance(item, dict) and "name" in item}
+            charts_on_disk = {
+                item["name"]: item for item in parsed if isinstance(item, dict) and "name" in item
+            }
         elif isinstance(parsed, dict):
             charts_on_disk = parsed
     except (FileNotFoundError, json.JSONDecodeError, OSError):
@@ -300,10 +335,11 @@ def write_research_report(
         try:
             ds_objects.append(DataSource(**ds))
         except Exception:
-            ds_objects.append(DataSource(
-                provider=ds.get("provider", "Unknown"),
-                description=ds.get("description", "")
-            ))
+            ds_objects.append(
+                DataSource(
+                    provider=ds.get("provider", "Unknown"), description=ds.get("description", "")
+                )
+            )
 
     # -------------------------------------------------------------------------
     # 4. Derive title and executive_summary from markdown if not supplied
@@ -331,38 +367,43 @@ def write_research_report(
     # -------------------------------------------------------------------------
     # 5. Assemble and validate ResearchReport (Pydantic validates chart shapes)
     # -------------------------------------------------------------------------
-    chart_ids_in_markdown = re.findall(r'<!--\s*CHART:(\S+?)\s*-->', markdown)
+    chart_ids_in_markdown = re.findall(r"<!--\s*CHART:(\S+?)\s*-->", markdown)
     metadata = ReportMetadata(
         analysis_type=analysis_type,
         chart_count=len(chart_ids_in_markdown),
-        word_count=len(markdown.split())
+        word_count=len(markdown.split()),
     )
 
     report = ResearchReport(
         schema_version=1,
-        job_id=job_id,
+        job_id=canonical_job_id,
         created_at=datetime.now(timezone.utc).isoformat(),
         query=original_query,
         title=title,
         executive_summary=executive_summary,
         markdown=markdown,
-        charts=charts_on_disk,   # full definitions read from disk, not passed through context
+        charts=charts_on_disk,  # full definitions read from disk, not passed through context
         data_sources=ds_objects,
-        metadata=metadata
+        metadata=metadata,
     )
 
     # -------------------------------------------------------------------------
     # 6. Save to disk with pre-write validation
     # -------------------------------------------------------------------------
-    report_path = str((_OUTPUT_BASE_DIR / job_id / "report.json").resolve())
+    out_dir = runtime.context.output_dir
+    if not out_dir:
+        out_dir = str(_OUTPUT_BASE_DIR / canonical_job_id)
+    report_path = str((Path(out_dir) / "report.json").resolve())
     validation_issues = _save_report(report, report_path)
 
-    return json.dumps({
-        "report_path": report_path,
-        "chart_count": metadata.chart_count,
-        "word_count": metadata.word_count,
-        "validation_issues": validation_issues
-    })
+    return json.dumps(
+        {
+            "report_path": report_path,
+            "chart_count": metadata.chart_count,
+            "word_count": metadata.word_count,
+            "validation_issues": validation_issues,
+        }
+    )
 
 
 def _save_report(report: ResearchReport, output_path: str) -> list[str]:
@@ -385,7 +426,7 @@ def _save_report(report: ResearchReport, output_path: str) -> list[str]:
         issues.append("Executive summary is empty")
 
     # Every <!-- CHART:id --> marker must resolve to a key in report.charts
-    marker_ids = re.findall(r'<!--\s*CHART:(\S+?)\s*-->', report.markdown)
+    marker_ids = re.findall(r"<!--\s*CHART:(\S+?)\s*-->", report.markdown)
     for mid in marker_ids:
         if mid not in report.charts:
             issues.append(f"Chart marker <!-- CHART:{mid} --> references unknown chart ID '{mid}'")
@@ -406,7 +447,6 @@ def _save_report(report: ResearchReport, output_path: str) -> list[str]:
 
 TECHNICAL_WRITER_SUBAGENT = {
     "name": "technical-writer",
-
     "description": """Use this subagent to write and save the final ResearchReport artifact.
 
     Delegate when you need to:
@@ -416,12 +456,11 @@ TECHNICAL_WRITER_SUBAGENT = {
 
     Pass ONLY: the charts_json_path, execution_summary (full JSON from quant developer, including
     statistical_summary), data_sources metadata (populated with series_ids, date_range, row_count),
-    original_query, and job_id.
+    and original_query.
     Do NOT pass chart data or raw arrays — the technical writer reads charts.json directly.
 
     The technical writer writes ALL prose itself. Do not expect the tool to generate content
     from execution_summary — the LLM writes every section with unique, cited analysis.""",
-
     "system_prompt": """# ROLE
 You are the Technical Writer. You synthesize research reports by reading `charts.json` and `execution_summary`, then writing a complete markdown narrative.
 
@@ -443,7 +482,6 @@ You are the Technical Writer. You synthesize research reports by reading `charts
    - `charts_json_path`
    - `data_sources`
    - `original_query`
-   - `job_id`
    - optional: `title`, `executive_summary`, `analysis_type`
 
 # RULES
@@ -454,10 +492,7 @@ You are the Technical Writer. You synthesize research reports by reading `charts
 - **Word Count:** Aim for 1000+ words of dense, analytical content in investment bank style.
 - **No fallback thrashing:** If `write_research_report` returns an argument error, call it again with the exact required fields above. Do not try `read_file` or `execute`.
 """,
-
     "tools": [plan_report_structure, write_research_report],
-
     "model": "google_genai:gemini-3.1-flash-lite-preview",
-
-    "skills": [str(_BACKEND_DIR / "skills" / "technical-writer")]
+    "skills": [str(_BACKEND_DIR / "skills" / "technical-writer")],
 }

@@ -1,2 +1,11 @@
-from .fmp_mcp_client import get_fmp_mcp_config, create_fmp_mcp_client, list_fmp_tools
-from .fred_mcp_client import get_fred_mcp_config, create_fred_mcp_client, list_fred_tools
+from .fmp_mcp_client import create_fmp_mcp_client, get_fmp_mcp_config, list_fmp_tools
+from .fred_mcp_client import create_fred_mcp_client, get_fred_mcp_config, list_fred_tools
+
+__all__ = [
+    "create_fmp_mcp_client",
+    "create_fred_mcp_client",
+    "get_fmp_mcp_config",
+    "get_fred_mcp_config",
+    "list_fmp_tools",
+    "list_fred_tools",
+]

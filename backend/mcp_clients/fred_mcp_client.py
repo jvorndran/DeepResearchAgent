@@ -19,9 +19,7 @@ from typing import Optional, Dict, Any, List
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
 # Default path to the pre-built FRED MCP server JS bundle (sibling project)
-_DEFAULT_FRED_SERVER_PATH = os.path.expanduser(
-    "~/projects/fred-mcp-server/build/index.js"
-)
+_DEFAULT_FRED_SERVER_PATH = os.path.expanduser("~/projects/fred-mcp-server/build/index.js")
 
 
 def get_fred_mcp_config(server_path: Optional[str] = None) -> Dict[str, Any]:

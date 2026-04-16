@@ -19,11 +19,9 @@ Key Principle: Acts as the final gatekeeper. Nothing goes to the user
 without Quality Analyst approval.
 """
 
-from typing import List
 from langchain_core.tools import tool
 import json
 import re
-import os
 from pathlib import Path
 
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
@@ -32,6 +30,7 @@ _BACKEND_DIR = Path(__file__).resolve().parent.parent
 # =============================================================================
 # QUALITY ANALYST TOOLS
 # =============================================================================
+
 
 @tool
 def validate_report_format(report_json_path: str) -> str:
@@ -61,27 +60,29 @@ def validate_report_format(report_json_path: str) -> str:
         raw = Path(report_json_path).read_text(encoding="utf-8")
         data = json.loads(raw)
     except FileNotFoundError:
-        return json.dumps({
-            "valid": False,
-            "schema_errors": [f"File not found: {report_json_path}"],
-            "missing_elements": []
-        })
+        return json.dumps(
+            {
+                "valid": False,
+                "schema_errors": [f"File not found: {report_json_path}"],
+                "missing_elements": [],
+            }
+        )
     except json.JSONDecodeError as e:
-        return json.dumps({
-            "valid": False,
-            "schema_errors": [f"Invalid JSON: {e}"],
-            "missing_elements": []
-        })
+        return json.dumps(
+            {"valid": False, "schema_errors": [f"Invalid JSON: {e}"], "missing_elements": []}
+        )
 
     # Pydantic validation
     try:
         report = ResearchReport(**data)
     except ValidationError as e:
-        return json.dumps({
-            "valid": False,
-            "schema_errors": [str(err) for err in e.errors()],
-            "missing_elements": []
-        })
+        return json.dumps(
+            {
+                "valid": False,
+                "schema_errors": [str(err) for err in e.errors()],
+                "missing_elements": [],
+            }
+        )
 
     # Mandatory markdown element checks
     markdown = report.markdown
@@ -100,11 +101,9 @@ def validate_report_format(report_json_path: str) -> str:
 
     valid = len(schema_errors) == 0 and len(missing_elements) == 0
 
-    return json.dumps({
-        "valid": valid,
-        "schema_errors": schema_errors,
-        "missing_elements": missing_elements
-    })
+    return json.dumps(
+        {"valid": valid, "schema_errors": schema_errors, "missing_elements": missing_elements}
+    )
 
 
 @tool
@@ -129,42 +128,42 @@ def check_compliance(report_json_path: str) -> str:
         data = json.loads(raw)
         report_text = data.get("markdown", "")
     except FileNotFoundError:
-        return json.dumps({
-            "compliant": False,
-            "violations": [f"File not found: {report_json_path}"],
-            "severity": "critical"
-        })
+        return json.dumps(
+            {
+                "compliant": False,
+                "violations": [f"File not found: {report_json_path}"],
+                "severity": "critical",
+            }
+        )
     except json.JSONDecodeError as e:
-        return json.dumps({
-            "compliant": False,
-            "violations": [f"Invalid JSON: {e}"],
-            "severity": "critical"
-        })
+        return json.dumps(
+            {"compliant": False, "violations": [f"Invalid JSON: {e}"], "severity": "critical"}
+        )
 
     violations = []
 
     # Patterns that indicate predictive advice (not allowed)
     prediction_patterns = [
         (r"(should|must|need to) (buy|sell|invest|trade|acquire|divest)", "Investment advice"),
-        (r"(recommend|suggestion|advice):? (buy|sell|hold)", "Investment recommendations")
+        (r"(recommend|suggestion|advice):? (buy|sell|hold)", "Investment recommendations"),
     ]
 
     for pattern, description in prediction_patterns:
         matches = re.findall(pattern, report_text, re.IGNORECASE)
         if matches:
-            violations.append({
-                "type": description,
-                "match": matches[0] if isinstance(matches[0], str) else " ".join(matches[0]),
-                "pattern": pattern
-            })
+            violations.append(
+                {
+                    "type": description,
+                    "match": matches[0] if isinstance(matches[0], str) else " ".join(matches[0]),
+                    "pattern": pattern,
+                }
+            )
 
     severity = "critical" if len(violations) > 0 else "none"
 
-    return json.dumps({
-        "compliant": len(violations) == 0,
-        "violations": violations,
-        "severity": severity
-    })
+    return json.dumps(
+        {"compliant": len(violations) == 0, "violations": violations, "severity": severity}
+    )
 
 
 @tool
@@ -193,23 +192,27 @@ def verify_chart_references(report_json_path: str) -> str:
         data = json.loads(raw)
         report = ResearchReport(**data)
     except (FileNotFoundError, json.JSONDecodeError, ValidationError) as e:
-        return json.dumps({
-            "valid": False,
-            "broken_references": [f"Could not load report: {e}"],
-            "chart_count": 0,
-            "defined_charts": []
-        })
+        return json.dumps(
+            {
+                "valid": False,
+                "broken_references": [f"Could not load report: {e}"],
+                "chart_count": 0,
+                "defined_charts": [],
+            }
+        )
 
-    marker_ids: list[str] = re.findall(r'<!--\s*CHART:(\S+?)\s*-->', report.markdown)
+    marker_ids: list[str] = re.findall(r"<!--\s*CHART:(\S+?)\s*-->", report.markdown)
     defined = list(report.charts.keys())
     broken = [mid for mid in marker_ids if mid not in report.charts]
 
-    return json.dumps({
-        "valid": len(broken) == 0,
-        "broken_references": broken,
-        "chart_count": len(marker_ids),
-        "defined_charts": defined
-    })
+    return json.dumps(
+        {
+            "valid": len(broken) == 0,
+            "broken_references": broken,
+            "chart_count": len(marker_ids),
+            "defined_charts": defined,
+        }
+    )
 
 
 @tool
@@ -240,11 +243,15 @@ def patch_report(report_json_path: str, patch_type: str) -> str:
 
     SUPPORTED = {"add_disclaimer", "add_past_performance", "remove_broken_chart_markers"}
     if patch_type not in SUPPORTED:
-        return json.dumps({
-            "patched": False,
-            "changes_made": [],
-            "validation_issues": [f"Unknown patch_type '{patch_type}'. Supported: {sorted(SUPPORTED)}"]
-        })
+        return json.dumps(
+            {
+                "patched": False,
+                "changes_made": [],
+                "validation_issues": [
+                    f"Unknown patch_type '{patch_type}'. Supported: {sorted(SUPPORTED)}"
+                ],
+            }
+        )
 
     # Load and parse report.json
     try:
@@ -252,26 +259,28 @@ def patch_report(report_json_path: str, patch_type: str) -> str:
         raw = path.read_text(encoding="utf-8")
         data = json.loads(raw)
     except FileNotFoundError:
-        return json.dumps({
-            "patched": False,
-            "changes_made": [],
-            "validation_issues": [f"File not found: {report_json_path}"]
-        })
+        return json.dumps(
+            {
+                "patched": False,
+                "changes_made": [],
+                "validation_issues": [f"File not found: {report_json_path}"],
+            }
+        )
     except json.JSONDecodeError as e:
-        return json.dumps({
-            "patched": False,
-            "changes_made": [],
-            "validation_issues": [f"Invalid JSON: {e}"]
-        })
+        return json.dumps(
+            {"patched": False, "changes_made": [], "validation_issues": [f"Invalid JSON: {e}"]}
+        )
 
     try:
         report = ResearchReport(**data)
     except ValidationError as e:
-        return json.dumps({
-            "patched": False,
-            "changes_made": [],
-            "validation_issues": [f"Schema validation failed before patching: {e}"]
-        })
+        return json.dumps(
+            {
+                "patched": False,
+                "changes_made": [],
+                "validation_issues": [f"Schema validation failed before patching: {e}"],
+            }
+        )
 
     markdown = report.markdown
     changes_made: list[str] = []
@@ -291,20 +300,18 @@ def patch_report(report_json_path: str, patch_type: str) -> str:
 
     elif patch_type == "remove_broken_chart_markers":
         defined_charts = set(report.charts.keys())
+
         def _remove_if_broken(m: re.Match) -> str:
             chart_id = m.group(1)
             if chart_id not in defined_charts:
                 changes_made.append(f"Removed broken chart marker <!-- CHART:{chart_id} -->")
                 return ""
             return m.group(0)
-        markdown = re.sub(r'<!--\s*CHART:(\S+?)\s*-->', _remove_if_broken, markdown)
+
+        markdown = re.sub(r"<!--\s*CHART:(\S+?)\s*-->", _remove_if_broken, markdown)
 
     if not changes_made:
-        return json.dumps({
-            "patched": False,
-            "changes_made": [],
-            "validation_issues": []
-        })
+        return json.dumps({"patched": False, "changes_made": [], "validation_issues": []})
 
     # Recalculate word_count and update data dict
     updated_data = data.copy()
@@ -316,34 +323,31 @@ def patch_report(report_json_path: str, patch_type: str) -> str:
     try:
         patched_report = ResearchReport(**updated_data)
     except ValidationError as e:
-        return json.dumps({
-            "patched": False,
-            "changes_made": changes_made,
-            "validation_issues": [f"Re-validation failed after patching — not saved: {e}"]
-        })
+        return json.dumps(
+            {
+                "patched": False,
+                "changes_made": changes_made,
+                "validation_issues": [f"Re-validation failed after patching — not saved: {e}"],
+            }
+        )
 
     # Save patched report
     try:
         path.write_text(patched_report.model_dump_json(indent=2), encoding="utf-8")
     except Exception as e:
-        return json.dumps({
-            "patched": False,
-            "changes_made": changes_made,
-            "validation_issues": [f"Failed to write patched report: {e}"]
-        })
+        return json.dumps(
+            {
+                "patched": False,
+                "changes_made": changes_made,
+                "validation_issues": [f"Failed to write patched report: {e}"],
+            }
+        )
 
-    return json.dumps({
-        "patched": True,
-        "changes_made": changes_made,
-        "validation_issues": []
-    })
+    return json.dumps({"patched": True, "changes_made": changes_made, "validation_issues": []})
 
 
 @tool
-def approve_report(
-    report_path: str,
-    notes: str
-) -> str:
+def approve_report(report_path: str, notes: str) -> str:
     """
     Approve the report for final upload.
 
@@ -357,19 +361,13 @@ def approve_report(
     Returns:
         JSON string with approval confirmation
     """
-    return json.dumps({
-        "status": "approved",
-        "report_path": report_path,
-        "notes": notes,
-        "ready_for_upload": True
-    })
+    return json.dumps(
+        {"status": "approved", "report_path": report_path, "notes": notes, "ready_for_upload": True}
+    )
 
 
 @tool
-def reject_report(
-    reason: str,
-    required_fixes: str | list[str]
-) -> str:
+def reject_report(reason: str, required_fixes: str | list[str]) -> str:
     """
     Reject the report and request fixes.
 
@@ -391,12 +389,14 @@ def reject_report(
     if not isinstance(required_fixes, list):
         required_fixes = [str(required_fixes)]
 
-    return json.dumps({
-        "status": "rejected",
-        "reason": reason,
-        "required_fixes": required_fixes,
-        "ready_for_upload": False
-    })
+    return json.dumps(
+        {
+            "status": "rejected",
+            "reason": reason,
+            "required_fixes": required_fixes,
+            "ready_for_upload": False,
+        }
+    )
 
 
 # =============================================================================
@@ -405,7 +405,6 @@ def reject_report(
 
 QUALITY_ANALYST_SUBAGENT = {
     "name": "quality-analyst",
-
     "description": """Use this subagent to perform final quality review of the report.
 
     Delegate when you need to:
@@ -417,7 +416,6 @@ QUALITY_ANALYST_SUBAGENT = {
     The quality analyst autonomously patches minor issues (missing disclaimers,
     broken chart markers) and either approves or rejects the report. Rejections include
     a required_fixes list for the technical writer. Nothing reaches the user without approval.""",
-
     "system_prompt": """# ROLE
 You are the Quality Analyst. You are the final gatekeeper for research reports.
 
@@ -441,17 +439,14 @@ You are the Quality Analyst. You are the final gatekeeper for research reports.
 - **No shell/filesystem tools:** They are blocked for this subagent.
 - **Analytic Quality:** Ensure findings are supported by data and avoid narrative fallacy.
 """,
-
     "tools": [
         validate_report_format,
         check_compliance,
         verify_chart_references,
         patch_report,
         approve_report,
-        reject_report
+        reject_report,
     ],
-
     "model": "google_genai:gemini-3.1-flash-lite-preview",
-
-    "skills": [str(_BACKEND_DIR / "skills" / "quality-analyst")]
+    "skills": [str(_BACKEND_DIR / "skills" / "quality-analyst")],
 }

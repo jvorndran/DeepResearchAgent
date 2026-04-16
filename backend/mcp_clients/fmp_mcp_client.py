@@ -64,9 +64,9 @@ def get_fmp_mcp_config(
     # We use a single stable ID per process to avoid creating a new session for every request
     # which causes the server to spawn many tool definitions and eventually rate limit or fail
     global _fmp_client_id
-    if '_fmp_client_id' not in globals():
+    if "_fmp_client_id" not in globals():
         _fmp_client_id = str(uuid.uuid4())
-        
+
     cid = client_id or _fmp_client_id
 
     return {
@@ -78,9 +78,9 @@ def get_fmp_mcp_config(
                 "Accept": "application/json, text/event-stream",
                 "mcp-client-id": cid,
             },
-            "timeout": 30,          # connection + request timeout (seconds)
-            "sse_read_timeout": 30, # max wait for a single tool response (seconds)
-            "terminate_on_close": False, # Prevents the 400 error on session close
+            "timeout": 30,  # connection + request timeout (seconds)
+            "sse_read_timeout": 30,  # max wait for a single tool response (seconds)
+            "terminate_on_close": False,  # Prevents the 400 error on session close
         }
     }
 
@@ -104,9 +104,7 @@ async def create_fmp_mcp_client(
 
 
 async def list_fmp_tools(
-    api_token: Optional[str] = None,
-    server_url: Optional[str] = None,
-    use_hosted: bool = True
+    api_token: Optional[str] = None, server_url: Optional[str] = None, use_hosted: bool = True
 ) -> List[Dict[str, Any]]:
     """
     List all available tools from the FMP MCP server.

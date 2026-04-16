@@ -11,10 +11,10 @@ from __future__ import annotations
 from typing import Annotated, Literal, Union
 from pydantic import BaseModel, Field
 
-
 # =============================================================================
 # CHART MODELS
 # =============================================================================
+
 
 class AxisSeries(BaseModel):
     dataKey: str
@@ -59,15 +59,13 @@ class PieChartDef(BaseModel):
     data: list[PieSlice]
 
 
-ChartDef = Annotated[
-    Union[AxisChartDef, ScatterChartDef, PieChartDef],
-    Field(discriminator="type")
-]
+ChartDef = Annotated[Union[AxisChartDef, ScatterChartDef, PieChartDef], Field(discriminator="type")]
 
 
 # =============================================================================
 # DATA SOURCE
 # =============================================================================
+
 
 class DataSource(BaseModel):
     provider: str
@@ -82,6 +80,7 @@ class DataSource(BaseModel):
 # REPORT METADATA
 # =============================================================================
 
+
 class ReportMetadata(BaseModel):
     analysis_type: str
     chart_count: int
@@ -91,6 +90,7 @@ class ReportMetadata(BaseModel):
 # =============================================================================
 # TOP-LEVEL REPORT OBJECT
 # =============================================================================
+
 
 class ResearchReport(BaseModel):
     schema_version: Literal[1] = 1
