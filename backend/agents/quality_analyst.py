@@ -2,95 +2,36 @@
 Quality Analyst Subagent (Deep Agents)
 
 The Quality Analyst performs final quality checks on generated reports.
-It validates formatting, and ensures compliance
-with financial disclosure requirements.
-
-Role: Quality Analyst / Compliance Officer
-Model: Gemini 3.0 Flash (good at evaluation and pattern detection)
-
-Responsibilities:
-- Verify Markdown formatting is correct
-- Ensure no predictive financial advice (compliance)
-- Validate chart references are correct
-- Check for proper disclaimers
-- Approve or reject for final upload
-
-Key Principle: Acts as the final gatekeeper. Nothing goes to the user
-without Quality Analyst approval.
+It validates formatting, ensures compliance with financial disclosure requirements,
+and verifies chart references before approve/reject.
 """
 
-from langchain_core.tools import tool
+from __future__ import annotations
+
 import json
 import re
 from pathlib import Path
 
+from langchain_core.tools import tool
+from pydantic import ValidationError
+
+from core.report_schema import ResearchReport
+
+from .report_artifacts import DISCLAIMER_SUBSTRINGS, chart_marker_ids, load_report_json
+
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
 
 
-# =============================================================================
-# QUALITY ANALYST TOOLS
-# =============================================================================
-
-
-@tool
-def validate_report_format(report_json_path: str) -> str:
-    """
-    Validate the ResearchReport by loading report.json via Pydantic.
-
-    Loads the report artifact and validates it against the ResearchReport
-    schema. Checks mandatory elements in the markdown field.
-
-    Args:
-        report_json_path: File path to the report.json artifact
-
-    Returns:
-        JSON string with:
-        - valid: Boolean indicating if the report passes all checks
-        - schema_errors: Pydantic validation errors (if any)
-        - missing_elements: List of mandatory elements absent from markdown
-    """
-    from core.report_schema import ResearchReport
-    from pydantic import ValidationError
-
+def _format_validation_dict(report: ResearchReport) -> dict:
     schema_errors: list[str] = []
     missing_elements: list[str] = []
-
-    # Load and parse report.json
-    try:
-        raw = Path(report_json_path).read_text(encoding="utf-8")
-        data = json.loads(raw)
-    except FileNotFoundError:
-        return json.dumps(
-            {
-                "valid": False,
-                "schema_errors": [f"File not found: {report_json_path}"],
-                "missing_elements": [],
-            }
-        )
-    except json.JSONDecodeError as e:
-        return json.dumps(
-            {"valid": False, "schema_errors": [f"Invalid JSON: {e}"], "missing_elements": []}
-        )
-
-    # Pydantic validation
-    try:
-        report = ResearchReport(**data)
-    except ValidationError as e:
-        return json.dumps(
-            {
-                "valid": False,
-                "schema_errors": [str(err) for err in e.errors()],
-                "missing_elements": [],
-            }
-        )
-
-    # Mandatory markdown element checks
     markdown = report.markdown
 
-    if "does not constitute financial advice" not in markdown:
-        missing_elements.append("Financial disclaimer ('does not constitute financial advice')")
-
-    if "Past performance" not in markdown:
+    if DISCLAIMER_SUBSTRINGS["financial_advice"] not in markdown:
+        missing_elements.append(
+            "Financial disclaimer ('does not constitute financial advice')"
+        )
+    if DISCLAIMER_SUBSTRINGS["past_performance"] not in markdown:
         missing_elements.append("Past performance notice")
 
     if not report.executive_summary.strip():
@@ -100,175 +41,116 @@ def validate_report_format(report_json_path: str) -> str:
         missing_elements.append("Original query not found in markdown")
 
     valid = len(schema_errors) == 0 and len(missing_elements) == 0
-
-    return json.dumps(
-        {"valid": valid, "schema_errors": schema_errors, "missing_elements": missing_elements}
-    )
+    return {"valid": valid, "schema_errors": schema_errors, "missing_elements": missing_elements}
 
 
-@tool
-def check_compliance(report_json_path: str) -> str:
-    """
-    Check for compliance with financial disclosure rules.
+def _compliance_dict(markdown: str) -> dict:
+    violations: list[dict] = []
 
-    Use this tool to ensure the report doesn't contain predictive
-    language or investment advice.
-
-    Args:
-        report_json_path: File path to the report.json artifact
-
-    Returns:
-        JSON string with:
-        - compliant: Boolean indicating if report is compliant
-        - violations: List of compliance violations found
-        - severity: "critical", "warning", or "none"
-    """
-    try:
-        raw = Path(report_json_path).read_text(encoding="utf-8")
-        data = json.loads(raw)
-        report_text = data.get("markdown", "")
-    except FileNotFoundError:
-        return json.dumps(
-            {
-                "compliant": False,
-                "violations": [f"File not found: {report_json_path}"],
-                "severity": "critical",
-            }
-        )
-    except json.JSONDecodeError as e:
-        return json.dumps(
-            {"compliant": False, "violations": [f"Invalid JSON: {e}"], "severity": "critical"}
-        )
-
-    violations = []
-
-    # Patterns that indicate predictive advice (not allowed)
     prediction_patterns = [
         (r"(should|must|need to) (buy|sell|invest|trade|acquire|divest)", "Investment advice"),
         (r"(recommend|suggestion|advice):? (buy|sell|hold)", "Investment recommendations"),
     ]
 
     for pattern, description in prediction_patterns:
-        matches = re.findall(pattern, report_text, re.IGNORECASE)
+        matches = re.findall(pattern, markdown, re.IGNORECASE)
         if matches:
             violations.append(
                 {
                     "type": description,
-                    "match": matches[0] if isinstance(matches[0], str) else " ".join(matches[0]),
+                    "match": matches[0]
+                    if isinstance(matches[0], str)
+                    else " ".join(matches[0]),
                     "pattern": pattern,
                 }
             )
 
-    severity = "critical" if len(violations) > 0 else "none"
-
-    return json.dumps(
-        {"compliant": len(violations) == 0, "violations": violations, "severity": severity}
-    )
+    severity = "critical" if violations else "none"
+    return {"compliant": len(violations) == 0, "violations": violations, "severity": severity}
 
 
-@tool
-def verify_chart_references(report_json_path: str) -> str:
-    """
-    Verify all <!-- CHART:id --> markers in report.markdown resolve to chart IDs.
-
-    Loads report.json, extracts every <!-- CHART:id --> marker from the markdown
-    field, and checks that each ID exists in report.charts.
-
-    Args:
-        report_json_path: File path to the report.json artifact
-
-    Returns:
-        JSON string with:
-        - valid: Boolean — True only if all marker IDs exist in report.charts
-        - broken_references: List of marker IDs missing from report.charts
-        - chart_count: Number of <!-- CHART:id --> markers found in markdown
-        - defined_charts: List of chart IDs defined in report.charts
-    """
-    from core.report_schema import ResearchReport
-    from pydantic import ValidationError
-
-    try:
-        raw = Path(report_json_path).read_text(encoding="utf-8")
-        data = json.loads(raw)
-        report = ResearchReport(**data)
-    except (FileNotFoundError, json.JSONDecodeError, ValidationError) as e:
-        return json.dumps(
-            {
-                "valid": False,
-                "broken_references": [f"Could not load report: {e}"],
-                "chart_count": 0,
-                "defined_charts": [],
-            }
-        )
-
-    marker_ids: list[str] = re.findall(r"<!--\s*CHART:(\S+?)\s*-->", report.markdown)
+def _charts_dict(report: ResearchReport) -> dict:
+    marker_ids = chart_marker_ids(report.markdown)
     defined = list(report.charts.keys())
     broken = [mid for mid in marker_ids if mid not in report.charts]
+    return {
+        "valid": len(broken) == 0,
+        "broken_references": broken,
+        "chart_count": len(marker_ids),
+        "defined_charts": defined,
+    }
 
-    return json.dumps(
-        {
-            "valid": len(broken) == 0,
-            "broken_references": broken,
-            "chart_count": len(marker_ids),
-            "defined_charts": defined,
-        }
-    )
+
+def _apply_safe_patches(data: dict, report: ResearchReport) -> tuple[dict, list[str]]:
+    """Apply idempotent disclaimer / past-performance / broken-marker patches. Returns (updated_data, changes)."""
+    markdown = report.markdown
+    changes_made: list[str] = []
+
+    if DISCLAIMER_SUBSTRINGS["financial_advice"] not in markdown:
+        markdown += (
+            "\n\n**DISCLAIMER**: This report does not constitute financial advice. "
+            "All analysis is based on historical data."
+        )
+        changes_made.append("Appended financial disclaimer")
+
+    if DISCLAIMER_SUBSTRINGS["past_performance"] not in markdown:
+        markdown += "\n\n**NOTICE**: Past performance is not indicative of future results."
+        changes_made.append("Appended past performance notice")
+
+    defined_charts = set(report.charts.keys())
+
+    def _remove_if_broken(m: re.Match) -> str:
+        chart_id = m.group(1)
+        if chart_id not in defined_charts:
+            changes_made.append(f"Removed broken chart marker <!-- CHART:{chart_id} -->")
+            return ""
+        return m.group(0)
+
+    new_md = re.sub(r"<!--\s*CHART:(\S+?)\s*-->", _remove_if_broken, markdown)
+    if new_md != markdown:
+        markdown = new_md
+
+    if not changes_made:
+        return data, []
+
+    updated = dict(data)
+    updated["markdown"] = markdown
+    updated["metadata"] = dict(data.get("metadata", {}))
+    updated["metadata"]["word_count"] = len(markdown.split())
+    return updated, changes_made
 
 
 @tool
-def patch_report(report_json_path: str, patch_type: str) -> str:
+def run_quality_gate(report_json_path: str, auto_patch: bool = True) -> str:
     """
-    Autonomously fix minor issues in the report without rejecting to Technical Writer.
+    Run schema + mandatory markdown + compliance + chart-reference checks in one step.
 
-    Supported patch_type values:
-    - "add_disclaimer": Appends financial disclaimer text if missing
-    - "add_past_performance": Appends past performance notice if missing
-    - "remove_broken_chart_markers": Strips <!-- CHART:id --> markers whose ID
-      is not in report.charts
-
-    All patch types are idempotent — safe to call multiple times.
+    When auto_patch is True and compliance passes, applies the same safe auto-fixes
+    as the legacy patch_report tool (disclaimers, broken chart markers), then
+    re-validates before returning.
 
     Args:
-        report_json_path: File path to the report.json artifact
-        patch_type: One of the supported patch type strings listed above
+        report_json_path: Absolute path to report.json
+        auto_patch: If True, apply safe patches when compliance is clean
 
     Returns:
-        JSON string with:
-        - patched: Boolean indicating if changes were made
-        - changes_made: List of descriptions of changes applied
-        - validation_issues: List of any re-validation issues after patching
+        JSON string with passes_gate, format, compliance, charts, auto_patched,
+        patches_applied, and blockers (remaining reasons to reject).
     """
-    from core.report_schema import ResearchReport
-    from pydantic import ValidationError
-
-    SUPPORTED = {"add_disclaimer", "add_past_performance", "remove_broken_chart_markers"}
-    if patch_type not in SUPPORTED:
+    path = Path(report_json_path)
+    data, load_err = load_report_json(report_json_path)
+    if load_err or data is None:
         return json.dumps(
             {
-                "patched": False,
-                "changes_made": [],
-                "validation_issues": [
-                    f"Unknown patch_type '{patch_type}'. Supported: {sorted(SUPPORTED)}"
-                ],
+                "passes_gate": False,
+                "load_error": load_err,
+                "format": {},
+                "compliance": {},
+                "charts": {},
+                "auto_patched": False,
+                "patches_applied": [],
+                "blockers": [load_err or "Unknown load error"],
             }
-        )
-
-    # Load and parse report.json
-    try:
-        path = Path(report_json_path)
-        raw = path.read_text(encoding="utf-8")
-        data = json.loads(raw)
-    except FileNotFoundError:
-        return json.dumps(
-            {
-                "patched": False,
-                "changes_made": [],
-                "validation_issues": [f"File not found: {report_json_path}"],
-            }
-        )
-    except json.JSONDecodeError as e:
-        return json.dumps(
-            {"patched": False, "changes_made": [], "validation_issues": [f"Invalid JSON: {e}"]}
         )
 
     try:
@@ -276,74 +158,131 @@ def patch_report(report_json_path: str, patch_type: str) -> str:
     except ValidationError as e:
         return json.dumps(
             {
-                "patched": False,
-                "changes_made": [],
-                "validation_issues": [f"Schema validation failed before patching: {e}"],
+                "passes_gate": False,
+                "format": {"valid": False, "schema_errors": [str(e)], "missing_elements": []},
+                "compliance": {},
+                "charts": {},
+                "auto_patched": False,
+                "patches_applied": [],
+                "blockers": [f"Schema validation failed: {e}"],
             }
         )
 
-    markdown = report.markdown
-    changes_made: list[str] = []
+    fmt = _format_validation_dict(report)
+    comp = _compliance_dict(report.markdown)
+    ch = _charts_dict(report)
 
-    if patch_type == "add_disclaimer":
-        if "does not constitute financial advice" not in markdown:
-            markdown += (
-                "\n\n**DISCLAIMER**: This report does not constitute financial advice. "
-                "All analysis is based on historical data."
-            )
-            changes_made.append("Appended financial disclaimer")
+    def _merge_blockers() -> list[str]:
+        out: list[str] = []
+        if not comp["compliant"]:
+            out.append("compliance violations present")
+        if not fmt["valid"]:
+            out.extend(fmt["missing_elements"])
+        if not ch["valid"]:
+            out.append(f"broken chart references: {ch['broken_references']}")
+        return out
 
-    elif patch_type == "add_past_performance":
-        if "Past performance" not in markdown:
-            markdown += "\n\n**NOTICE**: Past performance is not indicative of future results."
-            changes_made.append("Appended past performance notice")
+    passes = bool(fmt["valid"] and comp["compliant"] and ch["valid"])
+    if passes:
+        return json.dumps(
+            {
+                "passes_gate": True,
+                "format": fmt,
+                "compliance": comp,
+                "charts": ch,
+                "auto_patched": False,
+                "patches_applied": [],
+                "blockers": [],
+            }
+        )
 
-    elif patch_type == "remove_broken_chart_markers":
-        defined_charts = set(report.charts.keys())
+    if not auto_patch or not comp["compliant"]:
+        return json.dumps(
+            {
+                "passes_gate": False,
+                "format": fmt,
+                "compliance": comp,
+                "charts": ch,
+                "auto_patched": False,
+                "patches_applied": [],
+                "blockers": _merge_blockers(),
+            }
+        )
 
-        def _remove_if_broken(m: re.Match) -> str:
-            chart_id = m.group(1)
-            if chart_id not in defined_charts:
-                changes_made.append(f"Removed broken chart marker <!-- CHART:{chart_id} -->")
-                return ""
-            return m.group(0)
+    updated_data, patches = _apply_safe_patches(data, report)
+    if not patches:
+        return json.dumps(
+            {
+                "passes_gate": False,
+                "format": fmt,
+                "compliance": comp,
+                "charts": ch,
+                "auto_patched": False,
+                "patches_applied": [],
+                "blockers": _merge_blockers(),
+            }
+        )
 
-        markdown = re.sub(r"<!--\s*CHART:(\S+?)\s*-->", _remove_if_broken, markdown)
-
-    if not changes_made:
-        return json.dumps({"patched": False, "changes_made": [], "validation_issues": []})
-
-    # Recalculate word_count and update data dict
-    updated_data = data.copy()
-    updated_data["markdown"] = markdown
-    updated_data["metadata"] = dict(data.get("metadata", {}))
-    updated_data["metadata"]["word_count"] = len(markdown.split())
-
-    # Re-validate patched object via Pydantic before saving
     try:
         patched_report = ResearchReport(**updated_data)
     except ValidationError as e:
         return json.dumps(
             {
-                "patched": False,
-                "changes_made": changes_made,
-                "validation_issues": [f"Re-validation failed after patching — not saved: {e}"],
+                "passes_gate": False,
+                "format": fmt,
+                "compliance": comp,
+                "charts": ch,
+                "auto_patched": False,
+                "patches_applied": patches,
+                "blockers": [f"Re-validation failed after patch — not saved: {e}"],
             }
         )
 
-    # Save patched report
     try:
         path.write_text(patched_report.model_dump_json(indent=2), encoding="utf-8")
-    except Exception as e:
+    except OSError as e:
         return json.dumps(
             {
-                "patched": False,
-                "changes_made": changes_made,
-                "validation_issues": [f"Failed to write patched report: {e}"],
+                "passes_gate": False,
+                "format": fmt,
+                "compliance": comp,
+                "charts": ch,
+                "auto_patched": False,
+                "patches_applied": patches,
+                "blockers": [f"Failed to write patched report: {e}"],
             }
         )
 
-    return json.dumps({"patched": True, "changes_made": changes_made, "validation_issues": []})
+    raw2 = path.read_text(encoding="utf-8")
+    data2 = json.loads(raw2)
+    report2 = ResearchReport(**data2)
+    fmt2 = _format_validation_dict(report2)
+    comp2 = _compliance_dict(report2.markdown)
+    ch2 = _charts_dict(report2)
+    passes2 = bool(fmt2["valid"] and comp2["compliant"] and ch2["valid"])
+
+    return json.dumps(
+        {
+            "passes_gate": passes2,
+            "format": fmt2,
+            "compliance": comp2,
+            "charts": ch2,
+            "auto_patched": True,
+            "patches_applied": patches,
+            "blockers": [] if passes2 else _merge_blockers_from(fmt2, comp2, ch2),
+        }
+    )
+
+
+def _merge_blockers_from(fmt: dict, comp: dict, ch: dict) -> list[str]:
+    out: list[str] = []
+    if not comp["compliant"]:
+        out.append("compliance violations present")
+    if not fmt["valid"]:
+        out.extend(fmt["missing_elements"])
+    if not ch["valid"]:
+        out.append(f"broken chart references: {ch['broken_references']}")
+    return out
 
 
 @tool
@@ -399,10 +338,6 @@ def reject_report(reason: str, required_fixes: str | list[str]) -> str:
     )
 
 
-# =============================================================================
-# SUBAGENT CONFIGURATION
-# =============================================================================
-
 QUALITY_ANALYST_SUBAGENT = {
     "name": "quality-analyst",
     "description": """Use this subagent to perform final quality review of the report.
@@ -413,40 +348,30 @@ QUALITY_ANALYST_SUBAGENT = {
     - Verify chart references are correct
     - Check for proper disclaimers
 
-    The quality analyst autonomously patches minor issues (missing disclaimers,
-    broken chart markers) and either approves or rejects the report. Rejections include
-    a required_fixes list for the technical writer. Nothing reaches the user without approval.""",
+    The quality analyst runs a single composite gate, may auto-patch minor disclaimer
+    or chart-marker issues when safe, then approves or rejects. Nothing reaches the
+    user without approval.""",
     "system_prompt": """# ROLE
 You are the Quality Analyst. You are the final gatekeeper for research reports.
 
 # TOOLS
-- `validate_report_format`: Check structure and mandatory elements.
-- `check_compliance`: Ensure no predictive advice or investment recommendations.
-- `verify_chart_references`: Verify all `<!-- CHART:id -->` markers match `report.charts`.
-- `patch_report`: Auto-fix minor issues (missing disclaimer, broken markers).
-- `approve_report` / `reject_report`: Terminal actions.
+- `run_quality_gate`: Single composite check (schema + mandatory markdown + compliance + charts).
+  Use `auto_patch=True` (default) so minor disclaimer or broken chart-marker issues are fixed when safe.
+- `approve_report` / `reject_report`: Terminal actions after the gate.
 
 # WORKFLOW
-1. `validate_report_format` → `check_compliance` → `verify_chart_references`.
-2. **If Critical Finding:** Call `reject_report` with required fixes. STOP.
-3. **If Auto-Fixable:** Call `patch_report` and re-run `validate_report_format`.
-4. **If Valid:** Call `approve_report`. STOP.
+1. Call `run_quality_gate` with the absolute path to `report.json`.
+2. If `passes_gate` is false, call `reject_report` with `required_fixes` drawn from `blockers`. STOP.
+3. If `passes_gate` is true, call `approve_report`. STOP.
 
 # CRITICAL RULES
-- **Compliance:** Never approve predictive language like "will increase" or investment advice.
-- **Terminality:** `approve_report` and `reject_report` are final. No further tool calls.
-- **Paths:** Use absolute paths for the report tools.
-- **No shell/filesystem tools:** They are blocked for this subagent.
+- **Compliance:** Never approve predictive language or investment advice. If `run_quality_gate` reports compliance violations, reject — do not rely on auto-patch.
+- **Terminality:** `approve_report` and `reject_report` are final. No further tool calls after one of them.
+- **Paths:** Use absolute paths for tools.
+- **Tool discipline:** Deep Agents may expose standard filesystem or shell tools on this graph. You must not use them — only call the tools listed above.
 - **Analytic Quality:** Ensure findings are supported by data and avoid narrative fallacy.
 """,
-    "tools": [
-        validate_report_format,
-        check_compliance,
-        verify_chart_references,
-        patch_report,
-        approve_report,
-        reject_report,
-    ],
+    "tools": [run_quality_gate, approve_report, reject_report],
     "model": "google_genai:gemini-3.1-flash-lite-preview",
     "skills": [str(_BACKEND_DIR / "skills" / "quality-analyst")],
 }

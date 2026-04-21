@@ -40,7 +40,7 @@ Filter out noise. Look for the "trip-up" points where performance or accuracy de
 
 Based on the analysis, modify the agent's core logic. Key files are likely in:
 - `backend/agents/orchestrator.py` (Graph logic, planning, delegation)
-- `backend/agents/data_engineer.py`, `backend/agents/quantitative_developer.py`, etc. (Subagent specific logic and prompts)
+- `backend/agents/data_engineer/`, `backend/agents/quantitative_developer.py`, etc. (Subagent specific logic and prompts)
 - `backend/mcp_clients/` (Tool interaction logic)
 
 Apply surgical improvements to prompts, state management, or tool definitions.

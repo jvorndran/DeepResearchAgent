@@ -24,21 +24,17 @@ from langchain_core.tools import tool
 from langchain.tools import ToolRuntime
 import json
 import os
-import re
 from datetime import datetime, timezone
 from pathlib import Path
 
 from core.context import ResearchContext
 from core.report_schema import ResearchReport, DataSource, ReportMetadata
 
+from .report_artifacts import chart_marker_ids
+
 # Absolute output base dir — avoids CWD ambiguity when running as a subagent
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
 _OUTPUT_BASE_DIR = Path(os.getenv("OUTPUT_DIR", str(_BACKEND_DIR / "outputs")))
-_LAST_REPORT_CONTEXT: dict[str, str] = {
-    "charts_json_path": "",
-    "original_query": "",
-    "job_id": "",
-}
 
 
 # =============================================================================
@@ -186,11 +182,10 @@ def plan_report_structure(
         - query_type: Echoed back
         - chart_ids: List of chart IDs discovered from charts.json
         - recommended_word_count: Target word count for the report
+        - charts_json_path: Resolved absolute path to charts.json (pass unchanged to `write_research_report`)
+        - original_query: Echo of `original_query` (pass unchanged to `write_research_report`)
     """
     charts_json_path = _resolve_charts_json_path(runtime, charts_json_path)
-    _LAST_REPORT_CONTEXT["charts_json_path"] = charts_json_path
-    _LAST_REPORT_CONTEXT["original_query"] = original_query
-    _LAST_REPORT_CONTEXT["job_id"] = runtime.context.job_id
 
     # Load chart IDs from disk — never from caller context
     chart_ids: list[str] = []
@@ -237,6 +232,12 @@ def plan_report_structure(
             "query_type": query_type,
             "chart_ids": chart_ids,
             "recommended_word_count": "1000+ words",
+            "charts_json_path": charts_json_path,
+            "original_query": original_query,
+            "echo_for_write_research_report": (
+                "Pass `charts_json_path` and `original_query` into `write_research_report` "
+                "exactly as given in this JSON (same strings)."
+            ),
         }
     )
 
@@ -287,11 +288,28 @@ def write_research_report(
         - validation_issues: List of non-blocking warnings (may be empty)
     """
     canonical_job_id = runtime.context.job_id
-    if not charts_json_path.strip():
-        charts_json_path = _LAST_REPORT_CONTEXT["charts_json_path"]
+    if not str(charts_json_path).strip():
+        return json.dumps(
+            {
+                "status": "error",
+                "error": (
+                    "charts_json_path is required. Copy the resolved `charts_json_path` string "
+                    "from the `plan_report_structure` tool result into this call unchanged."
+                ),
+            }
+        )
+    if not str(original_query).strip():
+        return json.dumps(
+            {
+                "status": "error",
+                "error": (
+                    "original_query is required. Copy the `original_query` string from the "
+                    "`plan_report_structure` tool result into this call unchanged."
+                ),
+            }
+        )
+
     charts_json_path = _resolve_charts_json_path(runtime, charts_json_path)
-    if not original_query.strip():
-        original_query = _LAST_REPORT_CONTEXT["original_query"]
 
     # Normalise data_sources — may arrive as JSON string or a single dict instead of list
     if isinstance(data_sources, str):
@@ -367,7 +385,7 @@ def write_research_report(
     # -------------------------------------------------------------------------
     # 5. Assemble and validate ResearchReport (Pydantic validates chart shapes)
     # -------------------------------------------------------------------------
-    chart_ids_in_markdown = re.findall(r"<!--\s*CHART:(\S+?)\s*-->", markdown)
+    chart_ids_in_markdown = chart_marker_ids(markdown)
     metadata = ReportMetadata(
         analysis_type=analysis_type,
         chart_count=len(chart_ids_in_markdown),
@@ -426,7 +444,7 @@ def _save_report(report: ResearchReport, output_path: str) -> list[str]:
         issues.append("Executive summary is empty")
 
     # Every <!-- CHART:id --> marker must resolve to a key in report.charts
-    marker_ids = re.findall(r"<!--\s*CHART:(\S+?)\s*-->", report.markdown)
+    marker_ids = chart_marker_ids(report.markdown)
     for mid in marker_ids:
         if mid not in report.charts:
             issues.append(f"Chart marker <!-- CHART:{mid} --> references unknown chart ID '{mid}'")
@@ -487,12 +505,13 @@ You are the Technical Writer. You synthesize research reports by reading `charts
 # RULES
 - **YOU write the prose.** The tool only saves it.
 - **No data through context:** Read `charts.json` through the provided report tools only.
-- **No shell/filesystem tools:** They are blocked for this subagent.
+- **Tool discipline:** Deep Agents may still expose standard filesystem or shell tools on this graph. You must not use them — only call `plan_report_structure` and `write_research_report`.
+- **Echo fields:** After `plan_report_structure`, copy `charts_json_path` and `original_query` from that JSON into `write_research_report` unchanged.
 - **Inline Charts:** CRITICAL! Place `<!-- CHART:id -->` markers immediately after the referencing text. You MUST embed all provided `chart_ids`.
 - **Word Count:** Aim for 1000+ words of dense, analytical content in investment bank style.
 - **No fallback thrashing:** If `write_research_report` returns an argument error, call it again with the exact required fields above. Do not try `read_file` or `execute`.
 """,
     "tools": [plan_report_structure, write_research_report],
-    "model": "google_genai:gemini-3.1-flash-lite-preview",
+    "model": "deepseek:deepseek-chat",
     "skills": [str(_BACKEND_DIR / "skills" / "technical-writer")],
 }

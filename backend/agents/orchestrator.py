@@ -44,17 +44,16 @@ warnings.filterwarnings(
     category=UserWarning,
 )
 
-from typing import Any, Dict, AsyncIterator, Union  # Dict/Union kept for graph_input annotation
+from typing import Any, AsyncIterator, Dict
+
+from mcp import ClientSession
 from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.types import Command
-
 # Import subagent configurations from separate files
-from .data_engineer import get_data_engineer_subagent, MCPTimeoutError
-from .quantitative_developer import QUANT_DEVELOPER_SUBAGENT
-from .technical_writer import TECHNICAL_WRITER_SUBAGENT
-from .quality_analyst import QUALITY_ANALYST_SUBAGENT
+from .data_engineer import FredMCPRequiredError, get_data_engineer_subagent, MCPTimeoutError
+from .graph_input import resolve_graph_input
+from .subagents_registry import GENERAL_PURPOSE_SUBAGENT, SPECIALIST_SUBAGENTS_STATIC
 from .chat_surface_tool import emit_chat_message
 from .request_research_approval_tool import request_research_approval
 from core.context import ResearchContext
@@ -64,90 +63,40 @@ _WORKSPACE_DIR = _BACKEND_DIR.parent
 _CHECKPOINTER = MemorySaver()
 
 
-def _get_last_user_message(messages: list[dict] | None) -> dict[str, Any] | None:
-    if messages and messages[-1].get("role") == "user":
-        return messages[-1]
-    return None
-
-
-def _is_research_approval_message(message: dict[str, Any] | None) -> bool:
-    if not message:
-        return False
-    metadata = message.get("metadata")
-    return isinstance(metadata, dict) and metadata.get("action") == "commence_research"
-
-
 # =============================================================================
 # ORCHESTRATOR SYSTEM PROMPT
 # =============================================================================
 
 ORCHESTRATOR_SYSTEM_PROMPT = """
 # ROLE
-You are the **Orchestrator (Research Director)**. You coordinate end-to-end financial research by delegating tasks to specialized subagents. You plan, monitor, and synthesize; you do not analyze raw data yourself.
+You are the **Orchestrator (Research Director)**. You coordinate end-to-end financial research by delegating to specialized subagents. You do not analyze raw data yourself.
 
 # CORE RULES
 1. **DATA DECOUPLING:** NEVER ingest or pass raw financial data arrays. Use only metadata, schemas, and file paths.
 2. **RETRY LIMIT:** Maximum 3 retries per subagent. If a subagent fails 3 times, abort gracefully.
 3. **MANDATORY UI:** Call `emit_chat_message(markdown=...)` exactly once per turn to speak to the user.
-4. **PATH NORMALIZATION:** All paths must be absolute with forward slashes only. Never use backslashes in paths.
-5. **JOB ID STRING:** Copy the Job ID from the user message verbatim into every path (for example `.../outputs/job_a61b3825/charts.json`). Never drop a `job_` prefix, never shorten to hex-only, and never invent a different folder name.
+4. **SPECIALISTS FOR THE PIPELINE:** Do not use `general-purpose` for the main data → quant → writer → QA pipeline. Reserve it for rare overflow tasks only.
+5. **PATHS & ARTIFACTS:** Follow `AGENTS.md` and `skills/orchestrator/*.md` for job id copying, absolute paths, `%Q` avoidance, and `data_sources` JSON shape.
 
 # PHASE 1: INTAKE & CLARIFICATION
 - **Clarify:** If tickers, metrics, or horizon are missing/vague, ask questions via `emit_chat_message`. Do NOT call `task()`.
-- **Confirm:** Once fully specified (tickers, metrics, and horizon provided), call `emit_chat_message` with:
+- **Confirm:** Once fully specified, call `emit_chat_message` with:
   *I now have what I need to proceed. Please click **Commence Deep Research** below to begin.*
-  Then immediately call `request_research_approval(summary="<one-sentence summary of what will be researched>")`. This pauses the graph at the graph level — do NOT call `task()` before `request_research_approval` returns.
-- **Execute:** After `request_research_approval` returns, call `task(subagent_type="data-engineer", description="...", data={})` to delegate to **data-engineer**.
+  Then immediately call `request_research_approval(summary="<one-sentence summary of what will be researched>")`. Do NOT call `task()` before it returns.
+- **Execute:** After `request_research_approval` returns, call `task(subagent_type="data-engineer", description="...", data={})`.
 
-# PHASE 2-6: EXECUTION WORKFLOW
+# PHASE 2–6: EXECUTION ORDER
+1. **data-engineer** → 2. **quant-developer** → 3. **technical-writer** → 4. **quality-analyst** → confirm `report.json` is saved and approved.
 
-1. **data-engineer:** Fetch data and schemas. Store schemas in Graph State.
-2. **quant-developer:** Write and run Python code. Receives schemas and paths. Saves `outputs/{job_id}/charts.json`.
-   - When delegating to `quant-developer`, include absolute paths for all tools.
-   - If the analysis uses quarterly labels, explicitly require `YYYY Qn` formatting and tell the quant developer not to use unsupported `strftime` directives like `%Q`.
-3. **technical-writer:** Synthesize markdown report. Pass:
-   - `charts_json_path` (absolute path to charts.json)
-   - `execution_summary` (full JSON from quant-developer, including `statistical_summary`)
-   - `data_sources` as JSON array, populated from data engineer output:
-     `[{"provider": "FRED/FMP", "description": "...", "series_ids": [...], "date_range": {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}, "row_count": N}]`
-   - `original_query` (the technical-writer tools pin artifacts to the server job id — still quote the exact same `job_...` path in your task text so quant-developer and quality-analyst use matching folders)
-   TW reads charts from disk. `charts_json_path` must be an absolute path.
-4. **quality-analyst:** Validate `outputs/{job_id}/report.json`. If rejected, follow recovery skills.
-5. **Handoff:** Confirm final `report.json` is saved and approved.
+# TASK TOOL
+Delegate with `task(subagent_type="...", description="...")`. The `subagent_type` MUST be one of:
+`data-engineer`, `quant-developer`, `technical-writer`, `quality-analyst`.
 
-# TASK TOOL USAGE
-- You delegate via `task(subagent_type="...", description="...")`.
-- The `subagent_type` MUST be one of: "data-engineer", "quant-developer", "technical-writer", "quality-analyst".
-- The `description` must be self-contained: include all needed context, the artifact paths the subagent should use, and the exact output you expect back.
-- For `quant-developer`, the `description` must spell out path and label expectations so the subagent does not waste retries:
-  - Use absolute paths for all tools including `execute`, `pandas.read_csv`, and filesystem tools
-  - Quarterly labels should be formatted as `YYYY Qn`, never with `%Q`
-- Treat each task invocation as stateless. Do not assume follow-up turns with the same subagent.
+Each `description` must be self-contained (context, absolute paths, expected outputs). Treat each `task()` as stateless.
 
 # TONE
-Professional, analytical, and authoritative. Always expose your current pipeline state to the user.
+Professional, analytical, and authoritative. Expose your current pipeline state to the user.
 """
-
-
-GENERAL_PURPOSE_SUBAGENT = {
-    "name": "general-purpose",
-    "description": (
-        "Use this agent only for overflow context-isolation tasks when no specialized "
-        "subagent fits. It can summarize, reformat, or inspect intermediate results "
-        "without touching the host filesystem or running shell commands."
-    ),
-    "system_prompt": """
-You are the general-purpose fallback subagent for the financial research pipeline.
-
-Use this role only when the orchestrator needs isolated reasoning that does not fit a
-specialized subagent. Do not fetch external financial data, write reports, or execute
-code when one of the named specialist agents can do that better.
-
-Filesystem and shell tools are blocked for this subagent. Return concise summaries only.
-""",
-    "tools": [],
-    "model": "google_genai:gemini-3.1-flash-lite-preview",
-}
 
 
 # =============================================================================
@@ -155,20 +104,29 @@ Filesystem and shell tools are blocked for this subagent. Return concise summari
 # =============================================================================
 
 
-async def create_orchestrator():
-    """Create the orchestrator agent with all subagents, including FMP MCP tools."""
-    data_engineer = await get_data_engineer_subagent()
+async def create_orchestrator(fred_session: ClientSession | None = None):
+    """Create the orchestrator agent with all subagents, including FMP MCP tools.
+
+    **FRED MCP is required** for the data-engineer subagent: tool load and GDP probe must succeed.
+
+    Pass ``fred_session`` from app lifespan (``async with fred_client.session("fred")``) so
+    FRED tools reuse one stdio MCP session. If omitted (e.g. CLI), each FRED tool call spawns a
+    new Node subprocess; FRED must still be reachable or startup raises ``FredMCPRequiredError``.
+
+    Root human-in-the-loop uses only `request_research_approval` plus checkpoint resume
+    (`Command(resume=...)`). `interrupt_on` is intentionally unset on `create_deep_agent`
+    so subagents do not inherit root interrupt behavior that would pause file/shell work.
+    """
+    data_engineer = await get_data_engineer_subagent(fred_session=fred_session)
 
     return create_deep_agent(
-        model="google_genai:gemini-3.1-flash-lite-preview",
+        model="deepseek:deepseek-chat",
         system_prompt=ORCHESTRATOR_SYSTEM_PROMPT,
         tools=[emit_chat_message, request_research_approval],
         subagents=[
             GENERAL_PURPOSE_SUBAGENT,
             data_engineer,
-            QUANT_DEVELOPER_SUBAGENT,
-            TECHNICAL_WRITER_SUBAGENT,
-            QUALITY_ANALYST_SUBAGENT,
+            *SPECIALIST_SUBAGENTS_STATIC,
         ],
         backend=LocalShellBackend(
             root_dir=_WORKSPACE_DIR,
@@ -236,24 +194,7 @@ async def run_research(
 
         config = {"configurable": {"thread_id": job_id}}
 
-        try:
-            state = await agent.aget_state(config)
-            is_interrupted = bool(state.next)
-        except Exception:
-            is_interrupted = False
-
-        if is_interrupted:
-            last_user_message = _get_last_user_message(messages)
-            last_content = last_user_message.get("content", "") if last_user_message else ""
-            if _is_research_approval_message(last_user_message):
-                graph_input: Union[Command, Dict[str, Any]] = Command(resume="approved")
-            else:
-                graph_input = Command(
-                    resume=last_content,
-                    update={"messages": [last_user_message]} if last_user_message else {},
-                )
-        else:
-            graph_input = {"messages": messages}
+        graph_input = await resolve_graph_input(agent, config, messages)
         result = await agent.ainvoke(graph_input, context=ctx, config=config)
 
         messages = result.get("messages", [])
@@ -331,31 +272,7 @@ async def stream_research(
     try:
         config = {"configurable": {"thread_id": job_id}}
 
-        # Detect whether the graph is paused at a human-in-the-loop interrupt
-        # (i.e. the orchestrator called request_research_approval() on the intake
-        # turn and the graph saved a checkpoint). If so, resume with approval
-        # instead of injecting new messages — the checkpointer already has the
-        # full Q&A history and the model just needs the interrupt to resolve.
-        try:
-            state = await agent.aget_state(config)
-            is_interrupted = bool(state.next)
-        except Exception:
-            is_interrupted = False
-
-        if is_interrupted:
-            last_user_message = _get_last_user_message(messages)
-            last_content = last_user_message.get("content", "") if last_user_message else ""
-            if _is_research_approval_message(last_user_message):
-                graph_input: Union[Command, Dict[str, Any]] = Command(resume="approved")
-            else:
-                # User sent a new message instead of clicking the button — relay it
-                # as feedback so the model can adjust parameters and re-prompt.
-                graph_input = Command(
-                    resume=last_content,
-                    update={"messages": [last_user_message]} if last_user_message else {},
-                )
-        else:
-            graph_input = {"messages": messages}
+        graph_input = await resolve_graph_input(agent, config, messages)
 
         max_retries = 3
         retry_delay = 2
@@ -399,4 +316,4 @@ async def stream_research(
         yield {"error": {"type": "mcp_timeout", "message": str(e)}}
 
 
-__all__ = ["create_orchestrator", "run_research", "stream_research"]
+__all__ = ["FredMCPRequiredError", "create_orchestrator", "run_research", "stream_research"]

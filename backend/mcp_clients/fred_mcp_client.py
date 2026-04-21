@@ -16,7 +16,10 @@ Tools: fred_browse, fred_search, fred_get_series
 
 import os
 from typing import Optional, Dict, Any, List
+from langchain_core.tools import BaseTool
 from langchain_mcp_adapters.client import MultiServerMCPClient
+from langchain_mcp_adapters.tools import load_mcp_tools
+from mcp import ClientSession
 
 # Default path to the pre-built FRED MCP server JS bundle (sibling project)
 _DEFAULT_FRED_SERVER_PATH = os.path.expanduser("~/projects/fred-mcp-server/build/index.js")
@@ -64,6 +67,17 @@ async def create_fred_mcp_client(server_path: Optional[str] = None) -> MultiServ
     """
     config = get_fred_mcp_config(server_path)
     return MultiServerMCPClient(config)
+
+
+async def load_fred_tools_with_session(session: ClientSession) -> List[BaseTool]:
+    """
+    Load LangChain tools bound to an existing FRED MCP ClientSession.
+
+    Use this when you keep a long-lived session (e.g. ``async with client.session("fred")``)
+    so each tool call reuses the same stdio subprocess. The default ``get_tools()`` path
+    creates a **new session per tool call**, which restarts the Node FRED server every time.
+    """
+    return await load_mcp_tools(session, server_name="fred")
 
 
 async def list_fred_tools(server_path: Optional[str] = None) -> List[Dict[str, Any]]:

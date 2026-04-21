@@ -1,1 +1,0 @@
-# This file has been removed. Its functionality (ToolBlocklistMiddleware) is no longer used by the agents.

@@ -16,9 +16,9 @@ triggers: [QA, review, approve, reject, compliance, validation]
 - Broken `<!-- CHART:id -->` markers (if ID is not in `report.charts`).
 
 ## Workflow
-1. `validate_report_format` → 2. `check_compliance` → 3. `verify_chart_references`.
-4. If Critical → `reject_report`.
-5. If Auto-fixable → `patch_report` → `validate_report_format`.
-6. If Clean → `approve_report`.
+1. `run_quality_gate` (schema + mandatory markdown + compliance + charts; may auto-patch safe issues).
+2. If Critical → `reject_report`.
+3. If the gate still fails after `auto_patch=True`, call `reject_report` with concrete `required_fixes`.
+4. If Clean → `approve_report`.
 
 **Terminal:** `approve` and `reject` end your turn.
