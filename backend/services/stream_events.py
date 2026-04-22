@@ -51,10 +51,13 @@ def parse_graph_update(
     events: list[dict] = []
     agent = agent_from_ns(ns)
 
+    # Suppress agent_start/agent_end for top-level orchestrator nodes (intake, evaluate, etc.)
+    _TOP_LEVEL_AGENTS = {"orchestrator", "intake", "intake_chat", "evaluate_intake", "emit_approval_message", "approval_gate"}
+
     if agent != prev_agent:
-        if prev_agent and prev_agent != "orchestrator":
+        if prev_agent and prev_agent not in _TOP_LEVEL_AGENTS:
             events.append({"type": "agent_end", "agent": prev_agent})
-        if agent and agent != "orchestrator":
+        if agent and agent not in _TOP_LEVEL_AGENTS:
             events.append({"type": "agent_start", "agent": agent})
 
     if not isinstance(data, dict):
@@ -139,9 +142,10 @@ def is_orchestrator_home_ai(meta: Any, token: Any) -> bool:
     lc = meta.get("lc_agent_name") or ""
     node = meta.get("langgraph_node") or ""
 
-    if lc == "orchestrator":
+    # Treat the intake agent and orchestrator as home-level (their messages go to the UI)
+    if lc in ("orchestrator", "intake"):
         return True
-    if lc and lc not in ("", "orchestrator"):
+    if lc and lc not in ("", "orchestrator", "intake"):
         return False
     return node in ("model", "model_request")
 
@@ -176,7 +180,7 @@ async def process_research_chunks(
     """
     current_agent: str | None = None
     current_task_agent: str | None = None
-    user_message_emitted = False
+    emitted_user_messages: set[str] = set()
 
     async for chunk in raw_stream:
         chunk_type = chunk.get("type")
@@ -212,8 +216,8 @@ async def process_research_chunks(
                         continue
                     args = tc.get("args") if isinstance(tc, dict) else getattr(tc, "args", {})
                     md = markdown_from_tool_args(args)
-                    if md and not user_message_emitted:
-                        user_message_emitted = True
+                    if md and md not in emitted_user_messages:
+                        emitted_user_messages.add(md)
                         yield {"type": "user_message", "markdown": md}
 
         elif chunk_type in ("updates", "custom"):
@@ -243,12 +247,12 @@ async def process_research_chunks(
                         current_task_agent = None
                     continue
                 md = markdown_from_emit_chat_tool_event(event)
-                if md is not None and not user_message_emitted:
-                    user_message_emitted = True
+                if md is not None and md not in emitted_user_messages:
+                    emitted_user_messages.add(md)
                     yield {"type": "user_message", "markdown": md}
                 yield event
 
     if current_task_agent:
         yield {"type": "agent_end", "agent": current_task_agent}
-    if current_agent and current_agent != "orchestrator":
+    if current_agent and current_agent not in ("orchestrator", "intake", "intake_chat", "evaluate_intake", "emit_approval_message", "approval_gate"):
         yield {"type": "agent_end", "agent": current_agent}

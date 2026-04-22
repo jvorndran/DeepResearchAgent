@@ -29,7 +29,7 @@ This system provides institutional-grade, transparent, and mathematically accura
     │   ├── orchestrator.py          # Main coordinator
     │   ├── data_engineer/           # Data fetching & schema extraction
     │   ├── quantitative_developer.py # Code generation & execution
-    │   ├── technical_writer.py      # Report synthesis
+    │   ├── technical_writer/        # Report synthesis (tools + subagent)
     │   └── quality_analyst.py       # Quality & compliance review
     ├── sandbox/       # Docker execution environment
     └── services/      # External API integrations

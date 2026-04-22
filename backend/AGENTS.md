@@ -6,7 +6,7 @@ The API **requires** a working **FRED MCP** stdio server (`FRED_API_KEY`, `FRED_
 
 ## Human-in-the-loop (root graph)
 
-Approval before heavy research uses **only** the `request_research_approval` tool plus checkpoint resume (`Command(resume="approved")` or `Command(resume=<user text>, update=...)`). **`interrupt_on` is intentionally unset** on `create_deep_agent` so subagents do not inherit root interrupt behavior that would pause filesystem or shell operations inside specialists.
+Approval before heavy research uses a deterministic `approval_gate` node that calls `interrupt()` directly. The parent `StateGraph` routes intake → evaluate → approval → execution via conditional edges. Resume uses `Command(resume="approved")` or `Command(resume=<user text>, update=...)`. **`interrupt_on` is intentionally unset** on the execution deep agent so subagents do not inherit interrupt behavior that would pause filesystem or shell operations inside specialists.
 
 ## Paths and job outputs
 

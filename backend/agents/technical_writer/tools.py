@@ -1,45 +1,25 @@
 """
-Technical Writer Subagent (Deep Agents)
-
-The Technical Writer synthesizes research reports from analysis results.
-It is the SOLE assembler of the ResearchReport artifact — it reads all
-prior-stage outputs directly from the filesystem and produces report.json.
-
-Role: Technical Writer / Research Analyst
-Model: Gemini 3.0 Flash Preview (excellent at synthesis and clear writing)
-
-Responsibilities:
-- Read charts.json directly from disk (never receives chart data through context)
-- Plan report structure dynamically based on query type and discovered charts
-- Write markdown with inline <!-- CHART:id --> markers
-- Assemble and validate the full ResearchReport object
-- Save report.json as the single canonical output artifact
-
-Key Principle: No other agent touches report.json. The quant developer produces
-their own artifacts (charts.json, CSV files); the technical writer reads those
-artifacts and assembles the complete report independently.
+LangChain tools for the Technical Writer subagent — plan outline, save report.json,
+static validation gate.
 """
 
-from langchain_core.tools import tool
-from langchain.tools import ToolRuntime
+from __future__ import annotations
+
 import json
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 
+from langchain_core.tools import tool
+from langchain.tools import ToolRuntime
+
 from core.context import ResearchContext
-from core.report_schema import ResearchReport, DataSource, ReportMetadata
+from core.report_schema import DataSource, ReportMetadata, ResearchReport
 
-from .report_artifacts import chart_marker_ids
+from ..report_artifacts import chart_marker_ids, inject_auto_report_footer
 
-# Absolute output base dir — avoids CWD ambiguity when running as a subagent
-_BACKEND_DIR = Path(__file__).resolve().parent.parent
-_OUTPUT_BASE_DIR = Path(os.getenv("OUTPUT_DIR", str(_BACKEND_DIR / "outputs")))
+from .report_validation import run_report_static_gate
 
-
-# =============================================================================
-# TECHNICAL WRITER TOOLS
-# =============================================================================
+from .constants import OUTPUT_BASE_DIR
 
 
 def _labelize_key(key: str) -> str:
@@ -211,7 +191,8 @@ def plan_report_structure(
             "However, you MUST start with an 'Executive Summary' (Macro View and Key Findings). "
             "Following that, weave your analysis covering the macro environment, policy context, indicator analysis, "
             "market implications, and structural risks. "
-            "At the very bottom, include 'Research Query' (restating the original question) and a 'Disclaimer'. "
+            "Near the bottom, include `## Research Query` (restating the original question). "
+            "Do not write a disclaimer block — the system appends a standard legal footer on save. "
             "CRITICAL: You MUST include every chart from the `chart_ids` list in your markdown using the syntax `<!-- CHART:id -->`. "
             "Place each chart marker immediately after the paragraph that discusses its data."
         )
@@ -221,7 +202,8 @@ def plan_report_structure(
             "However, you MUST start with an 'Executive Summary' (The 'Call', Price Target Implications, and Key Findings). "
             "Following that, weave your analysis covering the investment thesis, catalysts, financial analysis, "
             "valuation, and investment risks. "
-            "At the very bottom, include 'Research Query' (restating the original question) and a 'Disclaimer'. "
+            "Near the bottom, include `## Research Query` (restating the original question). "
+            "Do not write a disclaimer block — the system appends a standard legal footer on save. "
             "CRITICAL: You MUST include every chart from the `chart_ids` list in your markdown using the syntax `<!-- CHART:id -->`. "
             "Place each chart marker immediately after the paragraph that discusses its data."
         )
@@ -244,14 +226,15 @@ def plan_report_structure(
 
 @tool
 def write_research_report(
-    markdown: str,
     runtime: ToolRuntime[ResearchContext],
+    markdown: str,
     charts_json_path: str = "",
     data_sources: str = "[]",
     original_query: str = "",
     title: str = "",
     executive_summary: str = "",
     analysis_type: str = "custom",
+    execution_summary: str = "",
 ) -> str:
     """
     Validate and save the LLM-written markdown narrative as report.json.
@@ -261,14 +244,14 @@ def write_research_report(
     the report, validates mandatory elements, and saves report.json.
 
     Args:
+        runtime: Injected by the agent runtime (not passed by the model).
         markdown: The COMPLETE markdown narrative you have written. Must include:
                   - ## Executive Summary (at the top, 2-3 sentences with specific numbers)
                   - Your own analysis sections with custom headings and subheadings
                   - <!-- CHART:id --> markers placed inline after the text that
                     references each chart (NOT clustered at the bottom)
-                  - ## Research Query (verbatim original query, moved to the bottom)
-                  - ## Disclaimer (MUST contain "does not constitute financial advice"
-                    AND "Past performance is not indicative of future results")
+                  - ## Research Query (verbatim original query, near the bottom)
+                  - Do not add a disclaimer section (injected automatically on save)
         charts_json_path: Path to charts.json on disk (e.g. "outputs/abc123/charts.json")
         data_sources: JSON string containing DataSource dicts with small metadata only
                       (provider, description, tickers/series_ids, date_range, row_count)
@@ -279,6 +262,9 @@ def write_research_report(
         analysis_type: One of: "correlation_analysis", "trend_analysis",
                        "sector_comparison", "macro_indicator",
                        "earnings_analysis", "custom"
+        execution_summary: Optional. If the model mistakenly passes quant JSON here
+            (same name as ``plan_report_structure``), it is ignored — use only
+            ``executive_summary`` for the short report summary field.
 
     Returns:
         JSON string with:
@@ -287,6 +273,8 @@ def write_research_report(
         - word_count: Approximate word count of markdown
         - validation_issues: List of non-blocking warnings (may be empty)
     """
+    _ = execution_summary  # optional mistaken echo from plan_report_structure; ignored
+
     canonical_job_id = runtime.context.job_id
     if not str(charts_json_path).strip():
         return json.dumps(
@@ -341,11 +329,6 @@ def write_research_report(
     charts_on_disk = _normalize_chart_definitions(charts_on_disk)
 
     # -------------------------------------------------------------------------
-    # 2. Append footer to the LLM-written markdown
-    # -------------------------------------------------------------------------
-    # (Footer has been removed per user request)
-
-    # -------------------------------------------------------------------------
     # 3. Build DataSource objects
     # -------------------------------------------------------------------------
     ds_objects: list[DataSource] = []
@@ -366,7 +349,6 @@ def write_research_report(
         title = original_query[:80].strip()
 
     if not executive_summary.strip():
-        # Extract first non-empty line after "## Executive Summary"
         lines = markdown.splitlines()
         in_exec = False
         for line in lines:
@@ -400,7 +382,7 @@ def write_research_report(
         title=title,
         executive_summary=executive_summary,
         markdown=markdown,
-        charts=charts_on_disk,  # full definitions read from disk, not passed through context
+        charts=charts_on_disk,
         data_sources=ds_objects,
         metadata=metadata,
     )
@@ -410,40 +392,42 @@ def write_research_report(
     # -------------------------------------------------------------------------
     out_dir = runtime.context.output_dir
     if not out_dir:
-        out_dir = str(_OUTPUT_BASE_DIR / canonical_job_id)
+        out_dir = str(OUTPUT_BASE_DIR / canonical_job_id)
     report_path = str((Path(out_dir) / "report.json").resolve())
-    validation_issues = _save_report(report, report_path)
+    validation_issues, report_saved = _save_report(report, report_path)
 
     return json.dumps(
         {
             "report_path": report_path,
-            "chart_count": metadata.chart_count,
-            "word_count": metadata.word_count,
+            "chart_count": report_saved.metadata.chart_count,
+            "word_count": report_saved.metadata.word_count,
             "validation_issues": validation_issues,
         }
     )
 
 
-def _save_report(report: ResearchReport, output_path: str) -> list[str]:
+def _save_report(report: ResearchReport, output_path: str) -> tuple[list[str], ResearchReport]:
     """
-    Validate mandatory elements and write report.json.
+    Inject canonical disclaimer footer, validate soft issues, and write report.json.
 
-    Returns a list of non-blocking validation warnings (empty = all clear).
-    The report is saved regardless of warnings — warnings are surfaced to the
-    quality analyst for a final decision.
+    Returns ``(issues, report_written)`` — ``report_written`` includes the injected footer
+    and updated ``metadata.word_count``. The full static gate is ``validate_research_report_file``.
     """
     issues: list[str] = []
 
-    if "does not constitute financial advice" not in report.markdown:
-        issues.append("Missing required financial disclaimer in markdown")
-
-    if "Past performance" not in report.markdown:
-        issues.append("Missing past performance disclaimer")
+    new_md, _ = inject_auto_report_footer(report.markdown)
+    report = report.model_copy(
+        update={
+            "markdown": new_md,
+            "metadata": report.metadata.model_copy(
+                update={"word_count": len(new_md.split())}
+            ),
+        }
+    )
 
     if not report.executive_summary.strip():
         issues.append("Executive summary is empty")
 
-    # Every <!-- CHART:id --> marker must resolve to a key in report.charts
     marker_ids = chart_marker_ids(report.markdown)
     for mid in marker_ids:
         if mid not in report.charts:
@@ -456,62 +440,55 @@ def _save_report(report: ResearchReport, output_path: str) -> list[str]:
     except Exception as e:
         issues.append(f"Failed to write report.json: {e}")
 
-    return issues
+    return issues, report
 
 
-# =============================================================================
-# SUBAGENT CONFIGURATION
-# =============================================================================
+@tool
+def validate_research_report_file(
+    runtime: ToolRuntime[ResearchContext],
+    report_json_path: str = "",
+    auto_patch: bool = True,
+) -> str:
+    """
+    Run the static report gate: Pydantic schema, chart marker resolution, and optional
+    safe auto-patches. Call after `write_research_report`.
 
-TECHNICAL_WRITER_SUBAGENT = {
-    "name": "technical-writer",
-    "description": """Use this subagent to write and save the final ResearchReport artifact.
+    When `auto_patch` is True, may re-apply the canonical disclaimer footer (idempotent),
+    remove broken `<!-- CHART:id -->` markers, then write `report.json` when patches apply.
 
-    Delegate when you need to:
-    - Write the full markdown research narrative from execution_summary data
-    - Embed chart references (<!-- CHART:id -->) inline in the narrative
-    - Validate and save report.json
+    `passes_gate` is false only for load/schema errors or unresolved broken chart markers.
+    Check `warnings` for non-blocking hints (e.g. empty executive summary). Prose compliance
+    is for quality-analyst review, not static regex.
 
-    Pass ONLY: the charts_json_path, execution_summary (full JSON from quant developer, including
-    statistical_summary), data_sources metadata (populated with series_ids, date_range, row_count),
-    and original_query.
-    Do NOT pass chart data or raw arrays — the technical writer reads charts.json directly.
+    Args:
+        report_json_path: Absolute path to `report.json`. If empty, uses
+            `{output_dir}/report.json` from the current job context.
+        auto_patch: If True, apply auto footer re-sync and chart-marker patches when applicable.
 
-    The technical writer writes ALL prose itself. Do not expect the tool to generate content
-    from execution_summary — the LLM writes every section with unique, cited analysis.""",
-    "system_prompt": """# ROLE
-You are the Technical Writer. You synthesize research reports by reading `charts.json` and `execution_summary`, then writing a complete markdown narrative.
-
-# CORE TOOLS
-1. `plan_report_structure`: Discover chart IDs from `charts.json`. Call this FIRST.
-2. `write_research_report`: Save your finalized markdown to `report.json`.
-
-# WORKFLOW
-1. **Plan:** Call `plan_report_structure`. Note the available `chart_ids` and the `general_rules`.
-2. **Draft:** Write the full markdown narrative in your response, following the general rules provided by `plan_report_structure`. The `execution_summary` contains a
-   `statistical_summary` field: 1-2 paragraphs of dense computed numbers from the quant developer.
-   READ this carefully and weave every specific number into the relevant analysis sections —
-   exact slopes, r values, peak dates, deltas, p-values, etc. Do not paraphrase vaguely;
-   cite the actual computed values in parentheticals (e.g., "slope of -0.05 pp/month", "r = -0.44, p < 0.001").
-   - Disclaimer must include: "does not constitute financial advice" and "Past performance is not indicative of future results".
-   - Make sure to place the "Research Query" and "Disclaimer" at the very bottom.
-3. **Save:** Call `write_research_report` exactly once with this shape:
-   - `markdown`
-   - `charts_json_path`
-   - `data_sources`
-   - `original_query`
-   - optional: `title`, `executive_summary`, `analysis_type`
-
-# RULES
-- **YOU write the prose.** The tool only saves it.
-- **No data through context:** Read `charts.json` through the provided report tools only.
-- **Tool discipline:** Deep Agents may still expose standard filesystem or shell tools on this graph. You must not use them — only call `plan_report_structure` and `write_research_report`.
-- **Echo fields:** After `plan_report_structure`, copy `charts_json_path` and `original_query` from that JSON into `write_research_report` unchanged.
-- **Inline Charts:** CRITICAL! Place `<!-- CHART:id -->` markers immediately after the referencing text. You MUST embed all provided `chart_ids`.
-- **Word Count:** Aim for 1000+ words of dense, analytical content in investment bank style.
-- **No fallback thrashing:** If `write_research_report` returns an argument error, call it again with the exact required fields above. Do not try `read_file` or `execute`.
-""",
-    "tools": [plan_report_structure, write_research_report],
-    "model": "deepseek:deepseek-chat",
-    "skills": [str(_BACKEND_DIR / "skills" / "technical-writer")],
-}
+    Returns:
+        JSON string with `passes_gate`, `format`, `charts`, `warnings`, `auto_patched`,
+        `patches_applied`, and `blockers`. Revise markdown and call
+        `write_research_report` again if structural `blockers` remain.
+    """
+    if str(report_json_path).strip():
+        path = str(Path(report_json_path).expanduser().resolve())
+    else:
+        out = runtime.context.output_dir
+        if not out:
+            return json.dumps(
+                {
+                    "passes_gate": False,
+                    "load_error": "report_json_path is empty and job output_dir is not set",
+                    "format": {},
+                    "charts": {},
+                    "warnings": [],
+                    "auto_patched": False,
+                    "patches_applied": [],
+                    "blockers": [
+                        "Set `report_json_path` to the absolute path of report.json, "
+                        "or ensure the job has an output_dir."
+                    ],
+                }
+            )
+        path = str((Path(out) / "report.json").resolve())
+    return run_report_static_gate(path, auto_patch=auto_patch)

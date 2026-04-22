@@ -1,22 +1,16 @@
 """
-Orchestrator Agent (Deep Agents Framework)
+Orchestrator — deterministic intake → approval → execution pipeline.
 
-The Orchestrator is the main coordinator of the entire research workflow.
-It uses LangChain's Deep Agents SDK to delegate tasks to specialized subagents,
-manage retry logic, and maintain conversation context.
+The orchestrator is a parent ``StateGraph`` that wires together:
 
-Role: Project Manager / Research Director
-Model: Gemini 3.0 Flash Preview (excellent at reasoning and delegation)
+1. **intake_chat**: lightweight agent for Q&A clarification (no ``task()``).
+2. **evaluate_intake**: structured-output LLM call that decides completeness.
+3. **emit_approval_message**: deterministic node that injects the
+   "Commence Deep Research" message for the frontend.
+4. **approval_gate**: deterministic ``interrupt()`` — human-in-the-loop gate.
+5. **execute**: full ``create_deep_agent`` with all subagents for the pipeline.
 
-Responsibilities:
-- Parse and understand complex research queries
-- Determine which subagents to delegate to and in what order
-- Manage workflow state and retry logic
-- Coordinate between multiple subagents
-- Ensure data doesn't bloat the context window
-- Return final artifacts to the user
-
-Subagents it can delegate to:
+Subagents available to the execution agent:
 - Data Engineer: For fetching and processing data
 - Quantitative Developer: For code generation and execution
 - Technical Writer: For report synthesis
@@ -27,7 +21,13 @@ import logging
 import warnings
 from pathlib import Path
 import asyncio
+from typing import Annotated, Any, AsyncIterator, Dict
+
 import google.genai.errors
+from langchain_core.messages import AnyMessage, HumanMessage
+from langgraph.graph import StateGraph, START, END
+from langgraph.graph.message import add_messages
+from langgraph.types import interrupt
 
 logger = logging.getLogger(__name__)
 
@@ -36,26 +36,26 @@ logger = logging.getLogger(__name__)
 logging.getLogger("langchain_google_genai._function_utils").setLevel(logging.ERROR)
 
 # Suppress Pydantic serialization warning for ResearchContext passed as graph context.
-# The deepagents SDK types the 'context' field as None in its state schema; passing
-# a ResearchContext object triggers a noisy UserWarning but causes no runtime error.
 warnings.filterwarnings(
     "ignore",
     message=r"Pydantic serializer warnings",
     category=UserWarning,
 )
 
-from typing import Any, AsyncIterator, Dict
-
 from mcp import ClientSession
 from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
 from langgraph.checkpoint.memory import MemorySaver
-# Import subagent configurations from separate files
+
 from .data_engineer import FredMCPRequiredError, get_data_engineer_subagent, MCPTimeoutError
 from .graph_input import resolve_graph_input
 from .subagents_registry import GENERAL_PURPOSE_SUBAGENT, SPECIALIST_SUBAGENTS_STATIC
 from .chat_surface_tool import emit_chat_message
-from .request_research_approval_tool import request_research_approval
+from .intake import (
+    _create_intake_agent,
+    emit_approval_message_node,
+    evaluate_intake_node,
+)
 from core.context import ResearchContext
 
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
@@ -64,10 +64,34 @@ _CHECKPOINTER = MemorySaver()
 
 
 # =============================================================================
-# ORCHESTRATOR SYSTEM PROMPT
+# STATE SCHEMA
 # =============================================================================
 
-ORCHESTRATOR_SYSTEM_PROMPT = """
+class OrchestratorState(dict):
+    """Parent graph state for the deterministic orchestrator pipeline.
+
+    Uses ``add_messages`` reducer so both subgraph agents and deterministic
+    nodes can append messages without overwriting.
+    """
+    messages: Annotated[list[AnyMessage], add_messages]
+    phase: str  # "intake" | "executing"
+    research_summary: str
+
+
+# Re-declare as a proper TypedDict for LangGraph (it needs __annotations__).
+from typing import TypedDict  # noqa: E402
+
+class OrchestratorState(TypedDict):  # type: ignore[no-redef]
+    messages: Annotated[list[AnyMessage], add_messages]
+    phase: str
+    research_summary: str
+
+
+# =============================================================================
+# EXECUTION SYSTEM PROMPT (pipeline only — no intake instructions)
+# =============================================================================
+
+EXECUTION_SYSTEM_PROMPT = """
 # ROLE
 You are the **Orchestrator (Research Director)**. You coordinate end-to-end financial research by delegating to specialized subagents. You do not analyze raw data yourself.
 
@@ -78,14 +102,7 @@ You are the **Orchestrator (Research Director)**. You coordinate end-to-end fina
 4. **SPECIALISTS FOR THE PIPELINE:** Do not use `general-purpose` for the main data → quant → writer → QA pipeline. Reserve it for rare overflow tasks only.
 5. **PATHS & ARTIFACTS:** Follow `AGENTS.md` and `skills/orchestrator/*.md` for job id copying, absolute paths, `%Q` avoidance, and `data_sources` JSON shape.
 
-# PHASE 1: INTAKE & CLARIFICATION
-- **Clarify:** If tickers, metrics, or horizon are missing/vague, ask questions via `emit_chat_message`. Do NOT call `task()`.
-- **Confirm:** Once fully specified, call `emit_chat_message` with:
-  *I now have what I need to proceed. Please click **Commence Deep Research** below to begin.*
-  Then immediately call `request_research_approval(summary="<one-sentence summary of what will be researched>")`. Do NOT call `task()` before it returns.
-- **Execute:** After `request_research_approval` returns, call `task(subagent_type="data-engineer", description="...", data={})`.
-
-# PHASE 2–6: EXECUTION ORDER
+# EXECUTION ORDER
 1. **data-engineer** → 2. **quant-developer** → 3. **technical-writer** → 4. **quality-analyst** → confirm `report.json` is saved and approved.
 
 # TASK TOOL
@@ -100,29 +117,76 @@ Professional, analytical, and authoritative. Expose your current pipeline state 
 
 
 # =============================================================================
-# CREATE ORCHESTRATOR AGENT
+# DETERMINISTIC NODE FUNCTIONS
 # =============================================================================
 
 
-async def create_orchestrator(fred_session: ClientSession | None = None):
-    """Create the orchestrator agent with all subagents, including FMP MCP tools.
+def approval_gate_node(state: dict) -> dict:
+    """Deterministic interrupt — pauses graph for user approval.
 
-    **FRED MCP is required** for the data-engineer subagent: tool load and GDP probe must succeed.
+    On resume with ``"approved"`` → sets phase to executing.
+    On resume with any other string → loops back to intake with feedback.
+    """
+    result = interrupt(
+        {
+            "type": "research_approval_needed",
+            "summary": state.get("research_summary", ""),
+            "approval_action": "commence_research",
+        }
+    )
+    if result == "approved":
+        return {"phase": "executing"}
+    # User sent feedback instead of approving — loop back to intake.
+    return {
+        "phase": "intake",
+        "research_summary": "",
+        "messages": [HumanMessage(content=str(result))],
+    }
 
-    Pass ``fred_session`` from app lifespan (``async with fred_client.session("fred")``) so
-    FRED tools reuse one stdio MCP session. If omitted (e.g. CLI), each FRED tool call spawns a
-    new Node subprocess; FRED must still be reachable or startup raises ``FredMCPRequiredError``.
 
-    Root human-in-the-loop uses only `request_research_approval` plus checkpoint resume
-    (`Command(resume=...)`). `interrupt_on` is intentionally unset on `create_deep_agent`
-    so subagents do not inherit root interrupt behavior that would pause file/shell work.
+# =============================================================================
+# CONDITIONAL EDGE FUNCTIONS
+# =============================================================================
+
+
+def route_by_phase(state: dict) -> str:
+    """Entry router: send to intake or execution based on current phase."""
+    return state.get("phase") or "intake"
+
+
+def route_after_evaluate(state: dict) -> str:
+    """After evaluate_intake: complete if summary was set, else wait."""
+    if state.get("research_summary"):
+        return "complete"
+    return "needs_more"
+
+
+def route_after_approval(state: dict) -> str:
+    """After approval_gate: execute or loop back to intake (feedback)."""
+    if state.get("phase") == "executing":
+        return "executing"
+    return "intake"
+
+
+# =============================================================================
+# AGENT FACTORIES
+# =============================================================================
+
+
+async def _create_execution_agent(fred_session: ClientSession | None = None):
+    """Full deep agent for the pipeline execution phase.
+
+    Has all subagents (data-engineer, quant-developer, technical-writer,
+    quality-analyst) and the ``task()`` tool. No intake / approval tools.
+    ``interrupt_on`` is intentionally unset so subagents do not inherit
+    interrupt behavior that would pause file/shell work.
     """
     data_engineer = await get_data_engineer_subagent(fred_session=fred_session)
 
     return create_deep_agent(
         model="deepseek:deepseek-chat",
-        system_prompt=ORCHESTRATOR_SYSTEM_PROMPT,
-        tools=[emit_chat_message, request_research_approval],
+        system_prompt=EXECUTION_SYSTEM_PROMPT,
+        tools=[emit_chat_message],
         subagents=[
             GENERAL_PURPOSE_SUBAGENT,
             data_engineer,
@@ -134,10 +198,63 @@ async def create_orchestrator(fred_session: ClientSession | None = None):
             inherit_env=True,
         ),
         context_schema=ResearchContext,
-        checkpointer=_CHECKPOINTER,
+        # No checkpointer — parent graph owns the checkpoint.
         memory=[str(_BACKEND_DIR / "AGENTS.md")],
         skills=[str(_BACKEND_DIR / "skills" / "orchestrator")],
         name="orchestrator",
+    )
+
+
+# =============================================================================
+# CREATE ORCHESTRATOR (parent StateGraph)
+# =============================================================================
+
+
+async def create_orchestrator(fred_session: ClientSession | None = None):
+    """Build the deterministic orchestrator pipeline.
+
+    Returns a compiled ``StateGraph`` with nodes:
+    intake_chat → evaluate_intake → emit_approval_message → approval_gate → execute
+
+    **FRED MCP is required** for the data-engineer subagent used in the
+    execution phase.
+    """
+    intake_agent = _create_intake_agent()
+    execution_agent = await _create_execution_agent(fred_session=fred_session)
+
+    graph = StateGraph(OrchestratorState, context_schema=ResearchContext)
+
+    # --- nodes ---
+    graph.add_node("intake_chat", intake_agent)
+    graph.add_node("evaluate_intake", evaluate_intake_node)
+    graph.add_node("emit_approval_message", emit_approval_message_node)
+    graph.add_node("approval_gate", approval_gate_node)
+    graph.add_node("execute", execution_agent)
+
+    # --- edges ---
+    graph.add_conditional_edges(START, route_by_phase, {
+        "intake": "intake_chat",
+        "executing": "execute",
+    })
+    graph.add_edge("intake_chat", "evaluate_intake")
+    graph.add_conditional_edges("evaluate_intake", route_after_evaluate, {
+        "needs_more": END,
+        "complete": "emit_approval_message",
+    })
+    graph.add_edge("emit_approval_message", "approval_gate")
+    graph.add_conditional_edges("approval_gate", route_after_approval, {
+        "executing": "execute",
+        "intake": "intake_chat",
+    })
+    graph.add_edge("execute", END)
+
+    return graph.compile(
+        checkpointer=_CHECKPOINTER,
+    ).with_config(
+        {
+            "recursion_limit": 9_999,
+            "metadata": {"lc_agent_name": "orchestrator"},
+        }
     )
 
 

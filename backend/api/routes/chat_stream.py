@@ -130,7 +130,11 @@ async def chat_stream(request: ChatRequest, req: Request):
                 current_task_agent: str | None = None
                 stream_telemetry = False
                 home_chat_fallback_text = ""
-                user_message_emitted = False
+                # Track emitted markdown texts to deduplicate the same
+                # emit_chat_message appearing in both 'messages' and 'updates'
+                # streams, while still allowing different messages from
+                # different graph nodes (e.g. intake Q&A vs approval prompt).
+                emitted_user_messages: set[str] = set()
 
                 async for chunk in stream_research(
                     query=query,
@@ -206,8 +210,8 @@ async def chat_stream(request: ChatRequest, req: Request):
                                     else getattr(tc, "args", {})
                                 )
                                 md = markdown_from_tool_args(args)
-                                if md and not user_message_emitted:
-                                    user_message_emitted = True
+                                if md and md not in emitted_user_messages:
+                                    emitted_user_messages.add(md)
                                     logger.debug(
                                         "[STREAM/messages] emitting user_message from emit_chat_message tool call"
                                     )
@@ -265,8 +269,8 @@ async def chat_stream(request: ChatRequest, req: Request):
                                 event.get("agent"),
                             )
                             md = markdown_from_emit_chat_tool_event(event)
-                            if md is not None and not user_message_emitted:
-                                user_message_emitted = True
+                            if md is not None and md not in emitted_user_messages:
+                                emitted_user_messages.add(md)
                                 logger.info(
                                     "[STREAM/updates] emitting user_message from emit_chat_message"
                                 )
@@ -275,16 +279,38 @@ async def chat_stream(request: ChatRequest, req: Request):
 
                 if current_task_agent:
                     yield sse({"type": "agent_end", "agent": current_task_agent})
-                if current_agent and current_agent != "orchestrator":
+                if current_agent and current_agent not in ("orchestrator", "intake", "intake_chat", "evaluate_intake", "emit_approval_message", "approval_gate"):
                     yield sse({"type": "agent_end", "agent": current_agent})
 
-                if not user_message_emitted and home_chat_fallback_text.strip():
+                if not emitted_user_messages and home_chat_fallback_text.strip():
                     yield sse(
                         {
                             "type": "user_message",
                             "markdown": home_chat_fallback_text.strip(),
                             "source": "model_text_fallback",
                         }
+                    )
+
+                # Check if the graph is interrupted at approval_gate — emit
+                # a dedicated event so the frontend knows to enable the
+                # "Commence Deep Research" button (replaces string matching).
+                try:
+                    agent = req.app.state.agent
+                    graph_state = await agent.aget_state(
+                        {"configurable": {"thread_id": job_id}}
+                    )
+                    if graph_state.next:
+                        logger.info(
+                            "Graph interrupted at %s for job %s — emitting approval_required",
+                            graph_state.next,
+                            job_id,
+                        )
+                        yield sse({"type": "approval_required", "job_id": job_id})
+                except Exception:
+                    logger.debug(
+                        "Could not check graph interrupt state for job %s",
+                        job_id,
+                        exc_info=True,
                     )
 
                 report_path = OUTPUT_BASE_DIR / job_id / "report.json"

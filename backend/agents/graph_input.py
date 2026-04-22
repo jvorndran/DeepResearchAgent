@@ -31,8 +31,9 @@ async def resolve_graph_input(
     except Exception:
         is_interrupted = False
 
+    last_user_message = get_last_user_message(messages)
+
     if is_interrupted:
-        last_user_message = get_last_user_message(messages)
         last_content = last_user_message.get("content", "") if last_user_message else ""
         if is_research_approval_message(last_user_message):
             return Command(resume="approved")
@@ -40,6 +41,13 @@ async def resolve_graph_input(
             resume=last_content,
             update={"messages": [last_user_message]} if last_user_message else {},
         )
+
+    # Manual override: user clicked "Commence Deep Research" but the graph
+    # is not interrupted (evaluate_intake said needs_more, or the graph ended
+    # normally).  Bypass intake and jump straight to execution.
+    if is_research_approval_message(last_user_message):
+        return {"messages": messages, "phase": "executing"}
+
     return {"messages": messages}
 
 

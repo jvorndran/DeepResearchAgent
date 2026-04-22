@@ -21,7 +21,6 @@ export default function Home() {
   const router = useRouter();
   const [messages, setMessages] = useState<Message[]>([]);
   const [submittedMessages, setSubmittedMessages] = useState<Message[]>([]);
-  const [pendingApprovalJobId, setPendingApprovalJobId] = useState<string | null>(null);
   const [inputValue, setInputValue] = useState("");
   /** Same id as backend LangGraph thread — set from first SSE `start` so Commence navigates to the same checkpoint. */
   const [sessionJobId, setSessionJobId] = useState("");
@@ -31,9 +30,6 @@ export default function Home() {
     messages: submittedMessages,
     streamTelemetry: false,
     onJobId: setSessionJobId,
-    onApprovalRequired: (id) => {
-      setPendingApprovalJobId(id);
-    },
     onConversationalFinish: (text) => {
       setMessages((prev) => [...prev, { role: "assistant", content: text }]);
     },
@@ -41,11 +37,12 @@ export default function Home() {
 
   const handleSend = (forceResearch = false) => {
     if (!forceResearch && !inputValue.trim()) return;
-    const approvalMessage = buildApprovalMessage();
-    if (forceResearch && pendingApprovalJobId) {
-      // Store a single approval action message and navigate to the chat page.
-      // The chat page sends this message to the same LangGraph thread,
-      // and the orchestrator resumes the interrupt checkpoint.
+    if (forceResearch && sessionJobId) {
+      // Always navigate to the chat page with the approval action.
+      // The chat page sends this message to the same LangGraph thread.
+      // - If the graph is interrupted at approval_gate → resumes the interrupt.
+      // - If not interrupted → backend sets phase="executing" (manual override).
+      const approvalMessage = buildApprovalMessage();
       sessionStorage.setItem(
         "pending_messages",
         JSON.stringify([approvalMessage])
@@ -53,12 +50,13 @@ export default function Home() {
       router.push(`/chat/${sessionJobId}`);
       return;
     }
-    const newMessages: Message[] = forceResearch
-      ? [...messages, approvalMessage]
-      : [...messages, { role: "user", content: inputValue.trim() }];
+    const newMessages: Message[] = [
+      ...messages,
+      { role: "user", content: inputValue.trim() },
+    ];
     setMessages(newMessages);
     setSubmittedMessages(newMessages);
-    if (!forceResearch) setInputValue("");
+    setInputValue("");
   };
 
   return (

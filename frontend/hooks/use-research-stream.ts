@@ -371,6 +371,11 @@ export function useResearchStream({
                       setOrchestratorText(currentOrchestratorText);
                     }
                     break;
+                  case "approval_required":
+                    // Explicit backend signal that the graph is interrupted at
+                    // approval_gate — enable the "Commence Deep Research" button.
+                    onApprovalRequiredRef.current?.(event.job_id ?? currentJobIdRef.current ?? pendingNavigationJobId ?? "");
+                    break;
                   case "user_message": {
                     const md = typeof event.markdown === "string" ? event.markdown : "";
                     lastUserMessageMarkdown = md;
@@ -378,10 +383,6 @@ export function useResearchStream({
                       // Home page: replace orchestratorText with the latest message
                       currentOrchestratorText = md;
                       setOrchestratorText(md);
-                      // Detect the "Commence Deep Research" ready message and fire approval callback
-                      if (md.includes("Commence Deep Research")) {
-                        onApprovalRequiredRef.current?.(currentJobIdRef.current ?? pendingNavigationJobId ?? "");
-                      }
                     } else {
                       // Chat page: append emit_chat_message content to the orchestrator log.
                       // The orchestrator only emits structured output via this tool (no raw text

@@ -1,7 +1,7 @@
 """
 Static Deep Agents subagent specs shared by the orchestrator.
 
-Root human-in-the-loop uses only request_research_approval + Command(resume=...);
+Root human-in-the-loop uses a deterministic approval_gate node + Command(resume=...);
 interrupt_on is intentionally unset on create_deep_agent so subagents are not paused
 by inherited interrupt maps.
 

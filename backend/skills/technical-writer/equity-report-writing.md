@@ -12,7 +12,7 @@ triggers: [equity, stock, company, sector, earnings, investment thesis, catalyst
    - ## Executive Summary (at the top: The "Call" & Price Target Implications)
    - **[Your Custom Analysis Sections]**: (e.g. Investment Thesis, Catalysts, Valuation, Risks, etc. Use your own headings and subheadings to structure the analysis logically.)
    - ## Research Query (original text restated at the bottom)
-   - ## Disclaimer (must contain "financial advice" and "Past performance")
+   - Do **not** add a `## Disclaimer` section — the system appends a standard legal footer on save.
 
 ## Inline Charts
 `<!-- CHART:chart_id -->` immediately after referencing text.
