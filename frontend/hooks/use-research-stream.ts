@@ -221,7 +221,7 @@ export function useResearchStream({
                 return steps;
               });
               if (event.agent && event.tool !== "emit_chat_message") {
-                currentOrchestratorText += `\n\n**[${event.agent}] Tool call: ${event.tool}**\n\n\`\`\`json\n${JSON.stringify(event.args, null, 2)}\n\`\`\``;
+                currentOrchestratorText += `\n\n\`\`\`tool-call|${event.agent}|${event.tool}\n${JSON.stringify(event.args, null, 2)}\n\`\`\``;
                 setOrchestratorText(currentOrchestratorText);
               }
               break;
@@ -233,7 +233,7 @@ export function useResearchStream({
                 return steps;
               });
               if (event.agent && event.summary && event.tool !== "emit_chat_message") {
-                currentOrchestratorText += `\n\n**[${event.agent}] Tool result [${event.tool}]:**\n\n\`\`\`json\n${event.summary.slice(0, 500)}\n\`\`\``;
+                currentOrchestratorText += `\n\n\`\`\`tool-result|${event.agent}|${event.tool}\n${event.summary.slice(0, 500)}\n\`\`\``;
                 setOrchestratorText(currentOrchestratorText);
               }
               break;

@@ -279,7 +279,7 @@ async def chat_stream(request: ChatRequest, req: Request):
 
                 if current_task_agent:
                     yield sse({"type": "agent_end", "agent": current_task_agent})
-                if current_agent and current_agent not in ("orchestrator", "intake", "intake_chat", "evaluate_intake", "emit_approval_message", "approval_gate"):
+                if current_agent and current_agent not in ("orchestrator", "intake", "intake_chat", "evaluate_intake", "approval_gate"):
                     yield sse({"type": "agent_end", "agent": current_agent})
 
                 if not emitted_user_messages and home_chat_fallback_text.strip():

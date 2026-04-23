@@ -52,7 +52,7 @@ def parse_graph_update(
     agent = agent_from_ns(ns)
 
     # Suppress agent_start/agent_end for top-level orchestrator nodes (intake, evaluate, etc.)
-    _TOP_LEVEL_AGENTS = {"orchestrator", "intake", "intake_chat", "evaluate_intake", "emit_approval_message", "approval_gate"}
+    _TOP_LEVEL_AGENTS = {"orchestrator", "intake", "intake_chat", "evaluate_intake", "approval_gate"}
 
     if agent != prev_agent:
         if prev_agent and prev_agent not in _TOP_LEVEL_AGENTS:
@@ -254,5 +254,5 @@ async def process_research_chunks(
 
     if current_task_agent:
         yield {"type": "agent_end", "agent": current_task_agent}
-    if current_agent and current_agent not in ("orchestrator", "intake", "intake_chat", "evaluate_intake", "emit_approval_message", "approval_gate"):
+    if current_agent and current_agent not in ("orchestrator", "intake", "intake_chat", "evaluate_intake", "approval_gate"):
         yield {"type": "agent_end", "agent": current_agent}

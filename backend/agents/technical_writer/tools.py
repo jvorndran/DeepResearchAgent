@@ -49,7 +49,7 @@ def _normalize_chart_definitions(charts_on_disk: dict) -> dict:
 
         config = chart_copy.get("config") if isinstance(chart_copy.get("config"), dict) else {}
 
-        if chart_copy.get("type") in {"line", "bar", "area"}:
+        if chart_copy.get("type") in {"line", "bar", "area", "composed"}:
             if "xAxisKey" not in chart_copy and isinstance(config.get("xKey"), str):
                 chart_copy["xAxisKey"] = config["xKey"]
 

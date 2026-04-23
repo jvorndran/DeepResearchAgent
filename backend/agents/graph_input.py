@@ -25,11 +25,13 @@ async def resolve_graph_input(
     Build the same graph input as the legacy duplicated paths:
     interrupted + approval metadata vs normal message injection.
     """
+    state = None
+    is_interrupted = False
     try:
         state = await agent.aget_state(config)
         is_interrupted = bool(state.next)
     except Exception:
-        is_interrupted = False
+        pass
 
     last_user_message = get_last_user_message(messages)
 
@@ -47,6 +49,18 @@ async def resolve_graph_input(
     # normally).  Bypass intake and jump straight to execution.
     if is_research_approval_message(last_user_message):
         return {"messages": messages, "phase": "executing"}
+
+    # Re-invocation after a previous execution completed (graph at END).
+    # The checkpoint already contains the full conversation history from
+    # prior runs.  Only pass the NEW user message to avoid duplicating
+    # every message via the add_messages reducer.
+    has_prior_state = (
+        state is not None
+        and hasattr(state, "values")
+        and bool(state.values.get("messages"))
+    )
+    if has_prior_state and last_user_message:
+        return {"messages": [last_user_message]}
 
     return {"messages": messages}
 

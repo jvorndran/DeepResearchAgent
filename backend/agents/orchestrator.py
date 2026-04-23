@@ -3,12 +3,10 @@ Orchestrator — deterministic intake → approval → execution pipeline.
 
 The orchestrator is a parent ``StateGraph`` that wires together:
 
-1. **intake_chat**: lightweight agent for Q&A clarification (no ``task()``).
+1. **intake_chat**: single-pass model call for Q&A clarification (no ``task()``).
 2. **evaluate_intake**: structured-output LLM call that decides completeness.
-3. **emit_approval_message**: deterministic node that injects the
-   "Commence Deep Research" message for the frontend.
-4. **approval_gate**: deterministic ``interrupt()`` — human-in-the-loop gate.
-5. **execute**: full ``create_deep_agent`` with all subagents for the pipeline.
+3. **approval_gate**: deterministic ``interrupt()`` — human-in-the-loop gate.
+4. **execute**: full ``create_deep_agent`` with all subagents for the pipeline.
 
 Subagents available to the execution agent:
 - Data Engineer: For fetching and processing data
@@ -52,8 +50,7 @@ from .graph_input import resolve_graph_input
 from .subagents_registry import GENERAL_PURPOSE_SUBAGENT, SPECIALIST_SUBAGENTS_STATIC
 from .chat_surface_tool import emit_chat_message
 from .intake import (
-    _create_intake_agent,
-    emit_approval_message_node,
+    intake_chat_node,
     evaluate_intake_node,
 )
 from core.context import ResearchContext
@@ -101,6 +98,9 @@ You are the **Orchestrator (Research Director)**. You coordinate end-to-end fina
 3. **MANDATORY UI:** Call `emit_chat_message(markdown=...)` exactly once per turn to speak to the user.
 4. **SPECIALISTS FOR THE PIPELINE:** Do not use `general-purpose` for the main data → quant → writer → QA pipeline. Reserve it for rare overflow tasks only.
 5. **PATHS & ARTIFACTS:** Follow `AGENTS.md` and `skills/orchestrator/*.md` for job id copying, absolute paths, `%Q` avoidance, and `data_sources` JSON shape.
+6. **HANDS OFF ARTIFACTS:** NEVER use `read_file`, `edit_file`, `write_file`, or `execute` on report.json or charts.json directly. Only the technical-writer and quant-developer should touch these files. If a report needs fixes, re-delegate to the appropriate subagent.
+7. **SINGLE PASS:** After quality-analyst approves, the pipeline is DONE. Do not re-read or re-edit the report. Emit a final chat message and stop.
+8. **CONCISE TURNS:** After receiving a subagent result, immediately delegate to the next subagent or emit a final message. Do NOT spend turns analyzing, reading files, or deliberating. The subagents are specialists — trust their output.
 
 # EXECUTION ORDER
 1. **data-engineer** → 2. **quant-developer** → 3. **technical-writer** → 4. **quality-analyst** → confirm `report.json` is saved and approved.
@@ -214,20 +214,18 @@ async def create_orchestrator(fred_session: ClientSession | None = None):
     """Build the deterministic orchestrator pipeline.
 
     Returns a compiled ``StateGraph`` with nodes:
-    intake_chat → evaluate_intake → emit_approval_message → approval_gate → execute
+    intake_chat → evaluate_intake → approval_gate → execute
 
     **FRED MCP is required** for the data-engineer subagent used in the
     execution phase.
     """
-    intake_agent = _create_intake_agent()
     execution_agent = await _create_execution_agent(fred_session=fred_session)
 
     graph = StateGraph(OrchestratorState, context_schema=ResearchContext)
 
     # --- nodes ---
-    graph.add_node("intake_chat", intake_agent)
+    graph.add_node("intake_chat", intake_chat_node)
     graph.add_node("evaluate_intake", evaluate_intake_node)
-    graph.add_node("emit_approval_message", emit_approval_message_node)
     graph.add_node("approval_gate", approval_gate_node)
     graph.add_node("execute", execution_agent)
 
@@ -239,9 +237,8 @@ async def create_orchestrator(fred_session: ClientSession | None = None):
     graph.add_edge("intake_chat", "evaluate_intake")
     graph.add_conditional_edges("evaluate_intake", route_after_evaluate, {
         "needs_more": END,
-        "complete": "emit_approval_message",
+        "complete": "approval_gate",
     })
-    graph.add_edge("emit_approval_message", "approval_gate")
     graph.add_conditional_edges("approval_gate", route_after_approval, {
         "executing": "execute",
         "intake": "intake_chat",

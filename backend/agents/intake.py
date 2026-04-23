@@ -13,7 +13,6 @@ Nodes:
 import logging
 from uuid import uuid4
 
-from langchain.agents import create_agent
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from pydantic import BaseModel, Field
@@ -87,25 +86,34 @@ Return your evaluation as structured JSON.
 
 
 # ---------------------------------------------------------------------------
-# Intake agent factory
+# Model & graph nodes
 # ---------------------------------------------------------------------------
 
 _INTAKE_MODEL = "deepseek:deepseek-chat"
 
 
-def _create_intake_agent():
-    """Lightweight agent for intake Q&A — only has emit_chat_message."""
-    return create_agent(
-        model=_INTAKE_MODEL,
-        tools=[emit_chat_message],
-        system_prompt=INTAKE_SYSTEM_PROMPT,
-        name="intake",
-    )
+async def intake_chat_node(state: dict) -> dict:
+    """Single-pass intake: one model call, execute emit_chat_message, return.
 
+    Unlike a ReAct agent loop, this guarantees exactly one model turn,
+    preventing the model from calling emit_chat_message in an infinite loop.
+    """
+    llm = init_chat_model(_INTAKE_MODEL).bind_tools([emit_chat_message])
 
-# ---------------------------------------------------------------------------
-# Graph nodes
-# ---------------------------------------------------------------------------
+    messages = [SystemMessage(content=INTAKE_SYSTEM_PROMPT)] + list(state["messages"])
+    response = await llm.ainvoke(messages)
+
+    result_messages = [response]
+
+    # Execute any tool calls (should be exactly one emit_chat_message)
+    for tc in response.tool_calls or []:
+        if tc["name"] == "emit_chat_message":
+            tool_result = emit_chat_message.invoke(tc["args"])
+            result_messages.append(
+                ToolMessage(content=str(tool_result), tool_call_id=tc["id"])
+            )
+
+    return {"messages": result_messages}
 
 
 def _clean_messages_for_eval(messages: list) -> list:
@@ -199,7 +207,7 @@ def emit_approval_message_node(state: dict) -> dict:
 
 __all__ = [
     "IntakeEvaluation",
-    "_create_intake_agent",
+    "intake_chat_node",
     "emit_approval_message_node",
     "evaluate_intake_node",
 ]

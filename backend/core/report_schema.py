@@ -16,20 +16,42 @@ from pydantic import BaseModel, Field
 # =============================================================================
 
 
+class ReferenceLine(BaseModel):
+    y: float | str | None = None
+    x: float | str | None = None
+    label: str | None = None
+    color: str | None = None
+    strokeDasharray: str | None = None
+
+
+class ReferenceArea(BaseModel):
+    x1: float | str | None = None
+    x2: float | str | None = None
+    y1: float | str | None = None
+    y2: float | str | None = None
+    label: str | None = None
+    fill: str | None = None
+    fillOpacity: float | None = None
+
+
 class AxisSeries(BaseModel):
     dataKey: str
     label: str
     color: str
+    type: str | None = None
+    yAxisId: str | None = None
 
 
 class AxisChartDef(BaseModel):
     id: str
-    type: Literal["line", "bar", "area"]
+    type: Literal["line", "bar", "area", "composed"]
     title: str
     description: str
     xAxisKey: str
     series: list[AxisSeries]
     data: list[dict]
+    referenceLines: list[ReferenceLine] | None = None
+    referenceAreas: list[ReferenceArea] | None = None
 
 
 class ScatterChartDef(BaseModel):
@@ -106,6 +128,8 @@ class ResearchReport(BaseModel):
 
 
 __all__ = [
+    "ReferenceLine",
+    "ReferenceArea",
     "AxisSeries",
     "AxisChartDef",
     "ScatterChartDef",

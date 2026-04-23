@@ -179,8 +179,11 @@ export default function ChatInterface({
             </div>
           </div>
 
-          {hasAssistantReply && (
-            <div className="flex justify-start mt-8 animate-in fade-in slide-in-from-bottom-4 duration-700">
+          {hasAssistantReply && !isStreamingChat && (
+            <div className="flex flex-col items-start gap-4 mt-8 animate-in fade-in slide-in-from-bottom-4 duration-700">
+              <p className="text-sm text-muted-foreground font-sans">
+                Ready to proceed? Click below to begin the full research pipeline, or continue refining your query above.
+              </p>
               <Button
                 data-testid="begin-research-button"
                 onClick={onBeginResearch}

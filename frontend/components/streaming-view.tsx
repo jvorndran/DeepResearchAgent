@@ -2,8 +2,6 @@
 
 import { useRef, useEffect, useState, useMemo, memo } from "react";
 import { Terminal, Brain, Wrench, Database, CheckCircle, ListChecks } from "@phosphor-icons/react";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { usePretextHeight, useElementWidth } from "@/hooks/use-pretext";
 import ReactMarkdown from "react-markdown";
 import type { PipelineStep } from "@/lib/types";
 
@@ -40,12 +38,9 @@ const StreamingHeader = memo(function StreamingHeader() {
   );
 });
 
-const OrchestratorLogContent = memo(function OrchestratorLogContent({ orchestratorText, displayedText, reservedHeight, markdownComponents }: any) {
+const OrchestratorLogContent = memo(function OrchestratorLogContent({ orchestratorText, displayedText, markdownComponents }: any) {
   return (
-    <div 
-      style={{ minHeight: `${reservedHeight}px` }}
-      className="transition-[min-height] duration-300 ease-out"
-    >
+    <div className="transition-all duration-300 ease-out">
       {displayedText ? (
         <div data-testid="orchestrator-log-content" className="prose prose-sm max-w-none dark:prose-invert prose-p:font-sans prose-p:text-foreground/80 prose-p:leading-relaxed break-words overflow-wrap-anywhere">
           <ReactMarkdown components={markdownComponents}>
@@ -63,41 +58,81 @@ const OrchestratorLogContent = memo(function OrchestratorLogContent({ orchestrat
   );
 });
 
-export default memo(function StreamingView({ orchestratorText }: { orchestratorText: string; pipelineSteps: PipelineStep[] }) {
+const TodoManifest = memo(function TodoManifest({ todos, className }: { todos: any[]; className?: string }) {
+  if (!todos || todos.length === 0) return null;
+  
+  return (
+    <div className={`border-b border-primary/20 bg-card/80 backdrop-blur-xl shadow-md shrink-0 relative z-30 ${className}`}>
+      <div className="flex items-center gap-2 px-6 py-3 bg-primary/10 border-b border-primary/10">
+        <ListChecks weight="light" size={18} className="text-primary/90" />
+        <span className="text-[10px] uppercase tracking-[0.3em] text-primary font-mono font-bold">Research Manifest</span>
+      </div>
+      <div className="p-4 flex flex-col gap-2 max-h-[220px] overflow-y-auto scrollbar-thin scrollbar-thumb-primary/30 scrollbar-track-transparent">
+        {todos.map((t: any, i: number) => {
+          const isDone = t.status === 'done' || t.status === 'completed';
+          const isProgress = t.status === 'in_progress';
+          return (
+            <div key={i} className={`flex items-start gap-3 p-2 border border-border/30 bg-background/40 transition-all duration-500 ${isProgress ? 'border-primary/40 shadow-[inset_2px_0_0_0_var(--primary)]' : isDone ? 'opacity-60' : 'opacity-40'}`}>
+              <div className="mt-0.5 shrink-0">
+                {isDone ? (
+                  <div className="w-3.5 h-3.5 flex items-center justify-center border border-primary/50 bg-primary/10 text-primary text-[9px] font-mono">✓</div>
+                ) : isProgress ? (
+                  <div className="w-3.5 h-3.5 flex items-center justify-center text-primary">
+                    <CustomSpinner />
+                  </div>
+                ) : (
+                  <div className="w-3.5 h-3.5 border border-border/50" />
+                )}
+              </div>
+              <span className={`font-mono text-[11px] min-w-0 flex-1 break-words ${isProgress ? 'text-foreground' : 'text-muted-foreground'}`}>
+                {t.content}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+});
+
+export default memo(function StreamingView({ orchestratorText, pipelineSteps }: { orchestratorText: string; pipelineSteps: PipelineStep[] }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const logViewportRef = useRef<HTMLDivElement>(null);
   const [mousePosition, setMousePosition] = useState({ x: 0, y: 0 });
   const [isHovered, setIsHovered] = useState(false);
   const [isLogAutoScrolling, setIsLogAutoScrolling] = useState(true);
 
-  const { ref: logContainerRef, width: logContainerWidth } = useElementWidth<HTMLDivElement>();
   const [displayedText, setDisplayedText] = useState("");
 
-  const font = "14px sans-serif";
-  const lineHeight = 20;
-  const horizontalPadding = 64; // p-8 = 32px each side
-  const { height: reservedHeight } = usePretextHeight(
-    orchestratorText,
-    font,
-    Math.max(0, logContainerWidth - horizontalPadding),
-    lineHeight
-  );
+  const latestTodos = useMemo(() => {
+    for (let i = pipelineSteps.length - 1; i >= 0; i--) {
+      const tool = pipelineSteps[i].tools.find(t => t.tool === 'write_todos');
+      if (tool && tool.args?.todos) {
+        return tool.args.todos;
+      }
+    }
+    return null;
+  }, [pipelineSteps]);
+
+  const cleanOrchestratorText = useMemo(() => {
+    return orchestratorText.replace(/\n\n```tool-call\|[^|]*\|write_todos\n[\s\S]*?```/g, '');
+  }, [orchestratorText]);
 
   useEffect(() => {
     let animationFrameId: number;
     const tick = () => {
       setDisplayedText((current) => {
-        if (current === orchestratorText) return current;
-        if (orchestratorText.length < current.length || !orchestratorText.startsWith(current)) return orchestratorText;
-        const remaining = orchestratorText.length - current.length;
+        if (current === cleanOrchestratorText) return current;
+        if (cleanOrchestratorText.length < current.length || !cleanOrchestratorText.startsWith(current)) return cleanOrchestratorText;
+        const remaining = cleanOrchestratorText.length - current.length;
         const stepSize = Math.max(3, Math.ceil(remaining * 0.2));
-        return orchestratorText.slice(0, current.length + stepSize);
+        return cleanOrchestratorText.slice(0, current.length + stepSize);
       });
       animationFrameId = requestAnimationFrame(tick);
     };
     animationFrameId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(animationFrameId);
-  }, [orchestratorText]);
+  }, [cleanOrchestratorText]);
 
   useEffect(() => {
     if (isLogAutoScrolling && logViewportRef.current) {
@@ -105,10 +140,9 @@ export default memo(function StreamingView({ orchestratorText }: { orchestratorT
     }
   }, [displayedText, isLogAutoScrolling]);
 
-  const handleLogScroll = () => {
-    const viewport = logViewportRef.current;
-    if (!viewport) return;
-    const isNearBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 50;
+  const handleLogScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    const viewport = e.currentTarget;
+    const isNearBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 100;
     setIsLogAutoScrolling(isNearBottom);
   };
 
@@ -118,12 +152,30 @@ export default memo(function StreamingView({ orchestratorText }: { orchestratorT
     setMousePosition({ x: e.clientX - rect.left, y: e.clientY - rect.top });
   };
 
-  const processedText = useMemo(() => displayedText
-    ? displayedText
-        .replace(/<thinking>([\s\S]*?)<\/thinking>/g, '\n```thinking\n$1\n```\n')
-        .replace(/<tool_use>([\s\S]*?)<\/tool_use>/g, '\n```tool_use\n$1\n```\n')
-        .replace(/\\n/g, '\n')
-    : "", [displayedText]);
+  const processedText = useMemo(() => {
+    if (!displayedText) return "";
+    let text = displayedText;
+    
+    // Handle thinking tags (including unclosed)
+    if (text.includes("<thinking>")) {
+      if (text.includes("</thinking>")) {
+        text = text.replace(/<thinking>([\s\S]*?)<\/thinking>/g, '\n```thinking\n$1\n```\n');
+      } else {
+        text = text.replace(/<thinking>([\s\S]*)$/g, '\n```thinking\n$1\n```\n');
+      }
+    }
+
+    // Handle tool_use tags (including unclosed)
+    if (text.includes("<tool_use>")) {
+      if (text.includes("</tool_use>")) {
+        text = text.replace(/<tool_use>([\s\S]*?)<\/tool_use>/g, '\n```tool_use\n$1\n```\n');
+      } else {
+        text = text.replace(/<tool_use>([\s\S]*)$/g, '\n```tool_use\n$1\n```\n');
+      }
+    }
+
+    return text.replace(/\\n/g, '\n');
+  }, [displayedText]);
 
   const markdownComponents = useMemo(() => ({
     h3({ children, ...props }: any) {
@@ -192,44 +244,6 @@ export default memo(function StreamingView({ orchestratorText }: { orchestratorT
         );
       }
       if (!inline && type === "tool-call") {
-        if (tool === "write_todos") {
-          try {
-            const parsed = JSON.parse(String(children));
-            const todos = parsed.todos || [];
-            return (
-              <div className="my-6 border border-primary/20 bg-card/40 backdrop-blur-md shadow-sm max-w-full overflow-hidden">
-                <div className="flex items-center gap-2 px-3 py-2 bg-primary/10 border-b border-primary/10">
-                  <ListChecks weight="light" size={14} className="text-primary/90" />
-                  <span className="text-[10px] uppercase tracking-wider text-primary font-mono">Task Manifest Updated</span>
-                </div>
-                <div className="p-3 bg-transparent flex flex-col gap-2 overflow-hidden">
-                  {todos.map((t: any, i: number) => {
-                    const isDone = t.status === 'done' || t.status === 'completed';
-                    const isProgress = t.status === 'in_progress';
-                    return (
-                      <div key={i} className={`flex items-start gap-3 p-2 border border-border/30 bg-background/50 overflow-hidden ${isProgress ? 'border-primary/40 shadow-[inset_2px_0_0_0_var(--primary)]' : isDone ? 'opacity-70' : 'opacity-50'}`}>
-                        <div className="mt-0.5 shrink-0">
-                          {isDone ? (
-                            <div className="w-3 h-3 flex items-center justify-center border border-primary/50 bg-primary/10 text-primary text-[8px] font-mono">✓</div>
-                          ) : isProgress ? (
-                            <div className="w-3 h-3 flex items-center justify-center text-primary">
-                              <CustomSpinner />
-                            </div>
-                          ) : (
-                            <div className="w-3 h-3 border border-border/50" />
-                          )}
-                        </div>
-                        <span className={`font-mono text-xs min-w-0 flex-1 break-words ${isProgress ? 'text-foreground' : 'text-muted-foreground'}`}>
-                          {t.content}
-                        </span>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            );
-          } catch { /* fallback */ }
-        }
         if (tool === "execute" || tool === "python") {
           let cmd = String(children);
           try {
@@ -282,6 +296,7 @@ export default memo(function StreamingView({ orchestratorText }: { orchestratorT
           </div>
         );
       }
+
       if (!inline && type === "tool-result") {
         return (
           <div className="my-6 border border-green-500/30 bg-card/40 backdrop-blur-md shadow-sm max-w-full overflow-hidden">
@@ -322,7 +337,7 @@ export default memo(function StreamingView({ orchestratorText }: { orchestratorT
   }), [displayedText]);
 
   return (
-    <div data-testid="streaming-view" className="flex-1 px-6 py-12 md:px-12 lg:px-24 bg-background overflow-y-auto h-screen">
+    <div data-testid="streaming-view" className="flex-1 px-6 py-12 md:px-12 lg:px-24 bg-background">
       <div className="max-w-7xl mx-auto flex flex-col gap-16 pb-24 animate-in fade-in slide-in-from-bottom-8 duration-1000">
         <StreamingHeader />
 
@@ -368,19 +383,21 @@ export default memo(function StreamingView({ orchestratorText }: { orchestratorT
             </div>
 
             {/* System Log Section */}
-            <div className="flex-1 min-h-0 overflow-hidden relative z-20" ref={logContainerRef}>
-              <ScrollArea 
-                className="h-full [&_[data-radix-scroll-area-viewport]]:p-8 [&_[data-radix-scroll-area-viewport]]:md:p-12 [&_[data-radix-scroll-area-thumb]]:!bg-primary/50"
-                viewportRef={logViewportRef}
+            <div className="flex-1 min-h-0 relative z-20 flex flex-col">
+              <div 
+                ref={logViewportRef}
                 onScroll={handleLogScroll}
+                className="absolute inset-0 overflow-y-auto overflow-x-hidden scrollbar-thin scrollbar-thumb-primary/50 scrollbar-track-transparent"
               >
-                <OrchestratorLogContent 
-                  orchestratorText={processedText} 
-                  displayedText={displayedText}
-                  reservedHeight={reservedHeight}
-                  markdownComponents={markdownComponents}
-                />
-              </ScrollArea>
+                <TodoManifest todos={latestTodos} className="sticky top-0" />
+                <div className="p-8 md:p-12">
+                  <OrchestratorLogContent 
+                    orchestratorText={processedText} 
+                    displayedText={displayedText}
+                    markdownComponents={markdownComponents}
+                  />
+                </div>
+              </div>
             </div>
           </div>
         </div>

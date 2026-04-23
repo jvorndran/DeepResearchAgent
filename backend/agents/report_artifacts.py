@@ -7,14 +7,15 @@ import re
 from pathlib import Path
 from typing import Any
 
-# Replaced on every save / validate patch so the LLM does not maintain this prose.
+# Legacy delimiter in older saved reports; stripped on re-save but not written anymore
+# (HTML comments render as literal text under ReactMarkdown without raw HTML).
 AUTO_REPORT_FOOTER_MARKER = "<!-- AUTO_REPORT_DISCLAIMERS -->"
 
 CHART_MARKER_RE = re.compile(r"<!--\s*CHART:(\S+?)\s*-->")
 
 
 def auto_report_footer_markdown() -> str:
-    """Canonical disclaimer block (after ``AUTO_REPORT_FOOTER_MARKER``)."""
+    """Canonical disclaimer block appended by the pipeline on save / validate."""
     return (
         "**DISCLAIMER**: This report does not constitute financial advice. "
         "All analysis is based on historical data.\n\n"
@@ -22,15 +23,26 @@ def auto_report_footer_markdown() -> str:
     )
 
 
+def _strip_trailing_auto_footer(markdown: str) -> str:
+    """Remove a prior auto footer: legacy marker block or trailing canonical disclaimer."""
+    text = markdown.rstrip()
+    idx = text.find(AUTO_REPORT_FOOTER_MARKER)
+    if idx != -1:
+        return text[:idx].rstrip()
+    footer = auto_report_footer_markdown()
+    if text.endswith(footer):
+        return text[: -len(footer)].rstrip()
+    return text
+
+
 def inject_auto_report_footer(markdown: str) -> tuple[str, bool]:
     """
-    Strip any prior auto footer (from marker through EOF), append a fresh canonical footer.
+    Strip any prior auto footer, append a fresh canonical disclaimer (markdown only).
 
     Returns ``(new_markdown, changed)``. Idempotent when output already matches.
     """
-    idx = markdown.find(AUTO_REPORT_FOOTER_MARKER)
-    base = markdown[:idx].rstrip() if idx != -1 else markdown.rstrip()
-    footer = f"{AUTO_REPORT_FOOTER_MARKER}\n\n{auto_report_footer_markdown()}"
+    base = _strip_trailing_auto_footer(markdown)
+    footer = auto_report_footer_markdown()
     new_md = f"{base}\n\n{footer}" if base else footer
     return new_md, new_md != markdown
 
