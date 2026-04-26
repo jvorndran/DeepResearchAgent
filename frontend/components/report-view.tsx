@@ -2,6 +2,7 @@
 
 import { useMemo, memo, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { CaretRight, ChartBar, FileText } from "@phosphor-icons/react";
 import ReportChart from "@/components/report-chart";
 import { usePretextHeight, useElementWidth } from "@/hooks/use-pretext";
@@ -62,7 +63,7 @@ export default memo(function ReportView({ report }: ReportViewProps) {
           </div>
         ) : null;
       }
-      return <ReactMarkdown key={index}>{part}</ReactMarkdown>;
+      return <ReactMarkdown key={index} remarkPlugins={[remarkGfm]}>{part}</ReactMarkdown>;
     });
   }, [report.charts]);
 
