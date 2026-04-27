@@ -99,10 +99,14 @@ describe("useResearchStream", () => {
       "http://localhost:8000/api/chat/stream",
       expect.objectContaining({
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
       }),
     );
-    expect(fetchMock).toHaveBeenCalledWith(`http://localhost:8000/api/reports/${FIXTURE_JOB_ID}`);
+    expect(fetchMock).toHaveBeenCalledWith(
+      `http://localhost:8000/api/reports/${FIXTURE_JOB_ID}`,
+      expect.objectContaining({ credentials: "include" }),
+    );
 
     const streamCall = fetchMock.mock.calls.find((c) => c[0] === "http://localhost:8000/api/chat/stream") as
       | [string, RequestInit]
@@ -114,7 +118,7 @@ describe("useResearchStream", () => {
     expect(result.current.errorText).toBe("");
     expect(result.current.report).toEqual(reportJson);
     expect(result.current.orchestratorText).toContain("Executive Summary");
-    expect(result.current.orchestratorText).toContain("**→ fred_get_series**");
+    expect(result.current.orchestratorText).toContain("```tool-call|tools|fred_get_series");
 
     const agents = result.current.pipelineSteps.map((s) => s.agent);
     expect(agents).toContain("data-engineer");

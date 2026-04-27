@@ -2,12 +2,16 @@ import asyncio
 import logging
 import uuid
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from sqlalchemy.orm import Session
 
 from agents.orchestrator import stream_research
+from api.dependencies import AuthUser, get_current_user
 from api.schemas.chat import ChatRequest
+from core.database import ResearchJob, get_db
 from core.paths import OUTPUT_BASE_DIR
+from services.report_library import get_job_for_user, upsert_research_job
 from services.research_jobs import (
     JOBS,
     preview_text,
@@ -35,7 +39,12 @@ router = APIRouter(tags=["chat"])
 
 
 @router.post("/api/chat/stream")
-async def chat_stream(request: ChatRequest, req: Request):
+async def chat_stream(
+    request: ChatRequest,
+    req: Request,
+    current_user: AuthUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     job_id = request.job_id or f"job_{uuid.uuid4().hex[:8]}"
 
     messages_dict = []
@@ -68,8 +77,14 @@ async def chat_stream(request: ChatRequest, req: Request):
     q: asyncio.Queue | None = None
     job_state: JobState | None = None
 
+    existing = JOBS.get(job_id)
+    if existing and existing.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Job not found")
+    stored_job = get_job_for_user(db, job_id, current_user.id)
+    if request.job_id and stored_job is None and db.get(ResearchJob, job_id):
+        raise HTTPException(status_code=404, detail="Job not found")
+
     if is_research:
-        existing = JOBS.get(job_id)
         if existing and existing.status == JobStatus.RUNNING:
 
             async def _dup():
@@ -86,13 +101,27 @@ async def chat_stream(request: ChatRequest, req: Request):
 
             return StreamingResponse(_dup(), media_type="text/event-stream", headers=SSE_HEADERS)
 
-        job_state = JobState(job_id=job_id, status=JobStatus.RUNNING, query=query)
+        upsert_research_job(
+            db,
+            job_id=job_id,
+            user_id=current_user.id,
+            query=query,
+            status=JobStatus.RUNNING,
+        )
+        job_state = JobState(
+            job_id=job_id,
+            user_id=current_user.id,
+            status=JobStatus.RUNNING,
+            query=query,
+        )
         q = subscribe(job_state)
         JOBS[job_id] = job_state
         write_job_status(job_id, JobStatus.RUNNING, query)
 
         bg_task = asyncio.create_task(
-            run_job_background(job_id, query, messages_dict, req.app.state.agent, job_state),
+            run_job_background(
+                job_id, current_user.id, query, messages_dict, req.app.state.agent, job_state
+            ),
             name=f"research_{job_id}",
         )
         job_state.task = bg_task

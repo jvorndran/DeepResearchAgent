@@ -17,6 +17,7 @@ class JobState:
     job_id: str
     status: JobStatus
     query: str
+    user_id: str
     task: asyncio.Task | None = None
     # Every processed SSE event dict is appended here so reconnect can replay
     events_log: list = field(default_factory=list)

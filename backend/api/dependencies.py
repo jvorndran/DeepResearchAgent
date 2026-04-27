@@ -1,27 +1,55 @@
-"""
-API Dependencies
+"""Shared FastAPI dependencies."""
 
-This file provides shared dependencies used across FastAPI route handlers.
+from dataclasses import dataclass
+from typing import Any
 
-Purpose:
-- Verify Clerk JWT tokens for authentication
-- Extract user_id from authenticated requests
-- Provide reusable dependency functions
+import aiohttp
+from fastapi import Depends, HTTPException, Request, status
+from sqlalchemy.orm import Session
 
-Main dependency:
-- verify_clerk_token(): Validates the Bearer token in Authorization header
-  - Extracts JWT from "Bearer <token>" format
-  - Verifies signature using Clerk secret key
-  - Checks expiration
-  - Returns user_id for use in route handlers
-  - Raises HTTPException for invalid/missing tokens
+from core.config import settings
+from core.database import get_db
 
-This ensures all protected endpoints require valid authentication before
-processing requests, preventing unauthorized access to research jobs and artifacts.
-"""
 
-# TODO: Implement verify_clerk_token dependency
-# TODO: Add JWT parsing and verification logic
-# TODO: Extract user_id from token claims
-# TODO: Handle token expiration and invalid signatures
-# TODO: Return proper HTTPException errors for auth failures
+@dataclass(frozen=True)
+class AuthUser:
+    id: str
+    email: str | None = None
+    name: str | None = None
+
+
+async def get_current_user(request: Request) -> AuthUser:
+    cookie = request.headers.get("cookie")
+    if not cookie:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
+
+    headers = {"cookie": cookie}
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(settings.better_auth_get_session_url, headers=headers) as response:
+                if response.status != 200:
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required"
+                    )
+                data: Any = await response.json()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Could not validate session"
+        ) from exc
+
+    user = data.get("user") if isinstance(data, dict) else None
+    user_id = user.get("id") if isinstance(user, dict) else None
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
+
+    return AuthUser(
+        id=str(user_id),
+        email=user.get("email") if isinstance(user.get("email"), str) else None,
+        name=user.get("name") if isinstance(user.get("name"), str) else None,
+    )
+
+
+DbSession = Depends(get_db)
+CurrentUser = Depends(get_current_user)

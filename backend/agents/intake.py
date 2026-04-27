@@ -116,12 +116,25 @@ async def intake_chat_node(state: dict) -> dict:
     return {"messages": result_messages}
 
 
+def _message_text(content: object) -> str:
+    """Return user-visible text from LangChain text or content-block payloads."""
+    if isinstance(content, list):
+        return "".join(
+            part.get("text", "") if isinstance(part, dict) else str(part)
+            for part in content
+            if not isinstance(part, dict) or part.get("type") in (None, "text")
+        )
+    return str(content) if content else ""
+
+
 def _clean_messages_for_eval(messages: list) -> list:
     """Extract only user/assistant conversational content for the evaluator.
 
-    Strips out internal ToolMessages, AIMessages that contain only tool_calls
-    (no text content), and deduplicates by content so the evaluator sees a
-    clean human ↔ assistant conversation.
+    Strips out internal ToolMessages and converts assistant/user messages to
+    fresh text-only messages. This is important because OpenAI rejects an
+    assistant message with unresolved ``tool_calls`` unless matching
+    ToolMessages immediately follow it, and the evaluator does not need those
+    internal tool-call envelopes.
     """
     clean = []
     seen_content: set[str] = set()
@@ -129,28 +142,21 @@ def _clean_messages_for_eval(messages: list) -> list:
         # Skip ToolMessages (internal plumbing)
         if isinstance(msg, ToolMessage):
             continue
-        # Skip AIMessages that are pure tool-call wrappers (no user-visible text)
         if isinstance(msg, AIMessage):
-            content = msg.content
-            if isinstance(content, list):
-                text = "".join(
-                    p.get("text", "") for p in content
-                    if isinstance(p, dict) and p.get("type") == "text"
-                )
-            else:
-                text = str(content) if content else ""
+            text = _message_text(msg.content)
             if not text.strip():
                 continue
-            # Deduplicate identical assistant messages
             if text.strip() in seen_content:
                 continue
             seen_content.add(text.strip())
+            clean.append(AIMessage(content=text))
+            continue
         if isinstance(msg, HumanMessage):
-            content = msg.content if isinstance(msg.content, str) else str(msg.content)
-            if content.strip() in seen_content:
+            text = _message_text(msg.content)
+            if not text.strip() or text.strip() in seen_content:
                 continue
-            seen_content.add(content.strip())
-        clean.append(msg)
+            seen_content.add(text.strip())
+            clean.append(HumanMessage(content=text))
     return clean
 
 

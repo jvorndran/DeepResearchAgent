@@ -259,7 +259,7 @@ export default function ReportChart({ chartId, chart }: ReportChartProps) {
             content={(props: TreemapContentProps) => {
               const { x, y, width, height, name, color, fill } = props;
               if (x == null || y == null || width == null || height == null) {
-                return null;
+                return <g />;
               }
               return (
                 <g>

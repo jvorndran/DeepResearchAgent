@@ -1,10 +1,10 @@
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
-import HomeClient from "@/components/home-client";
+import AuthForm from "@/components/auth-form";
 import { auth } from "@/lib/auth";
 
-export default async function Home() {
+export default async function SignUpPage() {
   const session = await auth.api.getSession({ headers: await headers() });
-  if (!session) redirect("/sign-in");
-  return <HomeClient />;
+  if (session) redirect("/");
+  return <AuthForm mode="sign-up" />;
 }

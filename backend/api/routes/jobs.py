@@ -1,10 +1,14 @@
 import asyncio
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
+from sqlalchemy.orm import Session
 
+from api.dependencies import AuthUser, get_current_user
+from core.database import get_db
 from core.paths import OUTPUT_BASE_DIR
+from services.report_library import get_job_for_user
 from services.research_jobs import JOBS, relay_subscriber_queue, subscribe, unsubscribe
 from services.research_types import JobStatus
 from services.stream_events import SSE_HEADERS, sse
@@ -15,7 +19,11 @@ router = APIRouter(tags=["jobs"])
 
 
 @router.get("/api/jobs/{job_id}/stream")
-async def reconnect_job_stream(job_id: str):
+async def reconnect_job_stream(
+    job_id: str,
+    current_user: AuthUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     """
     Reconnect to a running research job's live SSE stream after a page refresh.
 
@@ -23,6 +31,10 @@ async def reconnect_job_stream(job_id: str):
     finishes. Returns 404 if the job is not currently active in memory.
     """
     job_state = JOBS.get(job_id)
+    if job_state and job_state.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if not job_state and get_job_for_user(db, job_id, current_user.id) is None:
+        raise HTTPException(status_code=404, detail="Job not found")
     if not job_state or job_state.status != JobStatus.RUNNING:
         raise HTTPException(
             status_code=404,

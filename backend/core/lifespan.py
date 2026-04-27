@@ -7,6 +7,7 @@ from fastapi import FastAPI
 
 from agents.orchestrator import create_orchestrator
 from mcp_clients.fred_mcp_client import create_fred_mcp_client
+from core.database import init_db
 from core.paths import OUTPUT_BASE_DIR
 from services.job_status import read_job_status, write_job_status
 from services.research_types import JobStatus
@@ -16,6 +17,8 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    init_db()
+
     if OUTPUT_BASE_DIR.exists():
         for job_dir in OUTPUT_BASE_DIR.iterdir():
             if not job_dir.is_dir():

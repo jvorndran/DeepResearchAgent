@@ -1,9 +1,15 @@
 "use client";
 
-import { useRef, useEffect, useState, useMemo, memo } from "react";
+import { useRef, useEffect, useState, useMemo, useCallback, memo } from "react";
 import { Terminal, Brain, Wrench, Database, CheckCircle, ListChecks } from "@phosphor-icons/react";
 import ReactMarkdown from "react-markdown";
+import type { Components } from "react-markdown";
 import type { PipelineStep } from "@/lib/types";
+
+type TodoItem = {
+  status?: string;
+  content?: React.ReactNode;
+};
 
 const tryFormatJson = (str: string | undefined): string => {
   if (!str) return "";
@@ -38,7 +44,15 @@ const StreamingHeader = memo(function StreamingHeader() {
   );
 });
 
-const OrchestratorLogContent = memo(function OrchestratorLogContent({ orchestratorText, displayedText, markdownComponents }: any) {
+const OrchestratorLogContent = memo(function OrchestratorLogContent({
+  orchestratorText,
+  displayedText,
+  markdownComponents,
+}: {
+  orchestratorText: string;
+  displayedText: string;
+  markdownComponents: Components;
+}) {
   return (
     <div className="transition-all duration-300 ease-out">
       {displayedText ? (
@@ -58,7 +72,7 @@ const OrchestratorLogContent = memo(function OrchestratorLogContent({ orchestrat
   );
 });
 
-const TodoManifest = memo(function TodoManifest({ todos, className }: { todos: any[]; className?: string }) {
+const TodoManifest = memo(function TodoManifest({ todos, className }: { todos: TodoItem[]; className?: string }) {
   if (!todos || todos.length === 0) return null;
   
   return (
@@ -68,7 +82,7 @@ const TodoManifest = memo(function TodoManifest({ todos, className }: { todos: a
         <span className="text-[10px] uppercase tracking-[0.3em] text-primary font-mono font-bold">Research Manifest</span>
       </div>
       <div className="p-4 flex flex-col gap-2 max-h-[220px] overflow-y-auto scrollbar-thin scrollbar-thumb-primary/30 scrollbar-track-transparent">
-        {todos.map((t: any, i: number) => {
+        {todos.map((t, i) => {
           const isDone = t.status === 'done' || t.status === 'completed';
           const isProgress = t.status === 'in_progress';
           return (
@@ -97,9 +111,11 @@ const TodoManifest = memo(function TodoManifest({ todos, className }: { todos: a
 
 export default memo(function StreamingView({ orchestratorText, pipelineSteps }: { orchestratorText: string; pipelineSteps: PipelineStep[] }) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const spotlightRef = useRef<HTMLDivElement>(null);
   const logViewportRef = useRef<HTMLDivElement>(null);
-  const [mousePosition, setMousePosition] = useState({ x: 0, y: 0 });
-  const [isHovered, setIsHovered] = useState(false);
+  const displayedTextRef = useRef("");
+  const pointerFrameRef = useRef<number | null>(null);
+  const pendingPointerRef = useRef({ x: 0, y: 0 });
   const [isLogAutoScrolling, setIsLogAutoScrolling] = useState(true);
 
   const [displayedText, setDisplayedText] = useState("");
@@ -107,8 +123,9 @@ export default memo(function StreamingView({ orchestratorText, pipelineSteps }: 
   const latestTodos = useMemo(() => {
     for (let i = pipelineSteps.length - 1; i >= 0; i--) {
       const tool = pipelineSteps[i].tools.find(t => t.tool === 'write_todos');
-      if (tool && tool.args?.todos) {
-        return tool.args.todos;
+      const args = tool?.args as { todos?: unknown[] } | undefined;
+      if (Array.isArray(args?.todos)) {
+        return args.todos as TodoItem[];
       }
     }
     return null;
@@ -119,20 +136,45 @@ export default memo(function StreamingView({ orchestratorText, pipelineSteps }: 
   }, [orchestratorText]);
 
   useEffect(() => {
-    let animationFrameId: number;
+    displayedTextRef.current = displayedText;
+  }, [displayedText]);
+
+  useEffect(() => {
+    let animationFrameId: number | null = null;
+
     const tick = () => {
-      setDisplayedText((current) => {
-        if (current === cleanOrchestratorText) return current;
-        if (cleanOrchestratorText.length < current.length || !cleanOrchestratorText.startsWith(current)) return cleanOrchestratorText;
+      const current = displayedTextRef.current;
+
+      if (current === cleanOrchestratorText) return;
+
+      let nextText: string;
+      if (cleanOrchestratorText.length < current.length || !cleanOrchestratorText.startsWith(current)) {
+        nextText = cleanOrchestratorText;
+      } else {
         const remaining = cleanOrchestratorText.length - current.length;
         const stepSize = Math.max(3, Math.ceil(remaining * 0.2));
-        return cleanOrchestratorText.slice(0, current.length + stepSize);
-      });
-      animationFrameId = requestAnimationFrame(tick);
+        nextText = cleanOrchestratorText.slice(0, current.length + stepSize);
+      }
+
+      displayedTextRef.current = nextText;
+      setDisplayedText(nextText);
+
+      if (nextText !== cleanOrchestratorText) {
+        animationFrameId = requestAnimationFrame(tick);
+      }
     };
+
     animationFrameId = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(animationFrameId);
+    return () => {
+      if (animationFrameId !== null) cancelAnimationFrame(animationFrameId);
+    };
   }, [cleanOrchestratorText]);
+
+  useEffect(() => {
+    return () => {
+      if (pointerFrameRef.current !== null) cancelAnimationFrame(pointerFrameRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     if (isLogAutoScrolling && logViewportRef.current) {
@@ -146,11 +188,19 @@ export default memo(function StreamingView({ orchestratorText, pipelineSteps }: 
     setIsLogAutoScrolling(isNearBottom);
   };
 
-  const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+  const handleMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     if (!containerRef.current) return;
     const rect = containerRef.current.getBoundingClientRect();
-    setMousePosition({ x: e.clientX - rect.left, y: e.clientY - rect.top });
-  };
+    pendingPointerRef.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+
+    if (pointerFrameRef.current !== null) return;
+
+    pointerFrameRef.current = requestAnimationFrame(() => {
+      pointerFrameRef.current = null;
+      spotlightRef.current?.style.setProperty("--spotlight-x", `${pendingPointerRef.current.x}px`);
+      spotlightRef.current?.style.setProperty("--spotlight-y", `${pendingPointerRef.current.y}px`);
+    });
+  }, []);
 
   const processedText = useMemo(() => {
     if (!displayedText) return "";
@@ -177,14 +227,14 @@ export default memo(function StreamingView({ orchestratorText, pipelineSteps }: 
     return text.replace(/\\n/g, '\n');
   }, [displayedText]);
 
-  const markdownComponents = useMemo(() => ({
-    h3({ children, ...props }: any) {
-      if (children?.toString() === "TASK_PLAN_HEADER") {
+  const markdownComponents = useMemo<Components>(() => ({
+    h3({ children, ...props }: React.HTMLAttributes<HTMLHeadingElement>) {
+      if (String(children) === "TASK_PLAN_HEADER") {
         return <div className="text-[10px] uppercase tracking-[0.3em] text-primary/80 font-mono mt-8 mb-4 border-b border-primary/20 pb-2 flex items-center gap-2"><ListChecks size={14} /> Execution Plan</div>;
       }
       return <h3 className="text-xl font-serif tracking-tight mt-6 mb-3 text-foreground border-l-2 border-primary pl-3" {...props}>{children}</h3>;
     },
-    ul({ children, ...props }: any) {
+    ul({ children, ...props }: React.HTMLAttributes<HTMLUListElement>) {
       return <ul className="flex flex-col gap-0 my-4 border border-border/30 bg-card/10 backdrop-blur-sm shadow-sm max-w-full overflow-hidden" {...props}>{children}</ul>;
     },
     li({ children }: React.HTMLAttributes<HTMLElement>) {
@@ -222,7 +272,7 @@ export default memo(function StreamingView({ orchestratorText, pipelineSteps }: 
       }
       return <li className="list-disc ml-6 marker:text-primary/50 mb-1 font-sans text-sm text-foreground/80 leading-relaxed break-words">{children}</li>;
     },
-    p({ children, ...props }: any) {
+    p({ children, ...props }: React.HTMLAttributes<HTMLParagraphElement>) {
       return <p className="font-sans text-sm text-foreground/80 leading-relaxed mb-4 break-words" {...props}>{children}</p>;
     },
     code({ inline, className, children, ...props }: React.HTMLAttributes<HTMLElement> & { inline?: boolean }) {
@@ -232,12 +282,12 @@ export default memo(function StreamingView({ orchestratorText, pipelineSteps }: 
       const tool = match ? match[3] : "";
       if (!inline && type === "thinking") {
         return (
-          <div className="my-6 border-l border-indigo-500/30 bg-indigo-500/5 pl-4 py-3 pr-4 group transition-all duration-500 max-w-full overflow-hidden">
-            <div className="flex items-center gap-2 mb-2 text-indigo-500/80">
-              <Brain weight="light" size={16} />
-              <span className="text-[10px] uppercase tracking-widest font-mono">Internal Monologue</span>
+          <div className="my-6 pl-4 border-l-2 border-border/40 group transition-all duration-500 max-w-full overflow-hidden">
+            <div className="flex items-center gap-2 mb-2 opacity-50">
+              <Brain weight="regular" size={14} />
+              <span className="text-[10px] uppercase tracking-widest font-mono font-medium">Internal Monologue</span>
             </div>
-            <div className="font-serif text-sm text-muted-foreground italic leading-relaxed blur-[3px] group-hover:blur-none transition-all duration-500 select-none group-hover:select-auto break-words overflow-wrap-anywhere">
+            <div className="font-serif text-[14px] text-muted-foreground/80 italic leading-relaxed break-words overflow-wrap-anywhere">
               {children}
             </div>
           </div>
@@ -252,45 +302,33 @@ export default memo(function StreamingView({ orchestratorText, pipelineSteps }: 
             if (parsed.code) cmd = parsed.code;
           } catch {}
           return (
-            <div className="my-6 border border-border/50 bg-[#0a0a0a] shadow-sm relative overflow-hidden group max-w-full">
-              <div className="absolute top-0 left-0 w-full h-[1px] bg-green-500/50 shadow-[0_0_8px_2px_rgba(34,197,94,0.5)] -translate-y-full group-hover:animate-[scan_2s_ease-in-out_infinite] z-10" style={{ animationName: 'scan' }}></div>
-              <style>{`
-                @keyframes scan {
-                  0% { transform: translateY(-100%); opacity: 0; }
-                  10% { opacity: 1; }
-                  90% { opacity: 1; }
-                  100% { transform: translateY(200px); opacity: 0; }
-                }
-              `}</style>
-              <div className="flex items-center gap-2 px-3 py-2 bg-[#141414] border-b border-white/10 relative z-20">
-                <div className="flex gap-1.5">
-                  <div className="w-2.5 h-2.5 bg-red-500/80"></div>
-                  <div className="w-2.5 h-2.5 bg-yellow-500/80"></div>
-                  <div className="w-2.5 h-2.5 bg-green-500/80"></div>
+            <div className="my-6 border border-border/30 bg-[#000] shadow-sm relative overflow-hidden max-w-full">
+              <div className="flex items-center justify-between px-3 py-2 bg-[#0a0a0a] border-b border-border/20">
+                <div className="flex items-center gap-2">
+                  <Terminal size={14} className="text-muted-foreground" />
+                  <span className="text-[10px] uppercase tracking-widest text-muted-foreground font-mono">
+                    {agent ? `${agent} • shell` : 'shell'}
+                  </span>
                 </div>
-                <span className="ml-2 text-[10px] uppercase tracking-[0.2em] text-white/50 font-mono truncate">
-                  {agent} <span className="text-white/30">running</span> shell
-                </span>
               </div>
-              <div className="p-4 font-mono text-[11px] text-green-400 overflow-x-auto max-h-48 overflow-y-auto whitespace-pre-wrap break-words relative z-20 bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-green-900/10 via-[#0a0a0a] to-[#0a0a0a] overflow-wrap-anywhere">
+              <div className="p-4 font-mono text-[12px] text-[#e5e5e5] overflow-x-auto max-h-64 overflow-y-auto whitespace-pre-wrap break-words scrollbar-thin scrollbar-thumb-border/20 scrollbar-track-transparent">
                 <code>$ {cmd}</code>
               </div>
             </div>
           );
         }
         return (
-          <div className="my-6 border border-border/50 bg-card/40 backdrop-blur-md shadow-sm relative overflow-hidden group max-w-full">
-            <div className="absolute top-0 left-0 w-full h-[1px] bg-primary/50 shadow-[0_0_8px_2px_rgba(var(--primary-rgb),0.5)] -translate-y-full group-hover:animate-[scan_2s_ease-in-out_infinite] z-10" style={{ animationName: 'scan' }}></div>
-            <div className="flex items-center justify-between px-3 py-2 bg-muted/30 border-b border-border/50 relative z-20 overflow-hidden">
-              <div className="flex items-center gap-2 min-w-0">
-                <Wrench weight="light" size={14} className="text-primary/70" />
-                <span className="text-[10px] uppercase tracking-[0.2em] text-foreground/80 font-mono truncate">
-                  {agent} <span className="text-muted-foreground">executing</span> {tool}
+          <div className="my-6 border border-border/30 bg-card shadow-sm relative overflow-hidden max-w-full">
+            <div className="flex items-center justify-between px-3 py-2 bg-muted/20 border-b border-border/30">
+              <div className="flex items-center gap-2">
+                <Wrench weight="regular" size={14} className="text-muted-foreground" />
+                <span className="text-[10px] uppercase tracking-widest text-muted-foreground font-mono">
+                  {agent ? `${agent} • ${tool}` : tool}
                 </span>
               </div>
               <CustomSpinner />
             </div>
-            <div className="p-4 bg-muted/10 font-mono text-[10px] text-muted-foreground overflow-x-auto max-h-48 overflow-y-auto whitespace-pre-wrap break-words relative z-20 overflow-wrap-anywhere">
+            <div className="p-4 bg-transparent font-mono text-[12px] text-muted-foreground overflow-x-auto max-h-64 overflow-y-auto whitespace-pre-wrap break-words scrollbar-thin scrollbar-thumb-border/30 scrollbar-track-transparent">
               <code>{children}</code>
             </div>
           </div>
@@ -299,42 +337,42 @@ export default memo(function StreamingView({ orchestratorText, pipelineSteps }: 
 
       if (!inline && type === "tool-result") {
         return (
-          <div className="my-6 border border-green-500/30 bg-card/40 backdrop-blur-md shadow-sm max-w-full overflow-hidden">
-            <div className="flex items-center justify-between px-3 py-2 bg-green-500/10 border-b border-green-500/20">
-              <div className="flex items-center gap-2 min-w-0">
-                <Database weight="light" size={14} className="text-green-500/90" />
-                <span className="text-[10px] uppercase tracking-[0.2em] text-foreground/80 font-mono truncate">
-                  {agent} <span className="text-muted-foreground">received</span> {tool} output
+          <div className="my-6 border border-border/30 bg-card shadow-sm max-w-full overflow-hidden">
+            <div className="flex items-center justify-between px-3 py-2 bg-muted/20 border-b border-border/30">
+              <div className="flex items-center gap-2">
+                <Database weight="regular" size={14} className="text-muted-foreground" />
+                <span className="text-[10px] uppercase tracking-widest text-muted-foreground font-mono">
+                  {agent ? `${agent} • result` : 'result'}
                 </span>
               </div>
-              <CheckCircle weight="light" size={12} className="text-green-500/70 shadow-[0_0_10px_rgba(34,197,94,0.3)] rounded-full shrink-0" />
+              <CheckCircle weight="regular" size={14} className="text-muted-foreground" />
             </div>
-            <div className="p-4 bg-green-500/5 font-mono text-[10px] text-foreground/70 overflow-x-auto max-h-48 overflow-y-auto whitespace-pre-wrap break-words relative z-20 overflow-wrap-anywhere">
+            <div className="p-4 bg-transparent font-mono text-[12px] text-foreground/80 overflow-x-auto max-h-64 overflow-y-auto whitespace-pre-wrap break-words scrollbar-thin scrollbar-thumb-border/30 scrollbar-track-transparent">
               <code>{tryFormatJson(String(children))}</code>
             </div>
           </div>
         );
       }
       return !inline ? (
-        <div className="bg-muted/10 border border-border/50 p-4 my-4 font-mono text-[11px] overflow-x-auto shadow-inner max-w-full break-words whitespace-pre-wrap overflow-wrap-anywhere">
+        <div className="bg-muted/10 border border-border/30 p-4 my-6 font-mono text-[12px] overflow-x-auto max-w-full break-words whitespace-pre-wrap overflow-wrap-anywhere">
           <code className={className} {...props}>
             {children}
           </code>
         </div>
       ) : (
-        <code className="bg-muted/50 border border-border/50 px-1.5 py-0.5 font-mono text-[11px] text-primary break-all" {...props}>
+        <code className="bg-muted/30 border border-border/30 px-1 py-0.5 font-mono text-[11px] text-foreground break-all" {...props}>
           {children}
         </code>
       );
     },
-    blockquote({ children }: any) {
+    blockquote({ children }: React.BlockquoteHTMLAttributes<HTMLQuoteElement>) {
       return (
         <blockquote className="border-l-4 border-primary pl-4 py-3 my-6 bg-primary/5 text-muted-foreground font-serif text-sm italic shadow-[inset_10px_0_20px_-10px_color-mix(in_srgb,var(--primary)_10%,transparent)] break-words">
           {children}
         </blockquote>
       );
     },
-  }), [displayedText]);
+  }), []);
 
   return (
     <div data-testid="streaming-view" className="flex-1 px-6 py-12 md:px-12 lg:px-24 bg-background">
@@ -345,17 +383,15 @@ export default memo(function StreamingView({ orchestratorText, pipelineSteps }: 
           className="relative group flex h-[850px] w-full overflow-hidden" 
           ref={containerRef}
           onMouseMove={handleMouseMove}
-          onMouseEnter={() => setIsHovered(true)}
-          onMouseLeave={() => setIsHovered(false)}
         >
           {/* Unified Frame */}
           <div className="relative border border-border bg-card/40 backdrop-blur-md transition-colors duration-500 group-hover:border-primary/50 flex-1 flex flex-col h-full overflow-hidden min-w-0">
             {/* Interactive Lighting Overlay */}
             <div 
-              className="pointer-events-none absolute -inset-px transition-opacity duration-300 z-10"
+              ref={spotlightRef}
+              className="pointer-events-none absolute -inset-px opacity-0 transition-opacity duration-300 z-10 group-hover:opacity-100"
               style={{
-                opacity: isHovered ? 1 : 0,
-                background: `radial-gradient(1000px circle at ${mousePosition.x}px ${mousePosition.y}px, color-mix(in srgb, var(--primary) 8%, transparent), transparent 40%)`,
+                background: "radial-gradient(1000px circle at var(--spotlight-x, 50%) var(--spotlight-y, 50%), color-mix(in srgb, var(--primary) 8%, transparent), transparent 40%)",
               }}
             />
 
@@ -389,7 +425,7 @@ export default memo(function StreamingView({ orchestratorText, pipelineSteps }: 
                 onScroll={handleLogScroll}
                 className="absolute inset-0 overflow-y-auto overflow-x-hidden scrollbar-thin scrollbar-thumb-primary/50 scrollbar-track-transparent"
               >
-                <TodoManifest todos={latestTodos} className="sticky top-0" />
+                <TodoManifest todos={latestTodos ?? []} className="sticky top-0" />
                 <div className="p-8 md:p-12">
                   <OrchestratorLogContent 
                     orchestratorText={processedText} 

@@ -5,6 +5,7 @@ from api.routes.chat_stream import router as chat_stream_router
 from api.routes.health import router as health_router
 from api.routes.jobs import router as jobs_router
 from api.routes.reports import router as reports_router
+from core.config import settings
 from core.lifespan import lifespan
 
 
@@ -18,7 +19,7 @@ def create_app() -> FastAPI:
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:3000"],
+        allow_origins=settings.cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

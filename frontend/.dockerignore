@@ -1,0 +1,6 @@
+node_modules
+.next
+coverage
+cypress/videos
+cypress/screenshots
+npm-debug.log*

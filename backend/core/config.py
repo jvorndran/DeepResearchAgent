@@ -1,29 +1,31 @@
-"""
-Application Configuration
+"""Application settings."""
 
-This file manages all environment variables and application settings using Pydantic Settings.
+from functools import lru_cache
 
-Purpose:
-- Load environment variables from .env file
-- Validate configuration values
-- Provide type-safe access to settings throughout the application
-- Manage different configurations for development vs production
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
-Settings include:
-- Database connection strings
-- API keys (OpenAI, Gemini, FMP, FRED)
-- Authentication credentials (Clerk)
-- GCP configuration (Cloud Tasks, Cloud Storage, Secret Manager)
-- Sandbox execution settings
-- Server configuration (host, port, CORS origins)
-- Logging levels
 
-The settings object will be imported and used across all backend modules to access
-configuration values in a centralized, type-safe manner.
-"""
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-# TODO: Implement Pydantic BaseSettings class
-# TODO: Define all environment variables with proper types
-# TODO: Add validation for required vs optional settings
-# TODO: Implement helper properties (is_production, is_development)
-# TODO: Create global settings instance
+    environment: str = Field(default="development", alias="ENVIRONMENT")
+    database_url: str = Field(default="sqlite:///./local_dev.db", alias="DATABASE_URL")
+    frontend_origin: str = Field(default="http://localhost:3000", alias="FRONTEND_ORIGIN")
+    better_auth_base_url: str = Field(default="http://localhost:3000", alias="BETTER_AUTH_BASE_URL")
+
+    @property
+    def better_auth_get_session_url(self) -> str:
+        return f"{self.better_auth_base_url.rstrip('/')}/api/auth/get-session"
+
+    @property
+    def cors_origins(self) -> list[str]:
+        return [origin.strip() for origin in self.frontend_origin.split(",") if origin.strip()]
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()
+
+
+settings = get_settings()

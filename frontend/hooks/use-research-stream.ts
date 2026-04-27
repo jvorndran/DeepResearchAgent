@@ -1,7 +1,21 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
+import { apiFetch } from "@/lib/api";
 import type { ResearchStatus, Message, PipelineStep, ResearchReport } from "@/lib/types";
+
+type SseEvent = Record<string, unknown> & {
+  type?: string;
+  job_id?: string;
+  delta?: string;
+  markdown?: string;
+  agent?: string | null;
+  tool?: string;
+  args?: unknown;
+  summary?: string;
+  report_ready?: boolean;
+  errorText?: string;
+};
 
 export interface UseResearchStreamOptions {
   jobId: string;
@@ -64,7 +78,7 @@ export function useResearchStream({
       let cancelled = false;
 
       const fetchReport = async (): Promise<void> => {
-        const res = await fetch(`http://localhost:8000/api/reports/${jobId}`);
+        const res = await apiFetch(`/api/reports/${jobId}`);
         if (!res.ok) throw new Error(`Report fetch failed: ${res.status}`);
         const data = await res.json();
         if (!cancelled) { setReport(data); setStatus("report_ready"); }
@@ -80,7 +94,7 @@ export function useResearchStream({
         // 1. Check current job status
         let statusRes: Response;
         try {
-          statusRes = await fetch(`http://localhost:8000/api/reports/${jobId}`);
+          statusRes = await apiFetch(`/api/reports/${jobId}`);
         } catch {
           if (!cancelled) {
             setStatus("error");
@@ -132,7 +146,7 @@ export function useResearchStream({
         // 2. Job is running (202) — try to reconnect to live SSE stream
         let sseRes: Response;
         try {
-          sseRes = await fetch(`http://localhost:8000/api/jobs/${jobId}/stream`);
+          sseRes = await apiFetch(`/api/jobs/${jobId}/stream`);
         } catch {
           // Network error — retry after delay
           if (!cancelled) {
@@ -179,7 +193,7 @@ export function useResearchStream({
         const decoder = new TextDecoder();
         let buffer = "";
 
-        const handleEvent = async (event: Record<string, any>): Promise<void> => {
+        const handleEvent = async (event: SseEvent): Promise<void> => {
           if (cancelled) return;
           console.log("[SSE/reconnect]", event.type, event);
           switch (event.type) {
@@ -199,23 +213,26 @@ export function useResearchStream({
               setStatus("streaming");
               setPipelineSteps((prev) => {
                 const steps = [...prev];
-                const existing = steps.find((s) => s.agent === event.agent);
-                if (existing) { existing.status = "running"; } else { steps.push({ agent: event.agent, status: "running", tools: [] }); }
+                const agent = event.agent ?? null;
+                const existing = steps.find((s) => s.agent === agent);
+                if (existing) { existing.status = "running"; } else { steps.push({ agent, status: "running", tools: [] }); }
                 return steps;
               });
               break;
             case "tool_call":
               setPipelineSteps((prev) => {
                 const steps = [...prev];
-                let step = steps.find((s) => s.agent === event.agent);
+                const agent = event.agent ?? null;
+                const tool = event.tool ?? "";
+                let step = steps.find((s) => s.agent === agent);
                 if (!step && event.agent === null) { step = { agent: null, status: "running", tools: [] }; steps.push(step); }
                 if (step) {
-                  if (event.tool === "write_todos") {
+                  if (tool === "write_todos") {
                     const existingTool = step.tools.find((t) => t.tool === "write_todos");
                     if (existingTool) { existingTool.args = event.args; existingTool.status = "running"; }
-                    else { step.tools.push({ tool: event.tool, args: event.args, status: "running" }); }
+                    else { step.tools.push({ tool, args: event.args, status: "running" }); }
                   } else {
-                    step.tools.push({ tool: event.tool, args: event.args, status: "running" });
+                    step.tools.push({ tool, args: event.args, status: "running" });
                   }
                 }
                 return steps;
@@ -305,7 +322,7 @@ export function useResearchStream({
 
     const fetchReport = async (id: string) => {
       try {
-        const res = await fetch(`http://localhost:8000/api/reports/${id}`);
+        const res = await apiFetch(`/api/reports/${id}`);
         if (!res.ok) throw new Error(`Report fetch failed: ${res.status}`);
         const data = await res.json();
         if (!cancelled) {
@@ -332,16 +349,25 @@ export function useResearchStream({
         if (jobId) body.job_id = jobId;
         if (streamTelemetry === false) body.stream_telemetry = false;
 
-        const mockScenario = typeof window !== "undefined" && window.localStorage.getItem("__cypress_stream_scenario__");
+        const mockScenario =
+          typeof window !== "undefined" && typeof window.localStorage?.getItem === "function"
+            ? window.localStorage.getItem("__cypress_stream_scenario__")
+            : null;
         const streamUrl = mockScenario
           ? `/api/mock-stream?scenario=${mockScenario}`
-          : "http://localhost:8000/api/chat/stream";
+          : "/api/chat/stream";
 
-        const response = await fetch(streamUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        });
+        const response = mockScenario
+          ? await fetch(streamUrl, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(body),
+            })
+          : await apiFetch(streamUrl, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(body),
+            });
 
         if (!response.body) throw new Error("No response body");
 
@@ -363,6 +389,9 @@ export function useResearchStream({
                     pendingNavigationJobId = event.job_id;
                     if (event.job_id) {
                       onJobIdRef.current?.(event.job_id);
+                      if (streamTelemetry === false) {
+                        onApprovalRequiredRef.current?.(event.job_id);
+                      }
                     }
                     break;
                   case "text":

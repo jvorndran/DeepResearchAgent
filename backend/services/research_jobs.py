@@ -7,8 +7,10 @@ import logging
 from typing import Any
 
 from agents.orchestrator import stream_research
+from core.database import SessionLocal
 from core.paths import OUTPUT_BASE_DIR
 from services.job_status import write_job_status
+from services.report_library import mark_job_status, save_completed_report
 from services.stream_errors import build_error_event
 from services.research_types import JobState, JobStatus
 from services.stream_errors import build_exception_error_event
@@ -66,6 +68,7 @@ async def relay_subscriber_queue(q: asyncio.Queue):
 
 async def run_job_background(
     job_id: str,
+    user_id: str,
     query: str,
     messages_dict: list,
     agent: Any,
@@ -87,6 +90,13 @@ async def run_job_background(
         if not report_file.is_file():
             job_state.status = JobStatus.FAILED
             write_job_status(job_id, JobStatus.FAILED, query)
+            with SessionLocal() as db:
+                mark_job_status(
+                    db,
+                    job_id=job_id,
+                    status=JobStatus.FAILED,
+                    error="Research finished without report.json",
+                )
             logger.error(
                 "Background research finished without report.json job_id=%s expected=%s",
                 job_id,
@@ -105,15 +115,27 @@ async def run_job_background(
         else:
             job_state.status = JobStatus.COMPLETED
             write_job_status(job_id, JobStatus.COMPLETED, query)
+            with SessionLocal() as db:
+                mark_job_status(db, job_id=job_id, status=JobStatus.COMPLETED)
+                save_completed_report(db, job_id=job_id, user_id=user_id, query=query)
             logger.info("Job %s completed", job_id)
     except asyncio.CancelledError:
         job_state.status = JobStatus.INTERRUPTED
         write_job_status(job_id, JobStatus.INTERRUPTED, query)
+        with SessionLocal() as db:
+            mark_job_status(db, job_id=job_id, status=JobStatus.INTERRUPTED)
         raise
     except Exception as e:
         job_state.status = JobStatus.FAILED
         write_job_status(job_id, JobStatus.FAILED, query)
         error_event = build_exception_error_event(job_id, "background_research", e)
+        with SessionLocal() as db:
+            mark_job_status(
+                db,
+                job_id=job_id,
+                status=JobStatus.FAILED,
+                error=error_event.get("errorText"),
+            )
         logger.exception(
             "Background research job failed job_id=%s message_count=%d query=%r error_type=%s retryable=%s",
             job_id,
