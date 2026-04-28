@@ -11,6 +11,7 @@ from core.paths import OUTPUT_BASE_DIR
 from services.report_library import get_job_for_user
 from services.research_jobs import JOBS, relay_subscriber_queue, subscribe, unsubscribe
 from services.research_types import JobStatus
+from services.stream_errors import ensure_client_safe_error_event
 from services.stream_events import SSE_HEADERS, sse
 
 logger = logging.getLogger(__name__)
@@ -52,7 +53,10 @@ async def reconnect_job_stream(
                 yield sse(event)
             async for event in relay_subscriber_queue(q):
                 if isinstance(event, dict) and "__bg_error__" in event:
-                    yield sse({"type": "error", "errorText": event["__bg_error__"]})
+                    bg_error = event["__bg_error__"]
+                    yield sse(
+                        ensure_client_safe_error_event(job_id, "background_research", bg_error)
+                    )
                     yield "data: [DONE]\n\n"
                     return
                 yield sse(event)

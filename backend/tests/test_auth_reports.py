@@ -172,6 +172,35 @@ async def test_interrupted_owned_job_returns_gone(db_session, monkeypatch, tmp_p
 
 
 @pytest.mark.asyncio
+async def test_failed_owned_job_hides_stored_provider_error(db_session, monkeypatch, tmp_path):
+    db_session.add(
+        ResearchJob(
+            id="job_1",
+            user_id="user_1",
+            query="q",
+            status=JobStatus.FAILED.value,
+            error=(
+                "The upstream provider rate-limited this request. Upstream detail: "
+                "Error calling model 'gemini-3.1-pro-preview': 429 Too Many Requests. "
+                "Your project has exceeded its monthly spending cap. https://ai.studio/spend"
+            ),
+        )
+    )
+    db_session.commit()
+
+    output_dir = tmp_path / "outputs"
+    monkeypatch.setattr("api.routes.reports.OUTPUT_BASE_DIR", output_dir)
+    monkeypatch.setattr("services.job_status.OUTPUT_BASE_DIR", output_dir)
+
+    with pytest.raises(HTTPException) as exc:
+        await get_report("job_1", AuthUser(id="user_1"), db_session)
+    assert exc.value.status_code == 500
+    assert exc.value.detail == "The upstream provider rate-limited this request."
+    assert "gemini" not in exc.value.detail
+    assert "ai.studio" not in exc.value.detail
+
+
+@pytest.mark.asyncio
 async def test_completed_background_job_auto_saves_report(monkeypatch, tmp_path):
     engine = create_engine(
         "sqlite://",

@@ -104,6 +104,6 @@ QUANT_DEVELOPER_SUBAGENT = {
     a charts.json path, chart IDs, and a dense `statistical_summary` with exact computed values.""",
     "system_prompt": QUANT_DEVELOPER_SYSTEM_PROMPT,
     "tools": [],
-    "model": "google_genai:gemini-3.1-pro-preview",
+    "model": "deepseek:deepseek-chat",
     "skills": [str(_BACKEND_DIR / "skills" / "quant-developer")],
 }

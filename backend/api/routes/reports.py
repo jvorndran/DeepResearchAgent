@@ -12,6 +12,7 @@ from services.job_status import read_job_status
 from services.report_library import get_job_for_user, list_saved_report_summaries
 from services.research_jobs import JOBS
 from services.research_types import JobStatus
+from services.stream_errors import client_safe_error_text
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,9 @@ async def get_report(
         raise HTTPException(status_code=202, detail="Research in progress")
 
     saved_report = db.scalar(
-        select(SavedReport).where(SavedReport.job_id == job_id, SavedReport.user_id == current_user.id)
+        select(SavedReport).where(
+            SavedReport.job_id == job_id, SavedReport.user_id == current_user.id
+        )
     )
     if saved_report:
         return saved_report.report_json
@@ -80,7 +83,10 @@ async def get_report(
                 detail="Job was interrupted — server was restarted mid-job",
             )
         if owned_job.status == JobStatus.FAILED.value:
-            raise HTTPException(status_code=500, detail=owned_job.error or "Research job failed")
+            raise HTTPException(
+                status_code=500,
+                detail=client_safe_error_text(raw_detail=owned_job.error),
+            )
         if owned_job.status == JobStatus.COMPLETED.value:
             raise HTTPException(
                 status_code=500,

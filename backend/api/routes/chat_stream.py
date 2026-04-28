@@ -22,7 +22,11 @@ from services.research_jobs import (
 )
 from services.research_types import JobState, JobStatus
 from services.job_status import write_job_status
-from services.stream_errors import build_exception_error_event, normalize_stream_error
+from services.stream_errors import (
+    build_exception_error_event,
+    ensure_client_safe_error_event,
+    normalize_stream_error,
+)
 from services.stream_events import (
     SSE_HEADERS,
     is_orchestrator_home_ai,
@@ -142,9 +146,7 @@ async def chat_stream(
                     if isinstance(event, dict) and "__bg_error__" in event:
                         bg_error = event["__bg_error__"]
                         yield sse(
-                            bg_error
-                            if isinstance(bg_error, dict)
-                            else normalize_stream_error(job_id, "background_research", bg_error)
+                            ensure_client_safe_error_event(job_id, "background_research", bg_error)
                         )
                         yield "data: [DONE]\n\n"
                         return
@@ -309,7 +311,13 @@ async def chat_stream(
 
                 if current_task_agent:
                     yield sse({"type": "agent_end", "agent": current_task_agent})
-                if current_agent and current_agent not in ("orchestrator", "intake", "intake_chat", "evaluate_intake", "approval_gate"):
+                if current_agent and current_agent not in (
+                    "orchestrator",
+                    "intake",
+                    "intake_chat",
+                    "evaluate_intake",
+                    "approval_gate",
+                ):
                     yield sse({"type": "agent_end", "agent": current_agent})
 
                 if not emitted_user_messages and home_chat_fallback_text.strip():
@@ -326,9 +334,7 @@ async def chat_stream(
                 # "Commence Deep Research" button (replaces string matching).
                 try:
                     agent = req.app.state.agent
-                    graph_state = await agent.aget_state(
-                        {"configurable": {"thread_id": job_id}}
-                    )
+                    graph_state = await agent.aget_state({"configurable": {"thread_id": job_id}})
                     if graph_state.next:
                         logger.info(
                             "Graph interrupted at %s for job %s — emitting approval_required",

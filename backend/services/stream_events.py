@@ -6,6 +6,8 @@ import re
 from collections.abc import AsyncIterator
 from typing import Any, Dict, Optional
 
+from services.stream_errors import client_safe_tool_result_summary
+
 logger = logging.getLogger(__name__)
 
 SSE_HEADERS = {
@@ -116,7 +118,13 @@ def parse_graph_update(
     agent = agent_from_ns(ns)
 
     # Suppress agent_start/agent_end for top-level orchestrator nodes (intake, evaluate, etc.)
-    _TOP_LEVEL_AGENTS = {"orchestrator", "intake", "intake_chat", "evaluate_intake", "approval_gate"}
+    _TOP_LEVEL_AGENTS = {
+        "orchestrator",
+        "intake",
+        "intake_chat",
+        "evaluate_intake",
+        "approval_gate",
+    }
 
     if agent != prev_agent:
         if prev_agent and prev_agent not in _TOP_LEVEL_AGENTS:
@@ -192,7 +200,9 @@ def parse_graph_update(
                     "type": "tool_result",
                     "agent": agent,
                     "tool": msg.get("name", ""),
-                    "summary": str(sanitize_stream_value(str(content)))[:300],
+                    "summary": client_safe_tool_result_summary(sanitize_stream_value(str(content)))[
+                        :300
+                    ],
                 }
             )
 
@@ -320,5 +330,11 @@ async def process_research_chunks(
 
     if current_task_agent:
         yield {"type": "agent_end", "agent": current_task_agent}
-    if current_agent and current_agent not in ("orchestrator", "intake", "intake_chat", "evaluate_intake", "approval_gate"):
+    if current_agent and current_agent not in (
+        "orchestrator",
+        "intake",
+        "intake_chat",
+        "evaluate_intake",
+        "approval_gate",
+    ):
         yield {"type": "agent_end", "agent": current_agent}
