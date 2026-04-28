@@ -2,9 +2,17 @@ import { Pool } from "pg";
 import { getMigrations } from "better-auth/db/migration";
 
 const databaseUrl = process.env.DATABASE_URL;
+const authSecret =
+  process.env.BETTER_AUTH_SECRET ??
+  (process.env.NODE_ENV === "development" ? "dev-only-change-me-deep-research-agent" : undefined);
 
 if (!databaseUrl) {
   console.error("DATABASE_URL is required to migrate Better Auth tables.");
+  process.exit(1);
+}
+
+if (!authSecret) {
+  console.error("BETTER_AUTH_SECRET is required outside development.");
   process.exit(1);
 }
 
@@ -13,7 +21,7 @@ const pool = new Pool({ connectionString: databaseUrl });
 try {
   const migrations = await getMigrations({
     database: pool,
-    secret: process.env.BETTER_AUTH_SECRET ?? "dev-only-change-me-deep-research-agent",
+    secret: authSecret,
     baseURL: process.env.BETTER_AUTH_URL ?? "http://localhost:3000",
     emailAndPassword: {
       enabled: true,

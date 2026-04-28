@@ -17,7 +17,7 @@ describe('Authentication — signup flow', () => {
     cy.wait('@signUp').its('response.statusCode').should('be.oneOf', [200, 201]);
     cy.location('pathname', { timeout: 15000 }).should('eq', '/');
     cy.get('[data-testid="research-input"]', { timeout: 15000 }).should('be.visible');
-    cy.contains(email).should('exist');
+    cy.contains('Cypress User').should('exist');
 
     cy.request('/api/auth/get-session').then((response) => {
       expect(response.status).to.eq(200);

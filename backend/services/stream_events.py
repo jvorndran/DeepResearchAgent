@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 from collections.abc import AsyncIterator
 from typing import Any, Dict, Optional
 
@@ -16,6 +17,69 @@ SSE_HEADERS = {
 
 def sse(event: dict) -> str:
     return f"data: {json.dumps(event)}\n\n"
+
+
+_REDACTED = "[redacted]"
+_SENSITIVE_PATH_RE = re.compile(
+    r"(?ix)"
+    r"(^|[/\\\s])("
+    r"\.env(?:\.[\w-]+)?|\.envrc|\.netrc|\.pypirc|\.npmrc|"
+    r"id_rsa|id_dsa|id_ecdsa|id_ed25519"
+    r")($|[/\\\s])"
+    r"|"
+    r"(^|[/\\\s])("
+    r"\.ssh|\.gnupg|\.aws|\.azure|\.config[/\\]gcloud"
+    r")($|[/\\\s])"
+)
+_SECRET_VALUE_RE = re.compile(
+    r"(?im)^([A-Z_][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PWD|CREDENTIAL)[A-Z0-9_]*\s*=\s*).+$"
+)
+_SENSITIVE_ARG_KEYS = {
+    "api_key",
+    "apikey",
+    "authorization",
+    "credential",
+    "credentials",
+    "env",
+    "password",
+    "secret",
+    "token",
+}
+
+
+def contains_sensitive_reference(value: Any) -> bool:
+    """Detect paths or command text that reference likely local credential material."""
+    if isinstance(value, dict):
+        return any(
+            contains_sensitive_reference(k) or contains_sensitive_reference(v)
+            for k, v in value.items()
+        )
+    if isinstance(value, (list, tuple, set)):
+        return any(contains_sensitive_reference(item) for item in value)
+    if not isinstance(value, str):
+        return False
+    return bool(_SENSITIVE_PATH_RE.search(value))
+
+
+def sanitize_stream_value(value: Any) -> Any:
+    """Recursively redact secrets before data is serialized to SSE."""
+    if isinstance(value, dict):
+        sanitized = {}
+        for key, item in value.items():
+            key_text = str(key)
+            if key_text.lower() in _SENSITIVE_ARG_KEYS:
+                sanitized[key] = _REDACTED
+            else:
+                sanitized[key] = sanitize_stream_value(item)
+        return sanitized
+    if isinstance(value, list):
+        return [sanitize_stream_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(sanitize_stream_value(item) for item in value)
+    if isinstance(value, str):
+        redacted = _SENSITIVE_PATH_RE.sub(_REDACTED, value)
+        return _SECRET_VALUE_RE.sub(r"\1" + _REDACTED, redacted)
+    return value
 
 
 def serialize_lc_value(data: Any) -> Any:
@@ -103,12 +167,14 @@ def parse_graph_update(
                         args = json.loads(args)
                     except json.JSONDecodeError:
                         args = {}
+                if name != "emit_chat_message" and contains_sensitive_reference(args):
+                    continue
                 events.append(
                     {
                         "type": "tool_call",
                         "agent": agent,
                         "tool": name,
-                        "args": args if isinstance(args, dict) else {},
+                        "args": sanitize_stream_value(args) if isinstance(args, dict) else {},
                     }
                 )
 
@@ -126,7 +192,7 @@ def parse_graph_update(
                     "type": "tool_result",
                     "agent": agent,
                     "tool": msg.get("name", ""),
-                    "summary": str(content)[:300],
+                    "summary": str(sanitize_stream_value(str(content)))[:300],
                 }
             )
 

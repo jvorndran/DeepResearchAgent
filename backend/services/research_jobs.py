@@ -82,7 +82,11 @@ async def run_job_background(
             preview_text(query),
         )
         raw_stream = stream_research(
-            query=query, job_id=job_id, messages=messages_dict, agent=agent
+            query=query,
+            job_id=job_id,
+            messages=messages_dict,
+            agent=agent,
+            user_id=user_id,
         )
         async for event_dict in process_research_chunks(raw_stream):
             await publish(job_state, event_dict)

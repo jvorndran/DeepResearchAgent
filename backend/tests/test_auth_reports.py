@@ -132,6 +132,46 @@ async def test_user_cannot_fetch_another_users_report(db_session):
 
 
 @pytest.mark.asyncio
+async def test_running_owned_job_returns_in_progress_even_with_stale_interrupted_status(
+    db_session, monkeypatch, tmp_path
+):
+    db_session.add(
+        ResearchJob(id="job_1", user_id="user_1", query="q", status=JobStatus.RUNNING.value)
+    )
+    db_session.commit()
+
+    output_dir = tmp_path / "outputs"
+    job_dir = output_dir / "job_1"
+    job_dir.mkdir(parents=True)
+    (job_dir / "status.json").write_text(
+        json.dumps({"job_id": "job_1", "status": JobStatus.INTERRUPTED.value, "query": "q"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("api.routes.reports.OUTPUT_BASE_DIR", output_dir)
+    monkeypatch.setattr("services.job_status.OUTPUT_BASE_DIR", output_dir)
+
+    with pytest.raises(HTTPException) as exc:
+        await get_report("job_1", AuthUser(id="user_1"), db_session)
+    assert exc.value.status_code == 202
+
+
+@pytest.mark.asyncio
+async def test_interrupted_owned_job_returns_gone(db_session, monkeypatch, tmp_path):
+    db_session.add(
+        ResearchJob(id="job_1", user_id="user_1", query="q", status=JobStatus.INTERRUPTED.value)
+    )
+    db_session.commit()
+
+    output_dir = tmp_path / "outputs"
+    monkeypatch.setattr("api.routes.reports.OUTPUT_BASE_DIR", output_dir)
+    monkeypatch.setattr("services.job_status.OUTPUT_BASE_DIR", output_dir)
+
+    with pytest.raises(HTTPException) as exc:
+        await get_report("job_1", AuthUser(id="user_1"), db_session)
+    assert exc.value.status_code == 410
+
+
+@pytest.mark.asyncio
 async def test_completed_background_job_auto_saves_report(monkeypatch, tmp_path):
     engine = create_engine(
         "sqlite://",

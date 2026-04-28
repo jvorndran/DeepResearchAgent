@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useEffect, useState, useMemo, useCallback, memo } from "react";
-import { Terminal, Brain, Wrench, Database, CheckCircle, ListChecks } from "@phosphor-icons/react";
+import { ArrowDown, Terminal, Brain, Wrench, Database, CheckCircle, ListChecks } from "@phosphor-icons/react";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import type { PipelineStep } from "@/lib/types";
@@ -185,8 +185,15 @@ export default memo(function StreamingView({ orchestratorText, pipelineSteps }: 
   const handleLogScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const viewport = e.currentTarget;
     const isNearBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 100;
-    setIsLogAutoScrolling(isNearBottom);
+    setIsLogAutoScrolling((current) => current === isNearBottom ? current : isNearBottom);
   };
+
+  const scrollToLatest = useCallback(() => {
+    const viewport = logViewportRef.current;
+    if (!viewport) return;
+    viewport.scrollTo({ top: viewport.scrollHeight, behavior: "smooth" });
+    setIsLogAutoScrolling(true);
+  }, []);
 
   const handleMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     if (!containerRef.current) return;
@@ -302,8 +309,8 @@ export default memo(function StreamingView({ orchestratorText, pipelineSteps }: 
             if (parsed.code) cmd = parsed.code;
           } catch {}
           return (
-            <div className="my-6 border border-border/30 bg-[#000] shadow-sm relative overflow-hidden max-w-full">
-              <div className="flex items-center justify-between px-3 py-2 bg-[#0a0a0a] border-b border-border/20">
+            <div className="my-6 border border-border/30 bg-card shadow-sm relative overflow-hidden max-w-full">
+              <div className="flex items-center justify-between px-3 py-2 bg-muted/20 border-b border-border/30">
                 <div className="flex items-center gap-2">
                   <Terminal size={14} className="text-muted-foreground" />
                   <span className="text-[10px] uppercase tracking-widest text-muted-foreground font-mono">
@@ -311,7 +318,7 @@ export default memo(function StreamingView({ orchestratorText, pipelineSteps }: 
                   </span>
                 </div>
               </div>
-              <div className="p-4 font-mono text-[12px] text-[#e5e5e5] overflow-x-auto max-h-64 overflow-y-auto whitespace-pre-wrap break-words scrollbar-thin scrollbar-thumb-border/20 scrollbar-track-transparent">
+              <div className="p-4 bg-transparent font-mono text-[12px] text-muted-foreground overflow-x-auto max-h-64 overflow-y-auto whitespace-pre-wrap break-words scrollbar-thin scrollbar-thumb-border/30 scrollbar-track-transparent">
                 <code>$ {cmd}</code>
               </div>
             </div>
@@ -434,6 +441,16 @@ export default memo(function StreamingView({ orchestratorText, pipelineSteps }: 
                   />
                 </div>
               </div>
+              {!isLogAutoScrolling && (
+                <button
+                  type="button"
+                  onClick={scrollToLatest}
+                  className="absolute bottom-5 right-5 z-40 inline-flex items-center gap-2 border border-primary/50 bg-card/95 px-3 py-2 font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-primary shadow-[8px_8px_0_color-mix(in_srgb,var(--primary)_18%,transparent)] backdrop-blur transition-colors hover:bg-primary hover:text-primary-foreground"
+                >
+                  <ArrowDown size={14} />
+                  Latest
+                </button>
+              )}
             </div>
           </div>
         </div>

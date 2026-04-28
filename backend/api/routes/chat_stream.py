@@ -170,6 +170,7 @@ async def chat_stream(
                     job_id=job_id,
                     messages=messages_dict,
                     agent=req.app.state.agent,
+                    user_id=current_user.id,
                 ):
                     if "error" in chunk:
                         error_event = normalize_stream_error(job_id, "qa_stream", chunk["error"])

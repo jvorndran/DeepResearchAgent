@@ -1,4 +1,4 @@
-.PHONY: help install run-local build clean test docker-up docker-down sandbox-build
+.PHONY: help install run-local build clean test docker-up docker-down sandbox-build logs logs-backend logs-frontend logs-db logs-follow logs-snapshot
 
 # Default target
 help:
@@ -19,6 +19,8 @@ help:
 	@echo "  make docker-up        - Start all services with docker-compose"
 	@echo "  make docker-down      - Stop all services"
 	@echo "  make docker-rebuild   - Rebuild and restart all containers"
+	@echo "  make logs             - Show recent logs for all Docker services"
+	@echo "  make logs-snapshot    - Write Docker logs to logs/*.log files"
 	@echo ""
 	@echo "Build & Test:"
 	@echo "  make build            - Build production artifacts"
@@ -84,6 +86,27 @@ docker-rebuild:
 	docker-compose down
 	docker-compose build --no-cache
 	docker-compose up -d
+
+logs:
+	docker-compose logs --tail=300 backend frontend db
+
+logs-backend:
+	docker-compose logs --tail=300 backend
+
+logs-frontend:
+	docker-compose logs --tail=300 frontend
+
+logs-db:
+	docker-compose logs --tail=300 db
+
+logs-follow:
+	docker-compose logs -f backend frontend db
+
+logs-snapshot:
+	mkdir -p logs
+	docker-compose logs --no-color --timestamps --tail=500 backend > logs/backend.log
+	docker-compose logs --no-color --timestamps --tail=500 frontend > logs/frontend.log
+	docker-compose logs --no-color --timestamps --tail=500 db > logs/db.log
 
 # ==========================================
 # SANDBOX

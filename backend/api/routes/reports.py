@@ -63,6 +63,8 @@ async def get_report(
             raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
         if read_job_status(job_id) is not None or report_path.exists():
             raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
+    elif owned_job.status == JobStatus.RUNNING.value:
+        raise HTTPException(status_code=202, detail="Research in progress")
 
     if report_path.exists():
         try:
@@ -70,6 +72,20 @@ async def get_report(
         except (json.JSONDecodeError, OSError) as e:
             logger.error("Failed to read report for job %s: %s", job_id, e)
             raise HTTPException(status_code=500, detail="Failed to read report")
+
+    if owned_job is not None:
+        if owned_job.status == JobStatus.INTERRUPTED.value:
+            raise HTTPException(
+                status_code=410,
+                detail="Job was interrupted — server was restarted mid-job",
+            )
+        if owned_job.status == JobStatus.FAILED.value:
+            raise HTTPException(status_code=500, detail=owned_job.error or "Research job failed")
+        if owned_job.status == JobStatus.COMPLETED.value:
+            raise HTTPException(
+                status_code=500,
+                detail="Job completed but report was not saved — the pipeline may have failed during report generation",
+            )
 
     status_data = read_job_status(job_id)
     if status_data is None:

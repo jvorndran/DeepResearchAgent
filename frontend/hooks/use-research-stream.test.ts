@@ -96,7 +96,7 @@ describe("useResearchStream", () => {
     expect(onJobId).toHaveBeenCalledWith(FIXTURE_JOB_ID);
     expect(onNavigate).toHaveBeenCalledWith(FIXTURE_JOB_ID);
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://localhost:8000/api/chat/stream",
+      "/api/backend/api/chat/stream",
       expect.objectContaining({
         method: "POST",
         credentials: "include",
@@ -104,11 +104,11 @@ describe("useResearchStream", () => {
       }),
     );
     expect(fetchMock).toHaveBeenCalledWith(
-      `http://localhost:8000/api/reports/${FIXTURE_JOB_ID}`,
+      `/api/backend/api/reports/${FIXTURE_JOB_ID}`,
       expect.objectContaining({ credentials: "include" }),
     );
 
-    const streamCall = fetchMock.mock.calls.find((c) => c[0] === "http://localhost:8000/api/chat/stream") as
+    const streamCall = fetchMock.mock.calls.find((c) => c[0] === "/api/backend/api/chat/stream") as
       | [string, RequestInit]
       | undefined;
     expect(streamCall).toBeDefined();

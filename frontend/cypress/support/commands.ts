@@ -64,7 +64,7 @@ const buildStartSSE = (jobId: string) => [
 
 // Custom commands
 Cypress.Commands.add('mockStreamEndpoint', (jobId = 'test-job-123') => {
-  cy.intercept('POST', 'http://localhost:8000/api/chat/stream', (req) => {
+  cy.intercept('POST', '/api/backend/api/chat/stream', (req) => {
     const hasJobId = !!(req.body?.job_id);
     const body = hasJobId ? buildResearchSSE(jobId) : buildStartSSE(jobId);
     req.reply({
@@ -76,7 +76,7 @@ Cypress.Commands.add('mockStreamEndpoint', (jobId = 'test-job-123') => {
 });
 
 Cypress.Commands.add('mockConversationalStream', () => {
-  cy.intercept('POST', 'http://localhost:8000/api/chat/stream', {
+  cy.intercept('POST', '/api/backend/api/chat/stream', {
     statusCode: 200,
     headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' },
     body: CONVERSATIONAL_SSE,
@@ -84,7 +84,7 @@ Cypress.Commands.add('mockConversationalStream', () => {
 });
 
 Cypress.Commands.add('mockReport', (jobId = 'test-job-123') => {
-  cy.intercept('GET', `http://localhost:8000/api/reports/${jobId}`, { fixture: 'gdp_unemployment_20yr/report.json' }).as('getReport');
+  cy.intercept('GET', `/api/backend/api/reports/${jobId}`, { fixture: 'gdp_unemployment_20yr/report.json' }).as('getReport');
 });
 
 Cypress.Commands.add('mockErrorStream', (errorText = 'Pipeline failed: data unavailable') => {
@@ -93,7 +93,7 @@ Cypress.Commands.add('mockErrorStream', (errorText = 'Pipeline failed: data unav
     `data: {"type":"error","errorText":"${errorText}"}`,
     `data: [DONE]`,
   ].join('\n') + '\n';
-  cy.intercept('POST', 'http://localhost:8000/api/chat/stream', {
+  cy.intercept('POST', '/api/backend/api/chat/stream', {
     statusCode: 200,
     headers: { 'Content-Type': 'text/event-stream' },
     body: errorSSE,
@@ -102,7 +102,7 @@ Cypress.Commands.add('mockErrorStream', (errorText = 'Pipeline failed: data unav
 
 Cypress.Commands.add('mockFullHappyPath', (jobId = 'test-job-123') => {
   let callCount = 0;
-  cy.intercept('POST', 'http://localhost:8000/api/chat/stream', (req) => {
+  cy.intercept('POST', '/api/backend/api/chat/stream', (req) => {
     callCount++;
     if (callCount === 1) {
       // First call: clarifying questions
@@ -127,7 +127,7 @@ Cypress.Commands.add('mockFullHappyPath', (jobId = 'test-job-123') => {
       });
     }
   }).as('chatStream');
-  cy.intercept('GET', `http://localhost:8000/api/reports/${jobId}`, { fixture: 'gdp_unemployment_20yr/report.json' }).as('getReport');
+  cy.intercept('GET', `/api/backend/api/reports/${jobId}`, { fixture: 'gdp_unemployment_20yr/report.json' }).as('getReport');
 });
 
 Cypress.Commands.add('snap', (name: string) => {

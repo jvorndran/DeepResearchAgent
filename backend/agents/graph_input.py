@@ -44,12 +44,6 @@ async def resolve_graph_input(
             update={"messages": [last_user_message]} if last_user_message else {},
         )
 
-    # Manual override: user clicked "Commence Deep Research" but the graph
-    # is not interrupted (evaluate_intake said needs_more, or the graph ended
-    # normally).  Bypass intake and jump straight to execution.
-    if is_research_approval_message(last_user_message):
-        return {"messages": messages, "phase": "executing"}
-
     # Re-invocation after a previous execution completed (graph at END).
     # The checkpoint already contains the full conversation history from
     # prior runs.  Only pass the NEW user message to avoid duplicating
@@ -59,6 +53,18 @@ async def resolve_graph_input(
         and hasattr(state, "values")
         and bool(state.values.get("messages"))
     )
+
+    # Manual override: user clicked "Commence Deep Research" but the graph
+    # is not currently interrupted. This can happen when the approval click is
+    # sent from the chat page after a prior home-page stream has already ended.
+    # Keep checkpointed intake messages intact; replacing them with only the
+    # synthetic approval text makes the execution phase finish without creating
+    # report.json.
+    if is_research_approval_message(last_user_message):
+        if has_prior_state:
+            return {"messages": [], "phase": "executing"}
+        return {"messages": messages, "phase": "executing"}
+
     if has_prior_state and last_user_message:
         return {"messages": [last_user_message]}
 

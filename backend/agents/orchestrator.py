@@ -19,6 +19,8 @@ import logging
 import warnings
 from pathlib import Path
 import asyncio
+import os
+import re
 from typing import Annotated, Any, AsyncIterator, Dict
 
 import google.genai.errors
@@ -43,6 +45,15 @@ warnings.filterwarnings(
 from mcp import ClientSession
 from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
+from deepagents.backends.protocol import (
+    EditResult,
+    ExecuteResponse,
+    GlobResult,
+    GrepResult,
+    LsResult,
+    ReadResult,
+    WriteResult,
+)
 from langgraph.checkpoint.memory import MemorySaver
 
 from .data_engineer import FredMCPRequiredError, get_data_engineer_subagent, MCPTimeoutError
@@ -58,6 +69,109 @@ from core.context import ResearchContext
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
 _WORKSPACE_DIR = _BACKEND_DIR.parent
 _CHECKPOINTER = MemorySaver()
+
+_SAFE_SHELL_ENV = {
+    "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+    "PYTHONPATH": str(_BACKEND_DIR),
+}
+
+_SENSITIVE_PATH_PARTS = {
+    ".env",
+    ".env.local",
+    ".env.development",
+    ".env.production",
+    ".env.test",
+    ".envrc",
+    ".netrc",
+    ".pypirc",
+    ".npmrc",
+    ".docker/config.json",
+    "id_rsa",
+    "id_dsa",
+    "id_ecdsa",
+    "id_ed25519",
+}
+_SENSITIVE_DIR_PARTS = {".ssh", ".gnupg", ".aws", ".azure", ".config/gcloud"}
+_SECRET_SHELL_RE = re.compile(
+    r"(?ix)"
+    r"(^|[\s;&|()])("
+    r"env|printenv|set|export"
+    r")($|[\s;&|()])"
+    r"|"
+    r"(^|[/\s;&|()])("
+    r"\.env(?:\.[\w-]+)?|\.envrc|\.netrc|\.pypirc|\.npmrc|"
+    r"id_rsa|id_dsa|id_ecdsa|id_ed25519"
+    r")($|[/\s;&|()])"
+    r"|"
+    r"(^|[/\s;&|()])("
+    r"\.ssh|\.gnupg|\.aws|\.azure|\.config/gcloud"
+    r")($|[/\s;&|()])"
+)
+
+
+def _is_sensitive_path(path: str) -> bool:
+    """Return True when a path points at likely credentials or local secrets."""
+    if not path:
+        return False
+    normalized = path.replace("\\", "/").strip().strip("\"'")
+    parts = [part for part in normalized.split("/") if part]
+    lower_parts = [part.lower() for part in parts]
+    lowered = "/".join(lower_parts)
+    if any(part in _SENSITIVE_PATH_PARTS for part in lower_parts):
+        return True
+    return any(dir_part in lowered for dir_part in _SENSITIVE_DIR_PARTS)
+
+
+class GuardedLocalShellBackend(LocalShellBackend):
+    """Local backend with credential-file guardrails for agent tool use."""
+
+    _DENIED = "Access denied: sensitive local credential files are not available to agents."
+
+    def _is_denied_path(self, file_path: str) -> bool:
+        return _is_sensitive_path(file_path)
+
+    def read(self, file_path: str, offset: int = 0, limit: int = 2000):
+        if self._is_denied_path(file_path):
+            return ReadResult(error=self._DENIED)
+        return super().read(file_path, offset=offset, limit=limit)
+
+    def write(self, file_path: str, content: str):
+        if self._is_denied_path(file_path):
+            return WriteResult(error=self._DENIED)
+        return super().write(file_path, content)
+
+    def edit(
+        self,
+        file_path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,
+    ):
+        if self._is_denied_path(file_path):
+            return EditResult(error=self._DENIED)
+        return super().edit(file_path, old_string, new_string, replace_all=replace_all)
+
+    def ls(self, path: str):
+        if self._is_denied_path(path):
+            return LsResult(error=self._DENIED, entries=[])
+        return super().ls(path)
+
+    def glob(self, pattern: str, path: str = "/"):
+        if self._is_denied_path(pattern) or self._is_denied_path(path):
+            return GlobResult(error=self._DENIED, matches=[])
+        return super().glob(pattern, path=path)
+
+    def grep(self, pattern: str, path: str | None = None, glob: str | None = None):
+        if (path is not None and self._is_denied_path(path)) or (
+            glob is not None and self._is_denied_path(glob)
+        ):
+            return GrepResult(error=self._DENIED, matches=[])
+        return super().grep(pattern, path=path, glob=glob)
+
+    def execute(self, command: str, *, timeout: int | None = None):
+        if _SECRET_SHELL_RE.search(command or ""):
+            return ExecuteResponse(output=self._DENIED, exit_code=1, truncated=False)
+        return super().execute(command, timeout=timeout)
 
 
 # =============================================================================
@@ -78,7 +192,7 @@ class OrchestratorState(dict):
 # Re-declare as a proper TypedDict for LangGraph (it needs __annotations__).
 from typing import TypedDict  # noqa: E402
 
-class OrchestratorState(TypedDict):  # type: ignore[no-redef]
+class OrchestratorState(TypedDict):  # type: ignore[no-redef]  # noqa: F811
     messages: Annotated[list[AnyMessage], add_messages]
     phase: str
     research_summary: str
@@ -192,10 +306,11 @@ async def _create_execution_agent(fred_session: ClientSession | None = None):
             data_engineer,
             *SPECIALIST_SUBAGENTS_STATIC,
         ],
-        backend=LocalShellBackend(
+        backend=GuardedLocalShellBackend(
             root_dir=_WORKSPACE_DIR,
             virtual_mode=False,
-            inherit_env=True,
+            env=_SAFE_SHELL_ENV,
+            inherit_env=False,
         ),
         context_schema=ResearchContext,
         # No checkpointer — parent graph owns the checkpoint.
@@ -265,6 +380,7 @@ async def run_research(
     job_id: str,
     messages: list[dict] | None = None,
     agent: Any | None = None,
+    user_id: str | None = None,
 ) -> Dict[str, Any]:
     """
     Run the complete research workflow and return final results.
@@ -304,6 +420,7 @@ async def run_research(
             job_id=job_id,
             output_dir=str(_BACKEND_DIR / "outputs" / job_id),
             data_dir=str(_BACKEND_DIR / "data" / job_id),
+            user_id=user_id,
         )
 
         config = {"configurable": {"thread_id": job_id}}
@@ -348,6 +465,7 @@ async def stream_research(
     job_id: str,
     messages: list[dict] | None = None,
     agent: Any | None = None,
+    user_id: str | None = None,
 ) -> AsyncIterator[Dict[str, Any]]:
     """
     Stream the research workflow progress in real-time.
@@ -381,6 +499,7 @@ async def stream_research(
         job_id=job_id,
         output_dir=str(_BACKEND_DIR / "outputs" / job_id),
         data_dir=str(_BACKEND_DIR / "data" / job_id),
+        user_id=user_id,
     )
 
     try:

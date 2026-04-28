@@ -32,7 +32,7 @@ function visitChatPage(
 
 describe('UI walkthrough (stream fixture)', () => {
   beforeEach(() => {
-    cy.intercept('GET', `http://localhost:8000/api/reports/${STREAM_FIXTURE_JOB_ID}`, {
+    cy.intercept('GET', `/api/backend/api/reports/${STREAM_FIXTURE_JOB_ID}`, {
       fixture: 'gdp_unemployment_20yr/report.json',
     }).as('getReport');
   });
@@ -95,7 +95,7 @@ describe('UI walkthrough (stream fixture)', () => {
   // ── Stage 5: Error ───────────────────────────────────────────────────────────
 
   it('Stage 5 — Chat: Error view', () => {
-    cy.intercept('POST', 'http://localhost:8000/api/chat/stream', {
+    cy.intercept('POST', '/api/backend/api/chat/stream', {
       statusCode: 200,
       headers: { 'Content-Type': 'text/event-stream' },
       body: [

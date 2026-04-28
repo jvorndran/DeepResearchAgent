@@ -1,8 +1,9 @@
 "use client";
 
-import { useRef, useEffect } from "react";
+import { useRef, useEffect, type ComponentProps, type KeyboardEvent } from "react";
 import { ArrowRight } from "@phosphor-icons/react";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -10,7 +11,15 @@ import { usePretextHeight, useElementWidth } from "@/hooks/use-pretext";
 import type { Message } from "@/lib/types";
 
 const assistantProse =
-  "prose prose-lg max-w-none dark:prose-invert prose-p:font-serif prose-p:leading-relaxed prose-p:text-foreground/90 prose-headings:font-serif prose-h3:mt-0 prose-h3:mb-3 prose-strong:text-foreground prose-ul:my-3 prose-ol:my-3 prose-li:my-1 prose-p:my-2 first:prose-p:mt-0 last:prose-p:mb-0";
+  "prose prose-lg max-w-none dark:prose-invert prose-p:font-serif prose-p:leading-relaxed prose-p:text-foreground/90 prose-headings:font-serif prose-h3:mt-0 prose-h3:mb-3 prose-strong:text-foreground prose-ul:my-3 prose-ol:my-3 prose-li:my-1 prose-p:my-2 first:prose-p:mt-0 last:prose-p:mb-0 prose-table:my-4 prose-table:text-sm prose-table:font-sans prose-th:border prose-th:border-border prose-th:bg-muted/70 prose-th:px-3 prose-th:py-2 prose-th:text-left prose-th:font-semibold prose-td:border prose-td:border-border prose-td:px-3 prose-td:py-2 prose-td:align-top";
+
+const markdownComponents = {
+  table: ({ children }: ComponentProps<"table">) => (
+    <div className="my-4 w-full overflow-x-auto">
+      <table className="w-full border-collapse text-sm">{children}</table>
+    </div>
+  ),
+};
 
 function MarkdownContent({ children, className }: { children: string; className?: string }) {
   return (
@@ -20,7 +29,9 @@ function MarkdownContent({ children, className }: { children: string; className?
         "prose prose-lg max-w-none dark:prose-invert prose-p:font-serif prose-p:leading-relaxed prose-headings:font-serif prose-li:font-serif prose-strong:text-foreground prose-ul:my-3 prose-ol:my-3 prose-p:my-2 first:prose-p:mt-0 last:prose-p:mb-0"
       }
     >
-      <ReactMarkdown>{children}</ReactMarkdown>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+        {children}
+      </ReactMarkdown>
     </div>
   );
 }
@@ -64,7 +75,7 @@ export default function ChatInterface({
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, orchestratorText, isStreamingChat]);
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+  const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       onSend();

@@ -37,12 +37,13 @@ services:
       dockerfile: Dockerfile.dev
     container_name: deep-research-frontend
     ports:
-      - "3000:3000"
+      - "${FRONTEND_PORT:-3000}:3000"
     environment:
       - NODE_ENV=development
       - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - BACKEND_INTERNAL_URL=http://backend:8000
       - DATABASE_URL=postgresql://research_user:research_pass@db:5432/research_db
-      - BETTER_AUTH_URL=http://localhost:3000
+      - BETTER_AUTH_URL=http://localhost:${FRONTEND_PORT:-3000}
       - BETTER_AUTH_SECRET=dev-only-change-me
     env_file:
       - path: ./frontend/.env.local
