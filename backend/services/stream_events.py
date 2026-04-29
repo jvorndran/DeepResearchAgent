@@ -123,6 +123,7 @@ def parse_graph_update(
         "intake",
         "intake_chat",
         "evaluate_intake",
+        "emit_approval_message",
         "approval_gate",
     }
 
@@ -335,6 +336,7 @@ async def process_research_chunks(
         "intake",
         "intake_chat",
         "evaluate_intake",
+        "emit_approval_message",
         "approval_gate",
     ):
         yield {"type": "agent_end", "agent": current_agent}

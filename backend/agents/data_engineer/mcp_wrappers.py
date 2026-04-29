@@ -7,6 +7,7 @@ import logging
 import math
 import re
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -147,6 +148,28 @@ def _fail_closed_large_result(tool_name: str, byte_size: int, reason: str) -> st
     )
 
 
+def _safe_filename_part(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", value.strip())
+    return cleaned[:80].strip("._-")
+
+
+def _auto_save_file_path(data: Any, tool_name: str) -> Path:
+    series_id = ""
+    if isinstance(data, dict):
+        candidate = data.get("series_id")
+        if not isinstance(candidate, str) and isinstance(data.get("metadata"), dict):
+            candidate = data["metadata"].get("series_id")
+        series_id = _safe_filename_part(candidate)
+
+    stem_parts = [tool_name]
+    if series_id:
+        stem_parts.append(series_id)
+    stem_parts.extend([str(time.time_ns()), uuid.uuid4().hex[:8]])
+    return DATA_STORAGE_DIR / "_auto" / f"{'_'.join(stem_parts)}.csv"
+
+
 def _compact_artifact(artifact: Any, compact_content: str, tool_name: str) -> Any:
     if artifact is None:
         return None
@@ -185,7 +208,7 @@ async def _auto_save_result(result: Any, tool_name: str) -> str:
 
     Two-stage interception (does **not** apply to ``fred_search`` / ``fred_browse``):
     1. Structured data arrays (FRED/FMP time-series): saved to a job-scoped CSV via
-       _save_data_to_storage so save_data can pick it up later.
+       _save_data_to_storage so the agent can hand off the returned file path directly.
     2. Any other result exceeding _MCP_INLINE_LIMIT chars: written verbatim to a raw
        JSON file under DATA_STORAGE_DIR/_mcp_raw/; the LLM only sees a small preview
        dict with the file path and the first 400 chars.
@@ -221,8 +244,7 @@ async def _auto_save_result(result: Any, tool_name: str) -> str:
 
         if is_data_array or is_data_dict:
             try:
-                timestamp = int(time.time())
-                file_path = DATA_STORAGE_DIR / "_auto" / f"{tool_name}_{timestamp}.csv"
+                file_path = _auto_save_file_path(data, tool_name)
                 meta = await _save_data_to_storage(data, file_path)
                 saved_path = meta["storage_path"]
                 pointer = {
@@ -230,7 +252,7 @@ async def _auto_save_result(result: Any, tool_name: str) -> str:
                     "file_path": saved_path,
                     "row_count": meta["row_count"],
                     "columns": meta["columns"],
-                    "note": "Raw data auto-saved. Pass this entire JSON to save_data.",
+                    "note": "Raw data auto-saved. Use file_path directly; do not call save_data for this result.",
                 }
                 return json.dumps(pointer)
             except Exception as e:

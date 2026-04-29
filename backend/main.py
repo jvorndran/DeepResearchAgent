@@ -5,11 +5,14 @@ Loads environment and logging first, then builds the ASGI app via api.app.create
 """
 
 import os
+from pathlib import Path
 
 from dotenv import load_dotenv
 
+BASE_DIR = Path(__file__).resolve().parent
+
 # Load environment variables from .env file (backend dir first)
-env_path = os.path.join(os.path.dirname(__file__), ".env")
+env_path = BASE_DIR / ".env"
 if os.path.exists(env_path):
     load_dotenv(env_path)
 else:
@@ -32,7 +35,16 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=8000,
         reload=True,
+        reload_dirs=[
+            str(BASE_DIR / "agents"),
+            str(BASE_DIR / "api"),
+            str(BASE_DIR / "core"),
+            str(BASE_DIR / "mcp_clients"),
+            str(BASE_DIR / "services"),
+        ],
         reload_excludes=[
+            "__pycache__/*",
+            "__pycache__/**",
             "data/*",
             "data/**",
             "outputs/*",

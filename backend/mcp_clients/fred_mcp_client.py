@@ -10,6 +10,8 @@ CPI, interest rates, employment data, and more.
 Uses stdio transport to avoid the HTTP GET stream reconnection loop that occurs with
 the streamable_http transport when the server holds an idle SSE connection open.
 Auth is passed to the subprocess via the FRED_API_KEY environment variable.
+Standard proxy and certificate environment variables are also forwarded so the
+Node subprocess can reach FRED from managed network environments.
 
 Tools: fred_browse, fred_search, fred_get_series
 """
@@ -24,14 +26,42 @@ from mcp import ClientSession
 # Default path to the pre-built FRED MCP server JS bundle (sibling project)
 _DEFAULT_FRED_SERVER_PATH = os.path.expanduser("~/projects/fred-mcp-server/build/index.js")
 
+_FRED_ENV_PASSTHROUGH = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+    "NODE_EXTRA_CA_CERTS",
+    "NODE_USE_SYSTEM_CA",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+)
+
+
+def _fred_subprocess_env() -> Dict[str, str]:
+    """Return the minimal environment needed by the FRED MCP Node subprocess."""
+    env = {"FRED_API_KEY": os.getenv("FRED_API_KEY", "")}
+    for key in _FRED_ENV_PASSTHROUGH:
+        value = os.getenv(key)
+        if value:
+            env[key] = value
+
+    if any(key in env for key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")):
+        env.setdefault("NODE_USE_ENV_PROXY", os.getenv("NODE_USE_ENV_PROXY", "1"))
+
+    return env
+
 
 def get_fred_mcp_config(server_path: Optional[str] = None) -> Dict[str, Any]:
     """
     Get the FRED MCP server configuration for MultiServerMCPClient.
 
     Uses stdio transport to avoid HTTP GET stream reconnection noise.
-    The FRED server is invoked as a Node.js subprocess; FRED_API_KEY is
-    passed explicitly through the subprocess environment.
+    The FRED server is invoked as a Node.js subprocess; FRED_API_KEY and
+    standard network/certificate environment are passed explicitly through the
+    subprocess environment.
 
     Args:
         server_path: Path to the FRED MCP server JS bundle.
@@ -42,15 +72,12 @@ def get_fred_mcp_config(server_path: Optional[str] = None) -> Dict[str, Any]:
         Configuration dict for MultiServerMCPClient
     """
     path = server_path or os.getenv("FRED_MCP_SERVER_PATH", _DEFAULT_FRED_SERVER_PATH)
-    fred_api_key = os.getenv("FRED_API_KEY", "")
     return {
         "fred": {
             "transport": "stdio",
             "command": "node",
             "args": [path],
-            "env": {
-                "FRED_API_KEY": fred_api_key,
-            },
+            "env": _fred_subprocess_env(),
         }
     }
 

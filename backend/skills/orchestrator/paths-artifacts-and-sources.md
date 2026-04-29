@@ -21,7 +21,7 @@ triggers: [path, job_id, charts.json, report.json, data_sources, %Q, absolute pa
 Include in the orchestrator’s `task()` text:
 
 - Absolute `charts_json_path` to `charts.json`
-- Full `execution_summary` JSON (including `statistical_summary`)
+- Full `execution_summary` JSON (including `statistical_summary`). If the quant-developer returns an `execution_summary_json` path, pass that absolute path and instruct the technical writer to use its contents as the execution summary instead of asking the quant-developer to restate the full JSON inline.
 - `data_sources` as JSON metadata only (provider, description, series_ids, date_range, row_count) — no raw series arrays
 - `original_query` verbatim
 

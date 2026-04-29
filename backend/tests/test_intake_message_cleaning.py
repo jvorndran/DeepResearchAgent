@@ -1,6 +1,10 @@
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from agents.intake import _clean_messages_for_eval
+from agents.intake import (
+    _actionable_fred_macro_summary,
+    _clean_messages_for_eval,
+    _is_actionable_fred_macro_request,
+)
 
 
 def test_clean_messages_for_eval_removes_assistant_tool_calls():
@@ -47,3 +51,21 @@ def test_clean_messages_for_eval_skips_pure_tool_call_wrappers():
     )
 
     assert cleaned == [HumanMessage(content="Use the last 10 years.")]
+
+
+def test_fred_macro_request_is_actionable_without_indicator_clarification():
+    text = (
+        "Job ID: improver-test\n\n"
+        "Research Query: Are consumers under stress? Use FRED macro data to build "
+        "a concise evidence-based answer."
+    )
+
+    assert _is_actionable_fred_macro_request(text)
+
+    summary = _actionable_fred_macro_summary(text)
+    assert "selecting appropriate economic indicators" in summary
+    assert "Are consumers under stress?" in summary
+
+
+def test_fred_shortcut_does_not_apply_to_non_fred_requests():
+    assert not _is_actionable_fred_macro_request("Are consumers under stress?")

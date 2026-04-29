@@ -316,6 +316,7 @@ async def chat_stream(
                     "intake",
                     "intake_chat",
                     "evaluate_intake",
+                    "emit_approval_message",
                     "approval_gate",
                 ):
                     yield sse({"type": "agent_end", "agent": current_agent})

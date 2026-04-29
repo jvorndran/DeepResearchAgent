@@ -111,7 +111,7 @@ async def _save_data_to_storage(data: Any, file_path: Path) -> dict:
 
     # Return metadata
     return {
-        "storage_path": file_path.relative_to(Path.cwd()).as_posix(),
+        "storage_path": file_path.resolve().as_posix(),
         "row_count": len(df),
         "columns": df.columns.tolist(),
         "size_bytes": file_path.stat().st_size,

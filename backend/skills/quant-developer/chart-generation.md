@@ -10,6 +10,8 @@ triggers: [chart, Recharts, AxisChartDef, ScatterChartDef, PieChartDef, TreemapC
 2. **Path:** `{OUTPUT_BASE_DIR}/{job_id}/charts.json`.
 3. **Palette:** `["#3b82f6", "#f59e0b", "#10b981", "#ef4444", "#8b5cf6"]`.
 4. **Period labels:** For quarterly data, format labels as `YYYY Qn`. Never use unsupported directives like `%Q`.
+5. **Supported types only:** Use only `line`, `bar`, `area`, `composed`, `scatter`, or `pie`. Do not emit `radar`, `heatmap`, `table`, or other unsupported chart types. Period comparisons should be grouped `bar` or `composed` charts.
+6. **Mixed FRED frequencies:** Merge monthly and quarterly FRED data on period keys, not raw timestamps. For quarterly joins, create `quarter = date.dt.to_period("Q")` in every frame, merge on `quarter`, and derive display labels with `YYYY Qn`; never merge quarter-start GDP dates directly against quarter-end resample timestamps.
 
 ## AxisChart (Line, Bar, Area, Composed)
 ```json
@@ -76,4 +78,4 @@ triggers: [chart, Recharts, AxisChartDef, ScatterChartDef, PieChartDef, TreemapC
 }
 ```
 
-**Rule:** Use the canonical report schema only. Do not emit legacy `config`, `xAxis`, `yAxis`, `key`, or `name` fields.
+**Rule:** Use the canonical report schema only. Do not emit legacy `chartType`, `xKey`, `yKeys`, `config`, `xAxis`, `yAxis`, `key`, or `name` fields.

@@ -32,7 +32,7 @@ You must not use them: return concise text summaries only and use no tools unles
 the orchestrator explicitly required a tool-using task for this overflow step.
 """,
     "tools": [],
-    "model": "google_genai:gemini-3.1-flash-lite-preview",
+    "model": "deepseek:deepseek-chat",
 }
 
 SPECIALIST_SUBAGENTS_STATIC = [
