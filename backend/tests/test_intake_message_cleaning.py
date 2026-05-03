@@ -1,9 +1,14 @@
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
+import agents.intake as intake
 from agents.intake import (
     _actionable_fred_macro_summary,
+    _actionable_macro_scenario_summary,
     _clean_messages_for_eval,
+    evaluate_intake_node,
     _is_actionable_fred_macro_request,
+    _is_actionable_macro_scenario_request,
 )
 
 
@@ -69,3 +74,50 @@ def test_fred_macro_request_is_actionable_without_indicator_clarification():
 
 def test_fred_shortcut_does_not_apply_to_non_fred_requests():
     assert not _is_actionable_fred_macro_request("Are consumers under stress?")
+
+
+def test_macro_scenario_dashboard_request_is_actionable_without_clarification():
+    text = (
+        "Job ID: improver-test\n\n"
+        "Research Query: Build a recession risk dashboard with base, bull, and "
+        "bear scenarios. Include assumptions, trigger indicators, and "
+        "confidence/uncertainty notes."
+    )
+
+    assert _is_actionable_macro_scenario_request(text)
+
+    summary = _actionable_macro_scenario_summary(text)
+    assert "available free/local data" in summary
+    assert "base, bull, and bear scenario rows" in summary
+    assert "confidence/uncertainty notes" in summary
+
+
+def test_macro_scenario_shortcut_requires_base_bull_and_bear():
+    assert not _is_actionable_macro_scenario_request(
+        "Build a recession risk dashboard with scenarios."
+    )
+
+
+@pytest.mark.asyncio
+async def test_evaluate_intake_accepts_macro_scenario_dashboard_without_model(monkeypatch):
+    def fail_init_chat_model(*_args, **_kwargs):
+        raise AssertionError("macro scenario shortcut should avoid evaluator model")
+
+    monkeypatch.setattr(intake, "init_chat_model", fail_init_chat_model)
+
+    result = await evaluate_intake_node(
+        {
+            "messages": [
+                HumanMessage(
+                    content=(
+                        "Research Query: Build a recession risk dashboard with "
+                        "base, bull, and bear scenarios. Include assumptions, "
+                        "trigger indicators, and confidence/uncertainty notes."
+                    )
+                )
+            ]
+        }
+    )
+
+    assert "research_summary" in result
+    assert "base, bull, and bear scenario rows" in result["research_summary"]

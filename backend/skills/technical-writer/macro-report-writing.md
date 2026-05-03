@@ -20,6 +20,10 @@ triggers: [macro, economy, gdp, inflation, unemployment, correlation, trend, pol
 ## Using Statistical Summary
 - The `execution_summary.statistical_summary` contains computed numbers from the quant developer.
   Cite every specific value inline in your analysis sections using parentheticals.
+- If the query asks for scenarios or stress testing, render
+  `execution_summary.scenario_table` as a `## Scenario Table` markdown table
+  with Scenario, Assumptions, Indicator Triggers, Confidence, and Uncertainty
+  Notes columns before saving.
 
 ## Rule
 - **Word Count:** 1000+ words. Deep, thorough macro analysis.

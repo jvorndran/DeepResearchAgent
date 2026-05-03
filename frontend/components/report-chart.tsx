@@ -12,6 +12,7 @@ import {
   Brush, ReferenceLine, ReferenceArea,
 } from "recharts";
 import type { ChartDef, SeriesDef, AxisChartDef } from "@/lib/types";
+import { validateChartRenderContract } from "@/lib/chart-contract";
 
 interface ReportChartProps {
   chartId: string;
@@ -189,6 +190,25 @@ function renderReferenceLines(chart: AxisChartDef) {
 }
 
 export default function ReportChart({ chartId, chart }: ReportChartProps) {
+  const contractIssues = validateChartRenderContract(chartId, chart);
+  if (contractIssues.length > 0) {
+    return (
+      <figure className="my-10 w-full flex flex-col gap-3" key={chartId}>
+        <h3 className="text-base font-semibold text-center text-foreground shrink-0">
+          {chart.title || chartId}
+        </h3>
+        <div
+          data-testid="chart-render-contract-error"
+          className="rounded-sm border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive"
+        >
+          Chart could not be rendered because its data contract is invalid:
+          {" "}
+          {contractIssues.slice(0, 3).join("; ")}
+        </div>
+      </figure>
+    );
+  }
+
   return (
     <figure
       className="my-10 w-full flex flex-col gap-3"

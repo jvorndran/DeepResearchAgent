@@ -29,6 +29,14 @@ export interface DataSource {
   row_count?: number;
 }
 
+export interface ScenarioRow {
+  scenario: "base" | "bull" | "bear";
+  assumptions: string[];
+  indicator_triggers: string[];
+  confidence: "low" | "medium" | "high";
+  uncertainty_notes: string;
+}
+
 export interface SeriesDef {
   dataKey: string;
   label: string;
@@ -108,6 +116,7 @@ export interface ResearchReport {
   executive_summary: string;
   markdown: string;
   charts: Record<string, ChartDef>;
+  scenario_table?: ScenarioRow[] | null;
   data_sources: DataSource[];
   metadata: {
     analysis_type: string;

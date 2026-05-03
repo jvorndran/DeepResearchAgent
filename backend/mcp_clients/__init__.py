@@ -1,3 +1,5 @@
+from .bls_client import BLSPublicDataClient, BLSPublicDataError, search_known_bls_series
+from .census_client import CensusDataError, CensusPublicDataClient
 from .fmp_mcp_client import create_fmp_mcp_client, get_fmp_mcp_config, list_fmp_tools
 from .fred_mcp_client import (
     create_fred_mcp_client,
@@ -5,6 +7,7 @@ from .fred_mcp_client import (
     list_fred_tools,
     load_fred_tools_with_session,
 )
+from .sec_edgar_client import SECEdgarClient, SECEdgarError
 
 __all__ = [
     "create_fmp_mcp_client",
@@ -14,4 +17,11 @@ __all__ = [
     "get_fred_mcp_config",
     "list_fmp_tools",
     "list_fred_tools",
+    "SECEdgarClient",
+    "SECEdgarError",
+    "BLSPublicDataClient",
+    "BLSPublicDataError",
+    "search_known_bls_series",
+    "CensusPublicDataClient",
+    "CensusDataError",
 ]

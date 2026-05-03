@@ -12,6 +12,13 @@ triggers: [chart, Recharts, AxisChartDef, ScatterChartDef, PieChartDef, TreemapC
 4. **Period labels:** For quarterly data, format labels as `YYYY Qn`. Never use unsupported directives like `%Q`.
 5. **Supported types only:** Use only `line`, `bar`, `area`, `composed`, `scatter`, or `pie`. Do not emit `radar`, `heatmap`, `table`, or other unsupported chart types. Period comparisons should be grouped `bar` or `composed` charts.
 6. **Mixed FRED frequencies:** Merge monthly and quarterly FRED data on period keys, not raw timestamps. For quarterly joins, create `quarter = date.dt.to_period("Q")` in every frame, merge on `quarter`, and derive display labels with `YYYY Qn`; never merge quarter-start GDP dates directly against quarter-end resample timestamps.
+7. **Method labels:** For deterministic macro statistics, include `methods_used`
+   on each relevant chart definition and in `execution_summary.json`.
+8. **Saving artifacts:** Prefer
+   `save_quant_outputs(output_dir, charts, execution_summary)` from
+   `agents.quant_macro_stats`. It writes strict JSON, derives `chart_ids` from
+   the saved chart map, saves `execution_summary.json`, and returns the compact
+   handoff to print. Never import `agents.quant_utils`.
 
 ## AxisChart (Line, Bar, Area, Composed)
 ```json

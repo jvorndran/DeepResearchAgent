@@ -97,33 +97,6 @@ Do not re-enable FMP for these features.
 - Suggested implementation: Deterministic scoring helper with transparent weights and no black-box model.
 - Required tests: Synthetic indicator fixtures for each regime, missing-series fallback, score explanation.
 
-### Local File Intake
-- Owner: data-engineer
-- Tools: Local CSV/Excel/JSON parsing; PDF only if a local parser is installed or added as optional dependency.
-- Why: Lets users combine uploaded/local datasets with FRED and public no-key data.
-- Acceptance signal: A report can use a user-provided local CSV alongside FRED data without shell probing or path confusion.
-- Evaluation query: Combine a user-provided local CSV conceptually named household_debt.csv with FRED unemployment, CPI, and fed funds data. The agent should request or handle a local data path safely rather than inventing data.
-- Suggested implementation: Safe file parser tools with path allowlists, schema extraction, row limits, and compact previews.
-- Required tests: CSV, Excel if supported, JSON, unsupported file type, path traversal denial, large-file compaction.
-
-### PDF/Text Source Extraction
-- Owner: data-engineer or technical-writer depending on use.
-- Tools: Optional local PyMuPDF/PyMuPDF4LLM if dependency/license is accepted; otherwise proposal-only.
-- Why: Extracts text/tables from public PDFs or local filings/reports.
-- Acceptance signal: Writer can cite extracted page-level snippets or table metadata without dumping full PDF text into context.
-- Evaluation query: Extract relevant text and tables from a local or public PDF-style economic report and combine it with FRED macro data, while preserving bounded citations and page references.
-- Suggested implementation: Proposal-first unless dependency choice is approved; keep extraction local and bounded.
-- Required tests: Small fixture PDF, page limit, text length cap, malformed PDF, missing dependency disabled message.
-
-### Report Quality Gates
-- Owner: technical-writer and quality-analyst
-- Tools: Local validators only.
-- Why: Adds deterministic checks for citations, chart references, data-source coverage, scenario sections, method disclosure, and stale-date warnings.
-- Acceptance signal: QA rejects reports that lack required source citations or method disclosure when the prompt requires them.
-- Evaluation query: Write a macro report that must include citations, methods used, latest observation dates, data-source coverage, and chart references. QA should reject if any required element is missing.
-- Suggested implementation: Extend existing report validation and QA prompt, not a new external provider.
-- Required tests: Missing citation rejection, broken chart marker, missing method section, stale latest-date warning.
-
 ## Loop Rules
 
 - `docs/free-agent-feature-backlog.md` is the source of truth for feature ideas,
@@ -134,6 +107,22 @@ Do not re-enable FMP for these features.
   phase starts with cleared model context.
 - If a feature needs a new dependency, prefer proposal-only unless the dependency is already in the project or is clearly local/open-source and optional.
 - For public HTTP integrations, add a disabled/failure path and tests that mock network responses.
+- For public no-key HTTP integrations, add a tiny live integration smoke test
+  under `backend/tests/integration/`. It must be skipped unless
+  `RUN_LIVE_INTEGRATION_TESTS=1`, make only one narrow provider call when
+  possible, assert response shape/source metadata rather than exact volatile
+  values, and treat provider/network unavailability as a separately reported
+  live-smoke failure rather than evidence that mocked contract tests are wrong.
+- For local analysis features, add fixture-driven integration tests instead of
+  live HTTP tests. They should run realistic CSV/JSON fixtures through the
+  helper or agent-owned artifact path and assert output schemas such as
+  `execution_summary.json`, `charts.json`, `methods_used`, no-lookahead
+  alignment, scenario tables, model diagnostics, or report validation gates.
+- The verifier phase should run mocked unit/contract tests plus live integration
+  smoke tests for public no-key providers when relevant:
+  `RUN_LIVE_INTEGRATION_TESTS=1 UV_CACHE_DIR=/tmp/uv-cache uv run python -m pytest tests/integration -q`.
+  If there are no relevant integration tests yet, that is verifier evidence that
+  the feature needs improvement.
 - Keep each tool owned by one specialist.
 - Add skill guidance for when to use the feature, when not to use it, call budgets, expected output shape, and fallback behavior.
 - Do not add API keys, signup flows, OAuth, paid providers, hosted services, or mandatory background daemons.

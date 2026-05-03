@@ -1,12 +1,15 @@
 import asyncio
 
+import httpx
 import pytest
 
 from agents import orchestrator
 from agents.orchestrator import FredMCPRequiredError
 from tests.runner import Watchdog
+from tests.runner import format_fatal_exception
 from tests.runner import format_stream_error
 from tests.runner import format_update_summary
+from tests.runner import has_uninformative_tool_args
 from tests.runner import is_approval_interrupt_update
 from tests.runner import is_incomplete_streaming_tool_call
 from tests.runner import is_setup_error
@@ -19,6 +22,12 @@ class FakeInterrupt:
 
     def __repr__(self):
         return f"FakeInterrupt(value={self.value!r})"
+
+
+class FakeMessage:
+    def __init__(self, content="", tool_calls=None):
+        self.content = content
+        self.tool_calls = tool_calls or []
 
 
 def test_watchdog_stops_on_repeated_identical_tool_call():
@@ -34,6 +43,67 @@ def test_watchdog_stops_on_repeated_identical_tool_call():
         assert watchdog.observe_tool_call("fred_get_series", {"series_id": "GDP"}, i) is None
 
     reason = watchdog.observe_tool_call("fred_get_series", {"series_id": "GDP"}, 9.0)
+
+    assert reason is not None
+    assert "identical tool call repeated" in reason
+
+
+def test_watchdog_does_not_treat_empty_required_tool_args_as_identical():
+    watchdog = Watchdog(
+        max_runtime_seconds=900,
+        max_tool_calls=120,
+        max_identical_tool_calls=2,
+        max_fred_search_calls=40,
+        max_model_messages=80,
+    )
+
+    for i in range(10):
+        assert watchdog.observe_tool_call("execute", {}, i) is None
+        assert watchdog.observe_tool_call("read_file", {}, i) is None
+        assert watchdog.observe_tool_call("write_file", {}, i) is None
+        assert watchdog.observe_tool_call("edit_file", {}, i) is None
+        assert watchdog.observe_tool_call("fred_get_series", {}, i) is None
+        assert watchdog.observe_tool_call("bls_get_series", {}, i) is None
+
+    assert watchdog.tool_calls == 60
+    assert watchdog.identical_tool_calls["execute:{}"] == 0
+    assert watchdog.identical_tool_calls["read_file:{}"] == 0
+    assert watchdog.identical_tool_calls["write_file:{}"] == 0
+    assert watchdog.identical_tool_calls["edit_file:{}"] == 0
+    assert watchdog.identical_tool_calls["fred_get_series:{}"] == 0
+    assert watchdog.identical_tool_calls["bls_get_series:{}"] == 0
+
+
+def test_watchdog_still_flags_repeated_execute_when_args_are_visible():
+    watchdog = Watchdog(
+        max_runtime_seconds=900,
+        max_tool_calls=120,
+        max_identical_tool_calls=2,
+        max_fred_search_calls=40,
+        max_model_messages=80,
+    )
+
+    assert watchdog.observe_tool_call("execute", {"cmd": "pytest"}, 1.0) is None
+    assert watchdog.observe_tool_call("execute", {"cmd": "pytest"}, 2.0) is None
+    reason = watchdog.observe_tool_call("execute", {"cmd": "pytest"}, 3.0)
+
+    assert reason is not None
+    assert "identical tool call repeated" in reason
+
+
+def test_watchdog_still_flags_repeated_read_file_when_args_are_visible():
+    watchdog = Watchdog(
+        max_runtime_seconds=900,
+        max_tool_calls=120,
+        max_identical_tool_calls=2,
+        max_fred_search_calls=40,
+        max_model_messages=80,
+    )
+
+    args = {"file_path": "/tmp/analysis.py", "offset": 1}
+    assert watchdog.observe_tool_call("read_file", args, 1.0) is None
+    assert watchdog.observe_tool_call("read_file", args, 2.0) is None
+    reason = watchdog.observe_tool_call("read_file", args, 3.0)
 
     assert reason is not None
     assert "identical tool call repeated" in reason
@@ -62,6 +132,19 @@ def test_incomplete_streaming_tool_call_detection():
     assert is_incomplete_streaming_tool_call(None, None) is True
     assert is_incomplete_streaming_tool_call("fred_get_series", {}) is False
     assert is_incomplete_streaming_tool_call("", {"series_id": "GDP"}) is False
+
+
+def test_uninformative_tool_args_detection_matches_empty_required_arg_tools():
+    assert has_uninformative_tool_args("execute", {}) is True
+    assert has_uninformative_tool_args("execute", None) is True
+    assert has_uninformative_tool_args("execute", {"cmd": "pytest"}) is False
+    assert has_uninformative_tool_args("read_file", {}) is True
+    assert has_uninformative_tool_args("read_file", {"file_path": "/tmp/a.py"}) is False
+    assert has_uninformative_tool_args("write_file", {}) is True
+    assert has_uninformative_tool_args("edit_file", {}) is True
+    assert has_uninformative_tool_args("fred_get_series", {}) is True
+    assert has_uninformative_tool_args("fred_get_series", {"series_id": "GDP"}) is False
+    assert has_uninformative_tool_args("bls_get_series", {}) is True
 
 
 def test_watchdog_stops_on_fred_search_budget():
@@ -139,6 +222,39 @@ def test_runner_marks_setup_stream_errors_as_setup_failed(monkeypatch, tmp_path)
     assert "SETUP_FAILED" in log_text
     assert "STOPPED_EARLY" not in log_text
     assert "STOP_REASON: fred_mcp_required: FRED MCP probe failed" in log_text
+
+
+def test_runner_logs_traceback_for_empty_message_fatal_exception(monkeypatch, tmp_path):
+    async def fake_stream_research(**_kwargs):
+        raise AssertionError()
+        yield  # pragma: no cover
+
+    monkeypatch.setattr("tests.runner.stream_research", fake_stream_research)
+    monkeypatch.setenv("OUTPUT_DIR", str(tmp_path))
+
+    watchdog = Watchdog(
+        max_runtime_seconds=900,
+        max_tool_calls=60,
+        max_identical_tool_calls=2,
+        max_fred_search_calls=10,
+        max_model_messages=80,
+    )
+
+    asyncio.run(run_research_loop("query", "job-test", watchdog))
+
+    log_text = (tmp_path / "job-test" / "agent_execution.log").read_text()
+    assert "FATAL ERROR" in log_text
+    assert "ERROR: AssertionError: AssertionError()" in log_text
+    assert "TRACEBACK:" in log_text
+    assert "raise AssertionError()" in log_text
+    assert "STOP_REASON: ERROR: AssertionError: AssertionError()" in log_text
+
+
+def test_format_fatal_exception_uses_exception_type_for_empty_message():
+    reason, traceback_text = format_fatal_exception(AssertionError())
+
+    assert reason == "ERROR: AssertionError: AssertionError()"
+    assert "AssertionError" in traceback_text
 
 
 def test_format_stream_error_includes_setup_metadata():
@@ -266,6 +382,42 @@ def test_runner_forces_execution_after_incomplete_intake(monkeypatch, tmp_path):
     assert "COMPLETED" in log_text
 
 
+def test_runner_counts_streamed_text_chunks_as_one_message(monkeypatch, tmp_path):
+    async def fake_stream_research(**_kwargs):
+        yield {
+            "type": "messages",
+            "data": (FakeMessage("Hel"), {"langgraph_node": "model"}),
+        }
+        yield {
+            "type": "messages",
+            "data": (FakeMessage("lo"), {"langgraph_node": "model"}),
+        }
+        yield {
+            "type": "updates",
+            "data": {"execute": {"messages": []}},
+        }
+
+    monkeypatch.setattr("tests.runner.stream_research", fake_stream_research)
+    monkeypatch.setenv("OUTPUT_DIR", str(tmp_path))
+
+    watchdog = Watchdog(
+        max_runtime_seconds=900,
+        max_tool_calls=60,
+        max_identical_tool_calls=2,
+        max_fred_search_calls=10,
+        max_model_messages=1,
+    )
+
+    asyncio.run(run_research_loop("query", "job-test", watchdog))
+
+    log_text = (tmp_path / "job-test" / "agent_execution.log").read_text()
+    assert "[MESSAGE" in log_text
+    assert "Hello" in log_text
+    assert "model message budget exceeded" not in log_text
+    assert watchdog.model_messages == 1
+    assert "COMPLETED" in log_text
+
+
 @pytest.mark.asyncio
 async def test_stream_research_yields_fred_setup_error(monkeypatch):
     async def raise_fred_error(**_kwargs):
@@ -313,3 +465,46 @@ async def test_stream_research_fred_fetch_failure_hint_is_network_specific(monke
     assert events[0]["error"]["agent_recoverable"] is False
     assert "outbound FRED API request failed" in events[0]["error"]["hint"]
     assert "do not re-enable FMP" in events[0]["error"]["hint"]
+
+
+@pytest.mark.asyncio
+async def test_stream_research_retries_transient_provider_read_error(monkeypatch):
+    class FlakyAgent:
+        def __init__(self):
+            self.inputs = []
+
+        async def astream(self, graph_input, **_kwargs):
+            self.inputs.append(graph_input)
+            if len(self.inputs) == 1:
+                raise httpx.ReadError("")
+            yield {"type": "updates", "data": {"execute": {"phase": "executing"}}}
+
+    agent = FlakyAgent()
+
+    async def fake_resolve_graph_input(*_args, **_kwargs):
+        return {"messages": [{"role": "user", "content": "query"}]}
+
+    monkeypatch.setattr(
+        orchestrator,
+        "resolve_graph_input",
+        fake_resolve_graph_input,
+    )
+
+    async def no_sleep(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", no_sleep)
+
+    events = [
+        event
+        async for event in orchestrator.stream_research(
+            query="query",
+            job_id="job-test",
+            agent=agent,
+        )
+    ]
+
+    assert events == [{"type": "updates", "data": {"execute": {"phase": "executing"}}}]
+    assert len(agent.inputs) == 2
+    assert agent.inputs[0] == {"messages": [{"role": "user", "content": "query"}]}
+    assert agent.inputs[1] is None

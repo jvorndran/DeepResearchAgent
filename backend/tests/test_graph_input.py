@@ -44,7 +44,39 @@ async def test_commence_on_existing_thread_preserves_checkpointed_messages():
         [APPROVAL_MESSAGE],
     )
 
-    assert result == {"messages": [], "phase": "executing"}
+    assert result["phase"] == "executing"
+    assert len(result["messages"]) == 1
+    assert "Research is approved" in result["messages"][0]["content"]
+    assert "Analyze GDP vs unemployment" in result["messages"][0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_commence_on_existing_thread_overrides_pending_clarification_wait():
+    result = await resolve_graph_input(
+        FakeAgent(
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        "Job ID: improver-1\n\nResearch Query: Compare current "
+                        "cycle analogs and include Apple and Microsoft."
+                    ),
+                },
+                {
+                    "role": "assistant",
+                    "content": "Let's wait for the user's answers.",
+                },
+            ]
+        ),
+        {"configurable": {"thread_id": "job_1"}},
+        [APPROVAL_MESSAGE],
+    )
+
+    kickoff = result["messages"][0]["content"]
+    assert result["phase"] == "executing"
+    assert "Ignore earlier intake clarification prompts" in kickoff
+    assert "do not wait for more answers" in kickoff
+    assert "Compare current cycle analogs" in kickoff
 
 
 @pytest.mark.asyncio

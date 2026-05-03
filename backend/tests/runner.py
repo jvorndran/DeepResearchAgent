@@ -18,6 +18,7 @@ import os
 import sys
 import uuid
 import time
+import traceback
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -53,6 +54,43 @@ def format_log_entry(label: str, node: str, text: str, elapsed: float) -> str:
     return f"[{elapsed:5.1f}s] [{label:<12}] [{node:<15}] {text}\n"
 
 
+@dataclass
+class PendingModelMessage:
+    """Aggregate streamed text chunks into one logical model message."""
+
+    node: str | None = None
+    chunks: list[str] = field(default_factory=list)
+
+    def add(self, node: str, text: str) -> None:
+        self.node = node
+        self.chunks.append(text)
+
+    def flush(self, lf: Any, elapsed: float, watchdog: "Watchdog") -> str | None:
+        if not self.chunks:
+            return None
+        node = self.node or "model"
+        text = "".join(self.chunks)
+        self.node = None
+        self.chunks.clear()
+        if not text.strip():
+            return None
+
+        entry = format_log_entry("MESSAGE", node, _truncate(text), elapsed)
+        lf.write(entry)
+        print(entry.strip())
+        stop_reason = watchdog.observe_model_message(elapsed)
+        if stop_reason:
+            entry = format_log_entry(
+                "WATCHDOG",
+                "system",
+                f"Stopping early: {stop_reason}",
+                elapsed,
+            )
+            lf.write(entry)
+            print(entry.strip())
+        return stop_reason
+
+
 APPROVAL_MESSAGES = [
     {
         "role": "user",
@@ -66,6 +104,16 @@ def format_update_summary(update: Any) -> str:
     if isinstance(update, dict):
         return f"Keys: {list(update.keys())}"
     return f"{type(update).__name__}: {_truncate(update)}"
+
+
+def extract_message_text(content: Any) -> str:
+    if isinstance(content, list):
+        return "".join(
+            str(p.get("text", ""))
+            for p in content
+            if isinstance(p, dict) and p.get("type") == "text"
+        )
+    return str(content)
 
 
 def is_approval_interrupt_update(data: Any) -> bool:
@@ -97,6 +145,17 @@ def format_stream_error(error: dict[str, Any]) -> str:
     return f"{error_type}: {error_message}{suffix}"
 
 
+def format_fatal_exception(exc: BaseException) -> tuple[str, str]:
+    """Return a compact stop reason plus traceback for runner-level failures."""
+    exc_type = type(exc).__name__
+    exc_text = str(exc).strip()
+    if exc_text:
+        reason = f"ERROR: {exc_type}: {exc_text}"
+    else:
+        reason = f"ERROR: {exc_type}: {exc!r}"
+    return reason, "".join(traceback.format_exception(exc))
+
+
 def is_setup_error(error: dict[str, Any] | None) -> bool:
     return isinstance(error, dict) and error.get("phase") == "setup"
 
@@ -110,6 +169,34 @@ def is_incomplete_streaming_tool_call(name: Any, args: Any) -> bool:
     stops.
     """
     return not name and (args is None or args == {})
+
+
+EMPTY_ARG_REQUIRED_TOOLS = frozenset(
+    {
+        "bls_get_series",
+        "bls_search_known_series",
+        "census_get_table",
+        "edit_file",
+        "execute",
+        "fred_get_series",
+        "read_file",
+        "sec_get_company_facts",
+        "write_file",
+        "worldbank_get_indicator",
+    }
+)
+
+
+def has_uninformative_tool_args(name: str, args: Any) -> bool:
+    """Return True when logged args cannot distinguish repeated calls.
+
+    Some streamed tool-call events arrive with empty args even when the
+    executed command or provider request differs. The total tool-call budget
+    still catches loops, but the identical-call watchdog should not treat
+    required-argument data calls like ``fred_get_series({})`` as the same
+    request repeated when the stream omitted the actual arguments.
+    """
+    return name in EMPTY_ARG_REQUIRED_TOOLS and (args is None or args == {})
 
 
 @dataclass
@@ -138,7 +225,8 @@ class Watchdog:
             normalized_args = str(args)
 
         signature = f"{name}:{normalized_args}"
-        self.identical_tool_calls[signature] += 1
+        if not has_uninformative_tool_args(name, args):
+            self.identical_tool_calls[signature] += 1
 
         if elapsed > self.max_runtime_seconds:
             return f"runtime exceeded {self.max_runtime_seconds:.0f}s"
@@ -195,6 +283,7 @@ async def run_research_loop(
         approval_requested = False
         execution_seen = False
         force_execute_sent = False
+        pending_message = PendingModelMessage()
         
         try:
             stream_messages = None
@@ -211,6 +300,9 @@ async def run_research_loop(
 
                     if isinstance(event, dict) and "error" in event:
                         error = event["error"] or {}
+                        stop_reason = pending_message.flush(lf, elapsed, watchdog)
+                        if stop_reason:
+                            break
                         setup_failed = is_setup_error(error)
                         stop_reason = format_stream_error(error)
                         entry = format_log_entry("ERROR", "system", stop_reason, elapsed)
@@ -224,10 +316,37 @@ async def run_research_loop(
                         if chunk_type == "messages":
                             msg, meta = event["data"]
                             node = meta.get("langgraph_node", "model")
+
+                            if type(msg).__name__ == "ToolMessage":
+                                stop_reason = pending_message.flush(
+                                    lf,
+                                    elapsed,
+                                    watchdog,
+                                )
+                                if stop_reason:
+                                    break
+                                content = getattr(msg, "content", "")
+                                tool_name = getattr(msg, "name", "?")
+                                entry = format_log_entry(
+                                    "TOOL RESULT",
+                                    "tool_result",
+                                    f"{tool_name} -> {_truncate(str(content))}",
+                                    elapsed,
+                                )
+                                lf.write(entry)
+                                print(entry.strip())
+                                continue
                             
                             # Handle tool calls
                             tool_calls = getattr(msg, "tool_calls", [])
                             if tool_calls:
+                                stop_reason = pending_message.flush(
+                                    lf,
+                                    elapsed,
+                                    watchdog,
+                                )
+                                if stop_reason:
+                                    break
                                 for tc in tool_calls:
                                     tc_name = tc.get("name", "?")
                                     tc_args = tc.get("args", {})
@@ -262,27 +381,22 @@ async def run_research_loop(
                             # Handle content
                             content = getattr(msg, "content", "")
                             if content and not tool_calls:
-                                if isinstance(content, list):
-                                    text = " ".join(p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text")
-                                else:
-                                    text = str(content)
+                                text = extract_message_text(content)
                                 if text.strip():
-                                    entry = format_log_entry("MESSAGE", node, _truncate(text), elapsed)
-                                    lf.write(entry)
-                                    print(entry.strip())
-                                    stop_reason = watchdog.observe_model_message(elapsed)
-                                    if stop_reason:
-                                        entry = format_log_entry(
-                                            "WATCHDOG",
-                                            "system",
-                                            f"Stopping early: {stop_reason}",
+                                    if pending_message.chunks and pending_message.node != node:
+                                        stop_reason = pending_message.flush(
+                                            lf,
                                             elapsed,
+                                            watchdog,
                                         )
-                                        lf.write(entry)
-                                        print(entry.strip())
-                                        break
+                                        if stop_reason:
+                                            break
+                                    pending_message.add(node, text)
 
                         elif chunk_type == "updates":
+                            stop_reason = pending_message.flush(lf, elapsed, watchdog)
+                            if stop_reason:
+                                break
                             # Log state updates briefly.
                             data = event["data"]
                             if is_approval_interrupt_update(data):
@@ -300,21 +414,14 @@ async def run_research_loop(
                                     lf.write(entry)
                                     # (Optional) don't print updates to console to keep it cleaner
                     
-                    # Handle ToolMessage (results)
-                    # Note: stream_research handles ToolMessage differently in messages chunks, 
-                    # but if we get them in updates we handle them here.
-                    # In LangGraph v2, tool results often come back in 'messages' chunks as ToolMessage.
-                    if isinstance(event, dict) and event.get("type") == "messages":
-                        msg, _ = event["data"]
-                        if type(msg).__name__ == "ToolMessage":
-                            node = "tool_result"
-                            content = getattr(msg, "content", "")
-                            tool_name = getattr(msg, "name", "?")
-                            entry = format_log_entry("TOOL RESULT", node, f"{tool_name} -> {_truncate(str(content))}", elapsed)
-                            lf.write(entry)
-                            print(entry.strip())
-
                 if stop_reason or setup_failed:
+                    break
+                stop_reason = pending_message.flush(
+                    lf,
+                    time.monotonic() - start_time,
+                    watchdog,
+                )
+                if stop_reason:
                     break
                 if approval_requested:
                     elapsed = time.monotonic() - start_time
@@ -346,8 +453,10 @@ async def run_research_loop(
 
         except Exception as e:
             elapsed = time.monotonic() - start_time
-            error_msg = f"ERROR: {str(e)}"
+            error_msg, traceback_text = format_fatal_exception(e)
             lf.write(format_log_entry("FATAL ERROR", "system", error_msg, elapsed))
+            lf.write("TRACEBACK:\n")
+            lf.write(traceback_text)
             print(f"[{elapsed:5.1f}s] [FATAL ERROR] {error_msg}")
             stop_reason = error_msg
         

@@ -19,10 +19,12 @@ class FakeFredGetSeriesTool:
     def __init__(self, failures: dict[str, Exception]):
         self.failures = failures
         self.calls: list[str] = []
+        self.payloads: list[dict] = []
 
     async def ainvoke(self, payload):
         series_id = payload["series_id"]
         self.calls.append(series_id)
+        self.payloads.append(payload)
         if series_id in self.failures:
             raise self.failures[series_id]
         return {"series_id": series_id, "data": [{"date": "2024-01-01", "value": "1"}]}
@@ -119,9 +121,16 @@ def test_data_engineer_runnable_uses_only_data_tools(monkeypatch):
     assert [getattr(tool, "name", None) for tool in captured["tools"]] == [
         "save_data",
         "extract_schema",
+        "bls_search_known_series",
+        "bls_get_series",
+        "census_get_table",
+        "worldbank_get_indicator",
+        "sec_fetch_company_facts",
         "fred_get_series",
     ]
     assert "Filesystem and shell tools are blocked" in captured["system_prompt"]
+    assert "Census public data" in captured["system_prompt"]
+    assert "World Bank annual indicators" in captured["system_prompt"]
 
 
 @pytest.mark.asyncio
@@ -131,6 +140,10 @@ async def test_fred_health_probe_tries_fallback_series_after_gdp_failure():
     await _probe_required_fred_tool(tool)
 
     assert tool.calls == ["GDP", "UNRATE"]
+    assert tool.payloads == [
+        {"series_id": "GDP", "limit": 1, "sort_order": "desc"},
+        {"series_id": "UNRATE", "limit": 1, "sort_order": "desc"},
+    ]
 
 
 @pytest.mark.asyncio

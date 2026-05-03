@@ -13,17 +13,27 @@ from mcp import ClientSession
 
 from mcp_clients.fred_mcp_client import create_fred_mcp_client, load_fred_tools_with_session
 
+from ..tool_utils import tool_call_id, tool_call_name, tool_name
 from .mcp_wrappers import (
     _FRED_TIMEOUT,
     _run_mcp_request,
     _with_timeout,
 )
 from .prompts import build_system_prompt
-from .tools import extract_schema, save_data
+from .tools import (
+    bls_get_series,
+    bls_search_known_series,
+    census_get_table,
+    extract_schema,
+    save_data,
+    sec_fetch_company_facts,
+    worldbank_get_indicator,
+)
 
 logger = logging.getLogger(__name__)
 
 _FRED_PROBE_SERIES_IDS = ("GDP", "UNRATE")
+_FRED_PROBE_OBSERVATION_LIMIT = 1
 _BLOCKED_DEEP_AGENT_TOOL_NAMES = {
     "execute",
     "read_file",
@@ -41,34 +51,15 @@ class FredMCPRequiredError(RuntimeError):
 
 
 def _tool_name(tool: Any) -> str | None:
-    """Return a LangChain/OpenAI-style tool name without depending on one schema."""
-    if isinstance(tool, dict):
-        function = tool.get("function")
-        if isinstance(function, dict) and isinstance(function.get("name"), str):
-            return function["name"]
-        name = tool.get("name")
-        return name if isinstance(name, str) else None
-    name = getattr(tool, "name", None)
-    return name if isinstance(name, str) else None
+    return tool_name(tool)
 
 
 def _tool_call_name(tool_call: Any) -> str | None:
-    if isinstance(tool_call, dict):
-        name = tool_call.get("name")
-        return name if isinstance(name, str) else None
-    name = getattr(tool_call, "name", None)
-    return name if isinstance(name, str) else None
+    return tool_call_name(tool_call)
 
 
 def _tool_call_id(tool_call: Any) -> str:
-    if isinstance(tool_call, dict):
-        value = tool_call.get("id") or tool_call.get("tool_call_id")
-        return str(value or "data-engineer-blocked-tool")
-    return str(
-        getattr(tool_call, "id", None)
-        or getattr(tool_call, "tool_call_id", None)
-        or "data-engineer-blocked-tool"
-    )
+    return tool_call_id(tool_call, "data-engineer-blocked-tool")
 
 
 class DataEngineerToolBoundaryMiddleware(AgentMiddleware):
@@ -103,7 +94,9 @@ class DataEngineerToolBoundaryMiddleware(AgentMiddleware):
         return ToolMessage(
             content=(
                 f"Blocked tool `{tool_name}` for data-engineer. "
-                "Use only FRED MCP tools, save_data, and extract_schema. "
+                "Use only FRED MCP tools, BLS public data, Census public data, "
+                "World Bank annual indicators, SEC EDGAR company facts, save_data, "
+                "and extract_schema. "
                 "FRED auto-saved file_path values are already persisted; return those "
                 "paths directly instead of copying, reading, or rewriting CSV files."
             ),
@@ -141,7 +134,16 @@ def _build_data_engineer_runnable(fred_tools: list[Any]) -> RunnableLambda:
     agent = create_agent(
         "deepseek:deepseek-chat",
         system_prompt=build_system_prompt(),
-        tools=[save_data, extract_schema] + fred_tools,
+        tools=[
+            save_data,
+            extract_schema,
+            bls_search_known_series,
+            bls_get_series,
+            census_get_table,
+            worldbank_get_indicator,
+            sec_fetch_company_facts,
+        ]
+        + fred_tools,
         middleware=[_DATA_ENGINEER_TOOL_BOUNDARY_MIDDLEWARE],
         name="data-engineer",
     )
@@ -157,12 +159,17 @@ async def _probe_required_fred_tool(probe_tool) -> None:
     probe_errors: list[str] = []
     for series_id in _FRED_PROBE_SERIES_IDS:
         try:
+            probe_payload = {
+                "series_id": series_id,
+                "limit": _FRED_PROBE_OBSERVATION_LIMIT,
+                "sort_order": "desc",
+            }
             await _run_mcp_request(
                 provider="FRED",
                 operation=f"fred_get_series({series_id})",
                 timeout_secs=_FRED_TIMEOUT,
-                request_factory=lambda series_id=series_id: probe_tool.ainvoke(
-                    {"series_id": series_id}
+                request_factory=lambda probe_payload=probe_payload: probe_tool.ainvoke(
+                    probe_payload
                 ),
             )
             if series_id != _FRED_PROBE_SERIES_IDS[0]:
@@ -234,15 +241,19 @@ async def get_data_engineer_subagent(fred_session: ClientSession | None = None):
 
     fred_tools = [_with_timeout(t, _FRED_TIMEOUT, "FRED") for t in fred_tools]
 
-    description = """Use this subagent to fetch macroeconomic data from FRED, or extract schemas from saved data files.
+    description = """Use this subagent to fetch macroeconomic data from FRED/BLS, World Bank annual indicators, Census regional context, SEC company fundamentals, or extract schemas from saved data files.
 
     Delegate when you need to:
     - Fetch macroeconomic series from FRED (GDP, CPI, interest rates, employment, etc.)
+    - Fetch direct BLS public labor, wage, CPI/PPI, employment, or productivity series for source reconciliation
+    - Fetch World Bank annual inflation or GDP-growth indicators for USA/CAN/DEU/JPN/MEX cross-country context
+    - Fetch Census state/county population, income, or housing context
+    - Fetch public-company SEC EDGAR facts (revenue, net income, margin, cash-flow, balance-sheet, shares, filing metadata) for a ticker or CIK
     - Save fetched data to storage
     - Extract exact schemas (column names, dtypes, sample rows) from data files
 
     Note: FMP tools are intentionally disabled until a paid FMP plan is available. This agent
-    returns only storage paths and compact metadata, never raw data."""
+    returns only storage paths or compact no-key FRED/BLS/World Bank/Census/SEC metadata, never bulky raw data."""
 
     return {
         "name": "data-engineer",
@@ -250,6 +261,7 @@ async def get_data_engineer_subagent(fred_session: ClientSession | None = None):
         # Use a compiled agent instead of a declarative Deep Agents subagent.
         # Declarative subagents inherit Deep Agents filesystem/shell tooling by
         # default; data-engineer must be limited to FRED, save_data, and schema
-        # extraction so it cannot drift into setup or CSV rewrite shell calls.
+        # extraction/public-data helpers so it cannot drift into setup or CSV
+        # rewrite shell calls.
         "runnable": _build_data_engineer_runnable(fred_tools),
     }

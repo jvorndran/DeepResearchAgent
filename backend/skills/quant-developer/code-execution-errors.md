@@ -8,7 +8,7 @@ triggers: [error, fix, retry, pandas, KeyError, FileNotFoundError]
 
 ## Pandas Resampling
 - **Error:** `ValueError: Invalid frequency`
-- **Fix:** Use `'QE'` for quarterly, `'ME'` for monthly. **NEVER** `'Q'` or `'M'`.
+- **Fix:** For `.resample(...)`, use `'QE'` for quarterly and `'ME'` for monthly. For `.dt.to_period(...)` or `pd.Period(...)`, use `'Q'` and `'M'`; pandas Period conversion rejects `'QE'` and `'ME'`.
 
 ## File Paths
 - **Error:** `FileNotFoundError`
@@ -29,6 +29,10 @@ triggers: [error, fix, retry, pandas, KeyError, FileNotFoundError]
 - **Fix:** Do not merge month-end resample dates directly with month-start FRED dates, or quarter-end resample timestamps directly with quarter-start GDP dates. Aggregate higher-frequency data to the target frequency, create a shared period key such as `date.dt.to_period("M")` or `date.dt.to_period("Q")`, merge on that period key, then derive one consistent chart date from the period.
 - **Error:** `TypeError: type NaTType doesn't define __round__ method` or chart JSON contains `NaN`/`NaT`.
 - **Fix:** Only round/serialize values after `pd.notna(...)`; emit `None` for missing chart values. Drop nulls for scatter and period-stat rows that require both x and y values.
+- **Error:** `ValueError: The truth value of a Series is ambiguous` after `resample(...).mean().iterrows()` or chart rows contain pandas Series objects.
+- **Fix:** Select the metric column before resampling and iterate the resulting Series with `.items()`, e.g. `quarterly = df["metric"].resample("QE").mean()` then `for dt, value in quarterly.items()`. Do not use `pd.notna(row)` on `iterrows()` output from a one-column DataFrame.
+- **Error:** `AttributeError` from typo variants such as `.fillname(...)`.
+- **Fix:** Use pandas `.fillna(...)` for mapped optional display fields like colors or labels.
 - **Error:** `KeyError` for a derived column such as `*_growth_*`, `*_forward_*`, `tight`, `period`, or a regime flag after filtering a dataframe.
 - **Fix:** Check which dataframe owns the column. Derived columns must be created before making filtered `.copy()` subsets that reference them; otherwise rebuild the subset after adding the column, or explicitly assign the derived column onto the subset.
 - **Anti-loop:** Do not keep moving unrelated code after the same missing-column traceback. Read the traceback, inspect the line that references the missing column, and patch the dataframe construction order once.

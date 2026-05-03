@@ -22,9 +22,36 @@ def test_execution_prompt_forbids_startup_prose_and_filesystem_inspection():
     assert "backend/data/_auto/" in EXECUTION_SYSTEM_PROMPT
     assert "DATA → QUANT HANDOFF" in EXECUTION_SYSTEM_PROMPT
     assert "compact JSON `data_files` map" in EXECUTION_SYSTEM_PROMPT
+    assert "paste that `data_files` JSON object into `analysis.py` as a dictionary" in EXECUTION_SYSTEM_PROMPT
+    assert "not by retyping long auto-saved filenames" in EXECUTION_SYSTEM_PROMPT
     assert "not call `glob`, `ls`, or `read_file`" in EXECUTION_SYSTEM_PROMPT
+    assert "six-month unemployment forecasts" in EXECUTION_SYSTEM_PROMPT
+    assert "call `direct_ols_forecast(...)` from `agents.quant_macro_stats`" in EXECUTION_SYSTEM_PROMPT
+    assert "do not import `statsmodels` directly or hand-roll OLS" in EXECUTION_SYSTEM_PROMPT
     assert "REAL WAGE SOURCE FIDELITY" in EXECUTION_SYSTEM_PROMPT
     assert "Never let a nominal average-hourly-earnings series stand in" in EXECUTION_SYSTEM_PROMPT
+    assert "QA REJECTION HANDOFF" in EXECUTION_SYSTEM_PROMPT
+    assert "do not re-run QA and do not inspect artifacts yourself" in EXECUTION_SYSTEM_PROMPT
+    assert "Do not use `general-purpose` to read `execution_summary.json`" in EXECUTION_SYSTEM_PROMPT
+    assert "Treat \"data fidelity failures\"" in EXECUTION_SYSTEM_PROMPT
+    assert "The writer already has tools that load the execution summary safely" in EXECUTION_SYSTEM_PROMPT
+    assert "sign/direction wording" in EXECUTION_SYSTEM_PROMPT
+    assert "report-vs-execution_summary contradiction fixes to `technical-writer`" in EXECUTION_SYSTEM_PROMPT
+    assert "only when QA explicitly says computed artifacts are missing" in EXECUTION_SYSTEM_PROMPT
+    assert "send the first recovery pass to `technical-writer`" in EXECUTION_SYSTEM_PROMPT
+    assert "Do not ask `quant-developer` to patch narrative wording" in EXECUTION_SYSTEM_PROMPT
+    assert "passing the exact `reason` and `required_fixes`" in EXECUTION_SYSTEM_PROMPT
+    assert "REGIONAL CONSUMER-STRESS BUDGET" in EXECUTION_SYSTEM_PROMPT
+    assert "exactly one batched `census_get_table` state table" in EXECUTION_SYSTEM_PROMPT
+    assert "small national FRED macro set (at most 6 series" in EXECUTION_SYSTEM_PROMPT
+    assert "forbid broad state-level FRED sweeps" in EXECUTION_SYSTEM_PROMPT
+    assert "RECESSION WINDOW SOURCE" in EXECUTION_SYSTEM_PROMPT
+    assert "FRED `USREC`" in EXECUTION_SYSTEM_PROMPT
+    assert "quant-developer must not fetch recession dates itself" in EXECUTION_SYSTEM_PROMPT
+    assert "FEATURE-AWARE DATA ROUTING" in EXECUTION_SYSTEM_PROMPT
+    assert "World Bank `worldbank_get_indicator`" in EXECUTION_SYSTEM_PROMPT
+    assert "SEC EDGAR `sec_fetch_company_facts` for AAPL and MSFT" in EXECUTION_SYSTEM_PROMPT
+    assert "not to replace it with broad guessed FRED sweeps" in EXECUTION_SYSTEM_PROMPT
     assert "skills/orchestrator" not in EXECUTION_SYSTEM_PROMPT
     for tool_name in ("ls", "glob", "grep", "read_file", "execute", "write_todos"):
         assert f"`{tool_name}`" in EXECUTION_SYSTEM_PROMPT
@@ -75,6 +102,40 @@ def test_complete_intake_approval_message_is_frontend_visible():
     assert messages[-1].content == "Message recorded for the chat UI."
     assert messages[0].tool_calls[0]["name"] == "emit_chat_message"
     assert "Commence Deep Research" in messages[0].tool_calls[0]["args"]["markdown"]
+
+
+def test_execution_kickoff_message_forces_first_delegate_after_approval():
+    message = orchestrator._build_execution_kickoff_message(
+        {"research_summary": "Build a recession-risk indicator."}
+    )
+
+    assert "Research is approved" in message.content
+    assert "make exactly two tool calls" in message.content
+    assert "`emit_chat_message`" in message.content
+    assert "`task`" in message.content
+    assert 'subagent_type="data-engineer"' in message.content
+    assert "Build a recession-risk indicator." in message.content
+
+
+def test_execution_kickoff_preserves_full_user_request_for_writer_original_query():
+    full_query = (
+        "Assess whether the US economy is entering recession. Include base, "
+        "upside, and downside scenarios with a clear regime classification."
+    )
+    message = orchestrator._build_execution_kickoff_message(
+        {
+            "research_summary": "Assess whether the US economy is entering recession.",
+            "messages": [
+                orchestrator.HumanMessage(
+                    content=f"Job ID: job-1\n\nResearch Query: {full_query}"
+                )
+            ],
+        }
+    )
+
+    assert "Full approved user request for `original_query`" in message.content
+    assert full_query in message.content
+    assert "base, upside, and downside scenarios" in message.content
 
 
 def test_incomplete_intake_routes_to_intake_chat():

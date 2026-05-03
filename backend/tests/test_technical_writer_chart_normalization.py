@@ -248,6 +248,124 @@ def test_normalizes_pascal_case_recharts_axis_shape_for_report_schema():
     )
 
 
+def test_normalizes_legacy_composite_chart_type_to_composed_for_report_schema():
+    charts = {
+        "yield_curve_fed_funds": {
+            "id": "yield_curve_fed_funds",
+            "title": "Yield Curve Spread (10Y-2Y) & Fed Funds Rate",
+            "description": "10-year minus 2-year Treasury spread versus fed funds.",
+            "chart_type": "Composite",
+            "data": [
+                {"date": "2026-02-28", "t10y2y": 0.42, "fedfunds": 4.33},
+                {"date": "2026-03-31", "t10y2y": 0.51, "fedfunds": 3.64},
+            ],
+            "xAxis": {"dataKey": "date"},
+            "series": [
+                {
+                    "dataKey": "t10y2y",
+                    "label": "10Y-2Y Spread",
+                    "color": "#f59e0b",
+                    "yAxisId": "left",
+                },
+                {
+                    "dataKey": "fedfunds",
+                    "label": "Fed Funds Rate",
+                    "color": "#ef4444",
+                    "yAxisId": "right",
+                },
+            ],
+        }
+    }
+
+    normalized = _normalize_chart_definitions(charts)
+    chart = normalized["yield_curve_fed_funds"]
+
+    assert chart["type"] == "composed"
+    assert chart["xAxisKey"] == "date"
+
+    ResearchReport(
+        schema_version=1,
+        job_id="job-test",
+        created_at="2026-04-28T00:00:00+00:00",
+        query="Build a recession risk dashboard.",
+        title="Recession Risk Dashboard",
+        executive_summary="Recession risk indicators were compared.",
+        markdown=(
+            "## Executive Summary\nSummary.\n\n"
+            "<!-- CHART:yield_curve_fed_funds -->\n\n"
+            "## Research Query\nQuery."
+        ),
+        charts=normalized,
+        data_sources=[],
+        metadata={"analysis_type": "macro_indicator", "chart_count": 1, "word_count": 8},
+    )
+
+
+def test_normalizes_quant_multiline_and_linewithzones_chart_types_for_report_schema():
+    charts = {
+        "chart1": {
+            "chart_id": "chart1",
+            "chart_type": "MultiLine",
+            "title": "Macro Stress Indicators",
+            "description": "Normalized consumer stress indicators over time.",
+            "data": [
+                {
+                    "date": "2026-01",
+                    "unemployment_norm": 44.2,
+                    "sentiment_norm": 72.1,
+                }
+            ],
+        },
+        "chart2": {
+            "chart_id": "chart2",
+            "chart_type": "LineWithZones",
+            "title": "Consumer Stress Index",
+            "description": "Composite stress index with regime zones.",
+            "data": [{"date": "2026-01", "stress_index": 0.51}],
+            "series": [
+                {
+                    "dataKey": "stress_index",
+                    "label": "Stress Index",
+                    "color": "#ef4444",
+                }
+            ],
+            "referenceAreas": [
+                {"y1": 0.4, "y2": 1.0, "label": "High stress", "fill": "#fee2e2"}
+            ],
+        },
+    }
+
+    normalized = _normalize_chart_definitions(charts)
+
+    assert normalized["chart1"]["type"] == "line"
+    assert normalized["chart1"]["xAxisKey"] == "date"
+    assert [item["dataKey"] for item in normalized["chart1"]["series"]] == [
+        "unemployment_norm",
+        "sentiment_norm",
+    ]
+    assert normalized["chart2"]["type"] == "line"
+    assert normalized["chart2"]["xAxisKey"] == "date"
+    assert normalized["chart2"]["referenceAreas"][0]["label"] == "High stress"
+
+    ResearchReport(
+        schema_version=1,
+        job_id="job-test",
+        created_at="2026-04-28T00:00:00+00:00",
+        query="Are US consumers under stress regionally?",
+        title="Regional Consumer Stress",
+        executive_summary="Consumer stress indicators were compared.",
+        markdown=(
+            "## Executive Summary\nSummary.\n\n"
+            "<!-- CHART:chart1 -->\n"
+            "<!-- CHART:chart2 -->\n\n"
+            "## Research Query\nQuery."
+        ),
+        charts=normalized,
+        data_sources=[],
+        metadata={"analysis_type": "macro_indicator", "chart_count": 2, "word_count": 8},
+    )
+
+
 def test_normalizes_recharts_children_axis_shape_for_report_schema():
     charts = {
         "yield_curve_inversions": {
@@ -369,6 +487,48 @@ def test_normalizes_unsupported_radar_chart_to_bar_for_report_schema():
         markdown=(
             "## Executive Summary\nSummary.\n\n"
             "<!-- CHART:period_comparison_radar -->\n\n"
+            "## Research Query\nQuery."
+        ),
+        charts=normalized,
+        data_sources=[],
+        metadata={"analysis_type": "macro_indicator", "chart_count": 1, "word_count": 8},
+    )
+
+
+def test_drops_table_artifacts_from_report_chart_definitions():
+    charts = {
+        "inflation_trend": {
+            "type": "line",
+            "title": "Inflation Trend",
+            "description": "Annual inflation by country.",
+            "xAxisKey": "year",
+            "series": [
+                {"dataKey": "usa", "label": "United States", "color": "#3b82f6"},
+            ],
+            "data": [{"year": "2024", "usa": 2.9}],
+        },
+        "avg_table": {
+            "type": "table",
+            "title": "Average Inflation and Growth",
+            "columns": ["country", "inflation", "growth"],
+            "data": [{"country": "United States", "inflation": 2.6, "growth": 2.4}],
+        },
+    }
+
+    normalized = _normalize_chart_definitions(charts)
+
+    assert list(normalized) == ["inflation_trend"]
+
+    ResearchReport(
+        schema_version=1,
+        job_id="job-test",
+        created_at="2026-04-28T00:00:00+00:00",
+        query="Compare annual inflation and growth.",
+        title="Inflation and Growth",
+        executive_summary="Annual inflation and growth were compared.",
+        markdown=(
+            "## Executive Summary\nSummary.\n\n"
+            "<!-- CHART:inflation_trend -->\n\n"
             "## Research Query\nQuery."
         ),
         charts=normalized,

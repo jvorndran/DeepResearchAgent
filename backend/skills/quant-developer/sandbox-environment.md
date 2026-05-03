@@ -26,10 +26,22 @@ All tools use standard absolute Linux paths. There is only one path format.
 
 ## Writing and Running analysis.py
 
-Keep `analysis.py` compact. Target fewer than 220 lines, use small helper functions,
-and avoid verbose repeated chart-building blocks. Before writing, mentally lint for
-syntax traps: no nested f-string dict literals, no chained ternaries with multiple
-`if` clauses, and no giant one-line `print(json.dumps(...))`.
+Keep `analysis.py` compact. Target fewer than 180 lines and stay below the
+hard 320-line / 28,000-character write limit. Use small helper functions and
+avoid verbose repeated chart-building blocks. Before writing, mentally lint for
+syntax traps: no nested f-string dict literals, no chained ternaries with
+multiple `if` clauses, and no giant one-line `print(json.dumps(...))`.
+
+For broad multi-source macro requests, the first draft should be
+FRED/helper-centered: load the FRED recession-risk, unemployment,
+consumer-stress, scenario, and regime inputs. When the user explicitly asks for
+international peer, regional consumer, BLS verification, or company earnings-risk
+comparisons and matching World Bank, Census, BLS, or SEC EDGAR CSVs are in the
+handoff, load those files only for compact `execution_summary` rows. Keep
+provider paths as `source_context_files` only when they are background context.
+Do not build verbose provider-specific parsing branches in the initial script,
+and do not leave explicitly requested provider sections as `not processed`
+placeholders when source CSVs are available.
 
 ```
 # Step 1 — write script:
@@ -79,11 +91,13 @@ Do not use shell line-inspection commands such as `head`, `tail`, `cat`,
 and use `pd.read_csv(..., usecols=["date", "value"])` inside the analysis
 script.
 
-Always align thresholds with the raw FRED units before scoring signals. If a
-series uses raw `Number` counts, such as IC4WSA initial claims around `210750`,
-compare a "300k" threshold as `300000` or convert both the series value and the
-threshold to thousands before comparing. Do not compare raw counts to abbreviated
-thresholds such as `> 300`.
+Always align thresholds and display labels with the raw FRED units before
+scoring signals. Initial-claims series such as `ICSA` and `IC4WSA` use raw
+`Number` counts, so a value like `210750` means about 210.8 thousand claims.
+Compare a "300k" threshold as `300000`, or create an explicit derived column
+such as `ICSA_thousands = ICSA / 1000` and compare to `300`. If a value is
+still raw counts, label it as `210,750` claims or divide first before using a
+`k` suffix; never emit labels such as `210750k`.
 
 When combining more than one FRED series, rename the generic `value` column
 before merging so pandas does not create ambiguous `value_x` / `value_y`
@@ -142,37 +156,24 @@ on="date")`, or broad `dropna()` alignment; those commonly create empty frames
 because month-start FRED observations do not match month-end resample
 timestamps.
 
-Before writing `charts.json` or `execution_summary.json`, sanitize nested chart
-objects so the JSON contains only plain Python strings, numbers, booleans,
-lists, dicts, and `None`:
+Use pandas frequency aliases according to the operation: `.resample("ME")` and
+`.resample("QE")` are valid for month-end and quarter-end resampling, but
+Period keys use `.dt.to_period("M")` and `.dt.to_period("Q")`. Do not pass
+`"ME"` or `"QE"` to `to_period(...)`.
+
+Before writing `charts.json` or `execution_summary.json`, prefer the shared
+artifact helper instead of hand-rolled serialization:
 
 ```python
-def clean_json(value):
-    if value is None or isinstance(value, (str, bool, int)):
-        return value
-    if isinstance(value, float):
-        return value if np.isfinite(value) else None
-    if isinstance(value, (np.integer,)):
-        return int(value)
-    if isinstance(value, (np.floating,)):
-        return float(value) if np.isfinite(value) else None
-    if isinstance(value, (pd.Timestamp, datetime.datetime, datetime.date)):
-        return value.isoformat()
-    if isinstance(value, pd.Period):
-        return str(value)
-    if isinstance(value, dict):
-        return {str(k): clean_json(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [clean_json(v) for v in value]
-    if pd.isna(value):
-        return None
-    return str(value)
+from agents.quant_macro_stats import save_quant_outputs
+
+handoff = save_quant_outputs(OUTPUT_DIR, charts, execution_summary)
+print(json.dumps(handoff))
 ```
 
-Use `json.dump(clean_json(charts), f, indent=2)` and the same pattern for
-`execution_summary.json`. This avoids repeated retries from `Timestamp`,
-`Period`, `NaN`, or numpy scalar serialization failures inside chart data,
-reference lines, reference areas, or summary metrics.
+This avoids repeated retries from `Timestamp`, `Period`, `NaN`, numpy scalar
+serialization failures, and stale `chart_ids` inside the final handoff. Never
+import `agents.quant_utils`; that module does not exist.
 
 **FMP financial statement data** (e.g. income statement):
 ```python

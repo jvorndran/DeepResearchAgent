@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+import json
 from typing import Any
 
 from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.prebuilt.tool_node import ToolCallRequest
 
+from ..tool_utils import message_tool_name, tool_call_id, tool_call_name, tool_name
 from .constants import TECHNICAL_WRITER_SKILLS_DIR
 from .tools import (
     plan_report_structure,
@@ -25,32 +27,73 @@ _ALLOWED_TOOL_NAMES = {
 
 
 def _tool_name(tool: Any) -> str | None:
-    if isinstance(tool, dict):
-        function = tool.get("function")
-        if isinstance(function, dict) and isinstance(function.get("name"), str):
-            return function["name"]
-        name = tool.get("name")
-        return name if isinstance(name, str) else None
-    name = getattr(tool, "name", None)
-    return name if isinstance(name, str) else None
+    return tool_name(tool)
 
 
 def _tool_call_name(tool_call: Any) -> str | None:
-    if isinstance(tool_call, dict):
-        name = tool_call.get("name")
-        return name if isinstance(name, str) else None
-    name = getattr(tool_call, "name", None)
-    return name if isinstance(name, str) else None
+    return tool_call_name(tool_call)
 
 
 def _tool_call_id(tool_call: Any) -> str:
-    if isinstance(tool_call, dict):
-        value = tool_call.get("id") or tool_call.get("tool_call_id")
-        return str(value or "technical-writer-blocked-tool")
-    return str(
-        getattr(tool_call, "id", None)
-        or getattr(tool_call, "tool_call_id", None)
-        or "technical-writer-blocked-tool"
+    return tool_call_id(tool_call, "technical-writer-blocked-tool")
+
+
+def _message_tool_name(message: Any) -> str | None:
+    return message_tool_name(message)
+
+
+def _message_content(message: Any) -> str:
+    content = getattr(message, "content", "")
+    return content if isinstance(content, str) else str(content or "")
+
+
+def _json_from_message(message: Any) -> dict[str, Any] | None:
+    content = _message_content(message).strip()
+    if not content:
+        return None
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _latest_writer_report_path(messages: list[Any]) -> str:
+    for message in reversed(messages):
+        if _message_tool_name(message) != "write_research_report":
+            continue
+        parsed = _json_from_message(message)
+        if isinstance(parsed, dict) and isinstance(parsed.get("report_path"), str):
+            return parsed["report_path"]
+    return ""
+
+
+def _latest_successful_validation(messages: list[Any]) -> dict[str, Any] | None:
+    for message in reversed(messages):
+        if _message_tool_name(message) != "validate_research_report_file":
+            continue
+        parsed = _json_from_message(message)
+        if isinstance(parsed, dict) and parsed.get("passes_gate") is True:
+            return parsed
+    return None
+
+
+def _success_handoff_content(messages: list[Any]) -> str:
+    validation = _latest_successful_validation(messages) or {}
+    report_path = _latest_writer_report_path(messages)
+    chart_ids = (
+        (validation.get("charts") or {}).get("defined_charts")
+        if isinstance(validation.get("charts"), dict)
+        else []
+    )
+    if not isinstance(chart_ids, list):
+        chart_ids = []
+    return json.dumps(
+        {
+            "status": "success",
+            "report_json": report_path,
+            "chart_ids": chart_ids,
+        }
     )
 
 
@@ -58,6 +101,8 @@ class TechnicalWriterToolBoundaryMiddleware(AgentMiddleware):
     """Expose only report-writing tools to prevent context-heavy file reads."""
 
     def _only_writer_tools(self, request: ModelRequest) -> ModelRequest:
+        if _latest_successful_validation(list(request.messages)):
+            return request.override(tools=[])
         tools = [tool for tool in request.tools if _tool_name(tool) in _ALLOWED_TOOL_NAMES]
         if len(tools) == len(request.tools):
             return request
@@ -68,6 +113,9 @@ class TechnicalWriterToolBoundaryMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse:
+        messages = list(request.messages)
+        if _latest_successful_validation(messages):
+            return ModelResponse(result=[AIMessage(content=_success_handoff_content(messages))])
         return handler(self._only_writer_tools(request))
 
     async def awrap_model_call(
@@ -75,6 +123,9 @@ class TechnicalWriterToolBoundaryMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
+        messages = list(request.messages)
+        if _latest_successful_validation(messages):
+            return ModelResponse(result=[AIMessage(content=_success_handoff_content(messages))])
         return await handler(self._only_writer_tools(request))
 
     def _blocked_tool_message(self, request: ToolCallRequest) -> ToolMessage:
@@ -148,8 +199,18 @@ You are the Technical Writer. You synthesize research reports from the `plan_rep
    READ this carefully and weave every specific number into the relevant analysis sections —
    exact slopes, r values, peak dates, deltas, p-values, etc. Do not paraphrase vaguely;
    cite the actual computed values in parentheticals (e.g., "slope of -0.05 pp/month", "r = -0.44, p < 0.001").
+   Treat the "Exact headline metrics from execution_summary.json" block as controlling facts:
+   copy current values, signs, directions, regime labels, explicitly supplied scenario probabilities,
+   and company growth rates exactly. Do not substitute older public-memory values or infer an
+   inversion/decline when the exact metric says the sign is positive. Scenario helper rows usually
+   provide confidence labels, not probabilities; do not invent probability weights, Fed-cut paths,
+   product mix estimates, or policy assumptions unless they appear in `execution_summary_for_draft`.
    - Do **not** write a disclaimer section: the pipeline appends a standard legal footer after save.
    - End the body with `## Research Query` (original question) near the bottom; do not duplicate system footer text.
+   - `data_sources` must cite only providers evidenced by the handoff or `execution_summary_for_draft`.
+     For the current public-source feature set, use exact provider names such as FRED, BLS Public Data,
+     Census Data API, World Bank Indicators API, and SEC EDGAR. Do not cite OECD, BIS, IMF, generic
+     "Company Filings", or paid/keyed providers unless the handoff explicitly says that provider was used.
 3. **Save:** Call `write_research_report` exactly once with this shape:
    - `markdown`
    - `charts_json_path`
@@ -167,6 +228,8 @@ You are the Technical Writer. You synthesize research reports from the `plan_rep
 - **No file recovery:** If `execution_summary_for_draft` looks truncated, continue with the compact fields returned by `plan_report_structure`. Do not call `read_file`, `ls`, `glob`, `grep`, `execute`, or `write_file` to recover more context.
 - **Echo fields:** After `plan_report_structure`, copy `charts_json_path` and `original_query` from that JSON into `write_research_report` unchanged.
 - **Inline Charts:** CRITICAL! Place `<!-- CHART:id -->` markers immediately after the referencing text. You MUST embed all provided `chart_ids`.
+- **No invented charts:** Use only IDs returned in `chart_ids`. If the query asks for more visuals than the quant output provides, cover the missing view with a markdown table or prose and state the data/artifact limitation; do not create chart markers for unavailable chart IDs.
+- **Scenario table format:** When `general_rules` requires `## Scenario Table`, render a markdown table with exactly these headers: `Scenario`, `Assumptions`, `Indicator Triggers`, `Confidence`, `Uncertainty Notes`. The first-column row keys must be lowercase `base`, `bull`, and `bear`; use semicolons or `<br>` inside cells for multiple items, not extra columns.
 - **Word Count:** Aim for 1000+ words of dense, analytical content in investment bank style.
 - **No fallback thrashing:** If `write_research_report` returns an argument error, call it again with the exact required fields above. Do not try `read_file` or `execute`.
 - **Stop condition:** After `validate_research_report_file` returns `passes_gate: true`, stop immediately and return JSON only: `{"status":"success","report_json":"outputs/<job_id>/report.json","chart_ids":[...]}`. Do not add a prose summary.
