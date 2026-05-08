@@ -156,6 +156,29 @@ async def test_running_owned_job_returns_in_progress_even_with_stale_interrupted
 
 
 @pytest.mark.asyncio
+async def test_owned_disk_report_wins_over_stale_running_db_status(
+    db_session, monkeypatch, tmp_path
+):
+    db_session.add(
+        ResearchJob(id="job_1", user_id="user_1", query="q", status=JobStatus.RUNNING.value)
+    )
+    db_session.commit()
+
+    output_dir = tmp_path / "outputs"
+    job_dir = output_dir / "job_1"
+    job_dir.mkdir(parents=True)
+    (job_dir / "report.json").write_text(
+        json.dumps({"job_id": "job_1", "title": "Disk report"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("api.routes.reports.OUTPUT_BASE_DIR", output_dir)
+
+    report = await get_report("job_1", AuthUser(id="user_1"), db_session)
+
+    assert report["title"] == "Disk report"
+
+
+@pytest.mark.asyncio
 async def test_interrupted_owned_job_returns_gone(db_session, monkeypatch, tmp_path):
     db_session.add(
         ResearchJob(id="job_1", user_id="user_1", query="q", status=JobStatus.INTERRUPTED.value)
@@ -210,7 +233,14 @@ async def test_completed_background_job_auto_saves_report(monkeypatch, tmp_path)
     Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine, expire_on_commit=False)
     with Session() as db:
-        db.add(ResearchJob(id="job_1", user_id="user_1", query="q", status=JobStatus.RUNNING.value))
+        db.add(
+            ResearchJob(
+                id="job_1",
+                user_id="user_1",
+                query="q",
+                status=JobStatus.RUNNING.value,
+            )
+        )
         db.commit()
 
     output_dir = tmp_path / "outputs"
@@ -239,4 +269,59 @@ async def test_completed_background_job_auto_saves_report(monkeypatch, tmp_path)
         saved = db.query(SavedReport).filter_by(job_id="job_1", user_id="user_1").one()
         assert saved.title == "Saved"
         assert saved.report_json["job_id"] == "job_1"
+        assert db.get(ResearchJob, "job_1").status == JobStatus.COMPLETED.value
+
+
+@pytest.mark.asyncio
+async def test_completed_background_job_does_not_fail_when_library_save_fails(
+    monkeypatch, tmp_path
+):
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, expire_on_commit=False)
+    with Session() as db:
+        db.add(
+            ResearchJob(
+                id="job_1",
+                user_id="user_1",
+                query="q",
+                status=JobStatus.RUNNING.value,
+            )
+        )
+        db.commit()
+
+    output_dir = tmp_path / "outputs"
+    report_dir = output_dir / "job_1"
+    report_dir.mkdir(parents=True)
+    (report_dir / "report.json").write_text(
+        json.dumps({"job_id": "job_1", "title": "Saved", "query": "q"}),
+        encoding="utf-8",
+    )
+
+    async def fake_stream_research(**_kwargs):
+        if False:
+            yield {}
+
+    def fail_save_completed_report(*_args, **_kwargs):
+        raise RuntimeError("saved report insert failed")
+
+    monkeypatch.setattr(research_jobs, "stream_research", fake_stream_research)
+    monkeypatch.setattr(research_jobs, "SessionLocal", Session)
+    monkeypatch.setattr(research_jobs, "OUTPUT_BASE_DIR", output_dir)
+    monkeypatch.setattr("services.job_status.OUTPUT_BASE_DIR", output_dir)
+    monkeypatch.setattr(research_jobs, "write_job_status", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(research_jobs, "save_completed_report", fail_save_completed_report)
+
+    state = JobState(job_id="job_1", user_id="user_1", query="q", status=JobStatus.RUNNING)
+    await run_job_background("job_1", "user_1", "q", [], object(), state)
+
+    assert state.status == JobStatus.COMPLETED
+    assert not any(
+        isinstance(event, dict) and "__bg_error__" in event for event in state.events_log
+    )
+    with Session() as db:
         assert db.get(ResearchJob, "job_1").status == JobStatus.COMPLETED.value

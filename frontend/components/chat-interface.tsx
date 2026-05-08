@@ -13,6 +13,29 @@ import type { Message } from "@/lib/types";
 const assistantProse =
   "prose prose-lg max-w-none dark:prose-invert prose-p:font-serif prose-p:leading-relaxed prose-p:text-foreground/90 prose-headings:font-serif prose-h3:mt-0 prose-h3:mb-3 prose-strong:text-foreground prose-ul:my-3 prose-ol:my-3 prose-li:my-1 prose-p:my-2 first:prose-p:mt-0 last:prose-p:mb-0 prose-table:my-4 prose-table:text-sm prose-table:font-sans prose-th:border prose-th:border-border prose-th:bg-muted/70 prose-th:px-3 prose-th:py-2 prose-th:text-left prose-th:font-semibold prose-td:border prose-td:border-border prose-td:px-3 prose-td:py-2 prose-td:align-top";
 
+const recommendedPrompts = [
+  {
+    label: "Macro Regime",
+    prompt:
+      "Compare the current US macro regime with prior soft-landing cycles, focusing on inflation, labor-market cooling, real rates, and equity market leadership.",
+  },
+  {
+    label: "Single Equity",
+    prompt:
+      "Build a full investment brief on Nvidia, including demand drivers, margin durability, valuation scenarios, key risks, and the evidence that would change the thesis.",
+  },
+  {
+    label: "Sector Map",
+    prompt:
+      "Analyze which US banking subsectors are most exposed to commercial real estate stress, funding costs, and credit deterioration over the next 12 months.",
+  },
+  {
+    label: "Policy Shock",
+    prompt:
+      "Assess how a higher-for-longer Federal Reserve path would affect small caps, housing, regional banks, and long-duration technology stocks.",
+  },
+];
+
 const markdownComponents = {
   table: ({ children }: ComponentProps<"table">) => (
     <div className="my-4 w-full overflow-x-auto">
@@ -152,6 +175,39 @@ export default function ChatInterface({
             <p className="text-lg text-muted-foreground font-sans font-light max-w-2xl">
               Formulate a complex macroeconomic inquiry or equity analysis. The agent will synthesize data, construct narratives, and deliver a comprehensive report.
             </p>
+            <div className="mt-10 max-w-4xl">
+              <div className="mb-4 flex items-center gap-3">
+                <span className="h-px w-10 bg-border"></span>
+                <span className="font-sans text-[10px] uppercase tracking-[0.24em] text-muted-foreground">
+                  Recommended Prompts
+                </span>
+              </div>
+              <div className="grid gap-px border border-border bg-border sm:grid-cols-2">
+                {recommendedPrompts.map((item, index) => (
+                  <button
+                    key={item.label}
+                    type="button"
+                    onClick={() => onInputChange(item.prompt)}
+                    className="group min-h-[132px] bg-background p-4 text-left transition-colors duration-300 hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    style={{ animationDelay: `${150 + index * 80}ms` }}
+                  >
+                    <span className="mb-4 flex items-center justify-between gap-3">
+                      <span className="font-sans text-[10px] uppercase tracking-[0.2em] text-primary">
+                        {item.label}
+                      </span>
+                      <ArrowRight
+                        weight="light"
+                        size={15}
+                        className="text-muted-foreground transition-transform duration-300 group-hover:translate-x-1 group-hover:text-primary"
+                      />
+                    </span>
+                    <span className="block font-serif text-lg leading-snug text-foreground/85">
+                      {item.prompt}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
         )}
 
@@ -164,13 +220,13 @@ export default function ChatInterface({
               onKeyDown={handleKeyDown}
               disabled={isStreamingChat}
               autoResize={true}
-              font="18px 'Cormorant Garamond', serif"
-              lineHeight={28}
+              font="20px 'Cormorant Garamond', serif"
+              lineHeight={32}
               paddingVertical={48}
               maxHeight={300}
               placeholder="e.g., Analyze the historical relationship between US GDP growth and tech sector valuations..."
               data-testid="research-input"
-              className="w-full resize-none border-0 bg-transparent px-6 py-6 text-lg font-serif shadow-none focus-visible:ring-0 disabled:opacity-50 placeholder:text-muted-foreground/50 placeholder:font-sans placeholder:text-base placeholder:font-light overflow-hidden"
+              className="w-full resize-none border-0 bg-transparent px-6 py-6 text-xl md:text-xl font-serif shadow-none focus-visible:ring-0 disabled:opacity-50 placeholder:text-muted-foreground/50 placeholder:font-sans placeholder:text-base placeholder:font-light overflow-hidden"
               rows={1}
             />
             <div className="flex items-center justify-between px-6 pb-4 pt-2 border-t border-border/30">

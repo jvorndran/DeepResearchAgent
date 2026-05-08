@@ -99,3 +99,14 @@
 ::-webkit-scrollbar-thumb:hover {
   background: var(--muted-foreground);
 }
+
+@layer utilities {
+  .overflow-wrap-anywhere {
+    overflow-wrap: anywhere;
+  }
+
+  .scrollbar-editorial {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+}

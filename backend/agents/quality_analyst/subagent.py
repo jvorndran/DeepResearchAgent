@@ -5,7 +5,11 @@ from langchain.agents import create_agent
 from langchain_core.runnables import RunnableLambda
 
 from .prompts import QUALITY_ANALYST_DESCRIPTION, QUALITY_ANALYST_SYSTEM_PROMPT
-from .tools import load_report_for_review, submit_quality_decision
+from .tools import (
+    _normalize_terminal_quality_decision,
+    load_report_for_review,
+    submit_quality_decision,
+)
 
 def _quality_analyst_agent():
     return create_agent(

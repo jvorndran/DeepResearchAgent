@@ -773,6 +773,63 @@ def test_quant_middleware_allows_execute_after_script_write():
     assert response.content == "ok"
 
 
+def test_quant_middleware_blocks_execute_package_install_after_script_write():
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    request = SimpleNamespace(
+        tool_call={
+            "name": "execute",
+            "id": "call-install",
+            "args": {"command": "/usr/bin/python3 -m pip install -t backend pandas"},
+        },
+        state={
+            "messages": [
+                ToolMessage(
+                    content="Updated file /tmp/outputs/job/code/analysis.py",
+                    name="write_file",
+                    tool_call_id="call-write",
+                )
+            ]
+        },
+    )
+
+    response = middleware.wrap_tool_call(
+        request,
+        lambda req: (_ for _ in ()).throw(AssertionError("handler should not run")),
+    )
+
+    assert response.status == "error"
+    assert "Blocked quant-developer runtime package installation" in response.content
+    assert "already includes the backend Python dependencies" in response.content
+
+
+def test_quant_middleware_blocks_script_runtime_package_install():
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    request = SimpleNamespace(
+        tool_call={
+            "name": "write_file",
+            "id": "call-write-installer",
+            "args": {
+                "file_path": "/tmp/outputs/job/code/analysis.py",
+                "content": (
+                    "import subprocess\n"
+                    "subprocess.check_call(['pip', 'install', 'statsmodels'])\n"
+                    "print('done')\n"
+                ),
+            },
+        },
+        state={"messages": []},
+    )
+
+    response = middleware.wrap_tool_call(
+        request,
+        lambda req: (_ for _ in ()).throw(AssertionError("handler should not run")),
+    )
+
+    assert response.status == "error"
+    assert "attempts runtime package installation" in response.content
+    assert "already includes pandas, numpy, and scipy" in response.content
+
+
 def test_quant_middleware_removes_tools_after_successful_handoff():
     middleware = QuantDeveloperToolBoundaryMiddleware()
     request = _Request(

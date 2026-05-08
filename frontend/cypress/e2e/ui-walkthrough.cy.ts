@@ -69,14 +69,17 @@ describe('UI walkthrough (stream fixture)', () => {
     cy.pause();
   });
 
-  // ── Stage 3: Pipeline cards ─────────────────────────────────────────────────
+  // ── Stage 3: Notes-only stream surface ──────────────────────────────────────
 
-  it('Stage 3 — Chat: Pipeline agents (fixture transcript)', () => {
+  it('Stage 3 — Chat: Research notes are the only streaming surface', () => {
     visitChatPage('research_stream_full');
-    cy.get('[data-testid="pipeline-step"]', { timeout: 120000 }).should('have.length.at.least', 1);
-    cy.get('[data-testid="pipeline-step"]').should('contain.text', 'data-engineer');
+    cy.get('[data-testid="streaming-view"]').should('exist');
+    cy.get('[data-testid="orchestrator-log"]', { timeout: 120000 }).should('contain.text', 'fred_get_series');
+    cy.contains('Research Plan').should('not.exist');
+    cy.contains('Pipeline Activity').should('not.exist');
+    cy.get('[data-testid="pipeline-step"]').should('not.exist');
 
-    cy.log('**STAGE 3 — Full recording: agent cards (e.g. data-engineer) stream in**');
+    cy.log('**STAGE 3 — Full recording: research notes stream without plan or pipeline side panels**');
     cy.pause();
   });
 

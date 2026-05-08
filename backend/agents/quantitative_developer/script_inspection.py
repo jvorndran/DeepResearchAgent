@@ -191,6 +191,97 @@ def _imports_forbidden_forecast_library(tree: ast.Module) -> bool:
     return False
 
 
+def _uses_runtime_installer(tree: ast.Module) -> bool:
+    """Return True when generated code attempts to install packages at runtime."""
+
+    installer_tokens = {
+        "pip",
+        "pip3",
+        "ensurepip",
+        "get-pip.py",
+        "uv",
+        "poetry",
+        "conda",
+        "mamba",
+        "apt",
+        "apt-get",
+    }
+    shell_install_markers = (
+        "pip install",
+        "pip3 install",
+        "python -m pip install",
+        "python3 -m pip install",
+        "uv pip install",
+        "uv add",
+        "poetry add",
+        "conda install",
+        "mamba install",
+        "apt install",
+        "apt-get install",
+        "ensurepip",
+        "get-pip.py",
+    )
+
+    def _constant_text(node: ast.AST) -> str | None:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.JoinedStr):
+            parts: list[str] = []
+            for value in node.values:
+                if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                    parts.append(value.value)
+                else:
+                    return None
+            return "".join(parts)
+        return None
+
+    def _literal_command_parts(node: ast.AST) -> list[str]:
+        if isinstance(node, (ast.List, ast.Tuple)):
+            parts: list[str] = []
+            for element in node.elts:
+                text = _constant_text(element)
+                if text is None:
+                    return []
+                parts.append(text)
+            return parts
+        text = _constant_text(node)
+        return text.split() if text is not None else []
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            names = []
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            else:
+                names = [node.module or ""]
+            if any(name.split(".", 1)[0] in {"ensurepip"} for name in names):
+                return True
+
+        if not isinstance(node, ast.Call):
+            continue
+
+        func = node.func
+        func_name = (
+            func.id
+            if isinstance(func, ast.Name)
+            else func.attr if isinstance(func, ast.Attribute) else ""
+        )
+        if func_name in {"system", "popen"} and node.args:
+            text = _constant_text(node.args[0])
+            if text and any(marker in text.lower() for marker in shell_install_markers):
+                return True
+        if func_name in {"run", "call", "check_call", "check_output", "Popen"} and node.args:
+            parts = _literal_command_parts(node.args[0])
+            lowered = [part.lower() for part in parts]
+            if lowered and any(token in lowered[0] for token in installer_tokens):
+                return True
+            joined = " ".join(lowered)
+            if any(marker in joined for marker in shell_install_markers):
+                return True
+
+    return False
+
+
 def _direct_forecast_result_names(tree: ast.Module) -> set[str]:
     names: set[str] = set()
     for node in ast.walk(tree):
@@ -401,4 +492,3 @@ def _align_period_output_period_reference(tree: ast.Module) -> str | None:
             if node.value.id in aligned_names and node.attr == "period":
                 return node.value.id
     return None
-

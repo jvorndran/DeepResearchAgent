@@ -758,6 +758,23 @@ class GuardedLocalShellBackend(LocalShellBackend):
     """Local backend with credential-file guardrails for agent tool use."""
 
     _DENIED = "Access denied: sensitive local credential files are not available to agents."
+    _PACKAGE_INSTALL_DENIED = (
+        "Access denied: package installation is not available in the agent shell. "
+        "Use the backend dependencies installed by the application environment; "
+        "do not vendor packages into the repository."
+    )
+    _PACKAGE_INSTALL_RE = re.compile(
+        r"(?ix)"
+        r"(^|[\s;&|()])("
+        r"(?:[\w./-]+/)?pip(?:3(?:\.\d+)?)?(?:\s+-[^\s;&|()]+)*\s+install"
+        r"|(?:[\w./-]+/)?python(?:3(?:\.\d+)?)?\s+-m\s+pip(?:\s+-[^\s;&|()]+)*\s+install"
+        r"|(?:[\w./-]+/)?uv\s+pip(?:\s+-[^\s;&|()]+)*\s+install"
+        r"|(?:[\w./-]+/)?uv\s+add"
+        r"|(?:[\w./-]+/)?poetry\s+add"
+        r"|(?:[\w./-]+/)?conda\s+install"
+        r"|(?:[\w./-]+/)?mamba\s+install"
+        r")($|[\s;&|()])"
+    )
 
     def _is_denied_path(self, file_path: str) -> bool:
         return _is_sensitive_path(file_path)
@@ -803,4 +820,10 @@ class GuardedLocalShellBackend(LocalShellBackend):
     def execute(self, command: str, *, timeout: int | None = None):
         if _SECRET_SHELL_RE.search(command or ""):
             return ExecuteResponse(output=self._DENIED, exit_code=1, truncated=False)
+        if self._PACKAGE_INSTALL_RE.search(command or ""):
+            return ExecuteResponse(
+                output=self._PACKAGE_INSTALL_DENIED,
+                exit_code=1,
+                truncated=False,
+            )
         return super().execute(command, timeout=timeout)

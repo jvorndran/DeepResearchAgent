@@ -119,9 +119,16 @@ async def run_job_background(
         else:
             job_state.status = JobStatus.COMPLETED
             write_job_status(job_id, JobStatus.COMPLETED, query)
-            with SessionLocal() as db:
-                mark_job_status(db, job_id=job_id, status=JobStatus.COMPLETED)
-                save_completed_report(db, job_id=job_id, user_id=user_id, query=query)
+            try:
+                with SessionLocal() as db:
+                    mark_job_status(db, job_id=job_id, status=JobStatus.COMPLETED)
+                    save_completed_report(db, job_id=job_id, user_id=user_id, query=query)
+            except Exception:
+                logger.exception(
+                    "Failed to persist completed report library entry job_id=%s; "
+                    "report.json is available on disk",
+                    job_id,
+                )
             logger.info("Job %s completed", job_id)
     except asyncio.CancelledError:
         job_state.status = JobStatus.INTERRUPTED

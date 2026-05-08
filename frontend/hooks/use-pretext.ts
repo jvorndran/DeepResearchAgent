@@ -6,6 +6,8 @@ export interface PretextOptions {
   wordBreak?: "normal" | "keep-all";
 }
 
+const DEFAULT_PRETEXT_OPTIONS: PretextOptions = { whiteSpace: "pre-wrap" };
+
 /**
  * Hook to measure text height using Pretext (without touching the DOM).
  * Useful for virtualization, auto-resizing textareas, etc.
@@ -15,12 +17,14 @@ export function usePretextHeight(
   font: string,
   width: number,
   lineHeight: number,
-  options: PretextOptions = { whiteSpace: "pre-wrap" }
+  options: PretextOptions = DEFAULT_PRETEXT_OPTIONS
 ) {
+  const { whiteSpace, wordBreak } = options;
+
   const prepared = useMemo(() => {
     if (!text) return null;
-    return prepare(text, font, options);
-  }, [text, font, options.whiteSpace, options.wordBreak]);
+    return prepare(text, font, { whiteSpace, wordBreak });
+  }, [text, font, whiteSpace, wordBreak]);
 
   return useMemo(() => {
     if (!prepared || width <= 0) return { height: 0, lineCount: 0 };

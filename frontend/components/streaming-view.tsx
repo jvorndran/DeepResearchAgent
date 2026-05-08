@@ -1,15 +1,23 @@
 "use client";
 
-import { useRef, useEffect, useState, useMemo, useCallback, memo } from "react";
-import { ArrowDown, Terminal, Brain, Wrench, Database, CheckCircle, ListChecks } from "@phosphor-icons/react";
+import { Children, isValidElement, useRef, useEffect, useState, useMemo, useCallback, memo } from "react";
+import type { ReactNode } from "react";
+import {
+  ArrowDown,
+  Brain,
+  CaretDown,
+  ChartBar,
+  CheckCircle,
+  CircleNotch,
+  Code,
+  Database,
+  ListChecks,
+  MagnifyingGlass,
+  NotePencil,
+  Wrench,
+} from "@phosphor-icons/react";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
-import type { PipelineStep } from "@/lib/types";
-
-type TodoItem = {
-  status?: string;
-  content?: React.ReactNode;
-};
 
 const tryFormatJson = (str: string | undefined): string => {
   if (!str) return "";
@@ -21,27 +29,267 @@ const tryFormatJson = (str: string | undefined): string => {
   }
 };
 
-const CustomSpinner = () => (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="animate-spin text-primary">
-    <rect x="3" y="3" width="7" height="7" stroke="currentColor" strokeWidth="2" />
-    <rect x="14" y="14" width="7" height="7" stroke="currentColor" strokeWidth="2" />
-    <circle cx="17.5" cy="6.5" r="3.5" stroke="currentColor" strokeWidth="2" />
-    <circle cx="6.5" cy="17.5" r="3.5" stroke="currentColor" strokeWidth="2" />
-  </svg>
-);
+const normalizeToolName = (name: string): string => {
+  return name
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+};
 
-const StreamingHeader = memo(function StreamingHeader() {
+const titleCase = (value: string): string => {
+  return normalizeToolName(value)
+    .split(" ")
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> => {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+};
+
+const truncateText = (value: string, limit: number): string => {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized.length > limit ? `${normalized.slice(0, limit - 3)}...` : normalized;
+};
+
+const nodeContainsStatusMarker = (node: ReactNode): boolean => {
+  if (typeof node === "string") return node.startsWith("STATUS:");
+  if (typeof node === "number" || typeof node === "boolean" || node == null) return false;
+  if (Array.isArray(node)) return node.some(nodeContainsStatusMarker);
+  if (isValidElement<{ children?: ReactNode }>(node)) return nodeContainsStatusMarker(node.props.children);
+  return false;
+};
+
+const statusLabel = (status: string): string => {
+  if (status === "done" || status === "completed") return "Done";
+  if (status === "in_progress" || status === "running") return "Active";
+  return "Pending";
+};
+
+const payloadMeta = (value: string) => {
+  const trimmed = value.trim();
+  let kind = "text";
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    kind = Array.isArray(parsed) ? "array" : typeof parsed;
+  } catch {
+    kind = trimmed.startsWith("{") || trimmed.startsWith("[") ? "partial json" : "text";
+  }
+
+  return {
+    kind,
+    lines: Math.max(1, value.split("\n").length),
+    chars: value.length,
+  };
+};
+
+const ToolIcon = memo(function ToolIcon({ tool, size = 18 }: { tool?: string; size?: number }) {
+  const normalized = (tool ?? "").toLowerCase();
+  if (normalized.includes("fred") || normalized.includes("fmp") || normalized.includes("data") || normalized.includes("sql")) {
+    return <Database weight="regular" size={size} />;
+  }
+  if (normalized.includes("search") || normalized.includes("fetch") || normalized.includes("web")) {
+    return <MagnifyingGlass weight="regular" size={size} />;
+  }
+  if (normalized.includes("python") || normalized.includes("execute") || normalized.includes("code")) {
+    return <Code weight="regular" size={size} />;
+  }
+  if (normalized.includes("chart") || normalized.includes("analysis")) {
+    return <ChartBar weight="regular" size={size} />;
+  }
+  if (normalized.includes("todo")) {
+    return <ListChecks weight="regular" size={size} />;
+  }
+  if (normalized.includes("write") || normalized.includes("report") || normalized.includes("file")) {
+    return <NotePencil weight="regular" size={size} />;
+  }
+  return <Wrench weight="regular" size={size} />;
+});
+
+type ToolActivityVariant = "call" | "command";
+
+const toolActivityPresentation = (tool: string, variant: ToolActivityVariant) => {
+  const normalized = tool.toLowerCase();
+
+  if (variant === "command" || normalized.includes("python") || normalized.includes("execute") || normalized.includes("code")) {
+    return {
+      activityLabel: "code",
+      iconClass: "text-amber-700 dark:text-amber-400",
+      nameClass: "font-mono text-[13px] font-semibold text-foreground",
+      labelClass: "text-amber-700 dark:text-amber-400",
+      summaryClass: "font-mono text-[12px] leading-6 text-foreground/75",
+      detailsClass: "border-amber-700/35 dark:border-amber-500/35",
+      detailsLabel: "Command details",
+    };
+  }
+
+  if (normalized.includes("fred") || normalized.includes("fmp") || normalized.includes("data") || normalized.includes("sql")) {
+    return {
+      activityLabel: "data",
+      iconClass: "text-sky-700 dark:text-sky-400",
+      nameClass: "font-sans text-sm font-semibold text-foreground",
+      labelClass: "text-sky-700 dark:text-sky-400",
+      summaryClass: "font-serif text-[15px] leading-6 text-foreground/80",
+      detailsClass: "border-sky-700/30 dark:border-sky-500/30",
+      detailsLabel: "Query details",
+    };
+  }
+
+  if (normalized.includes("search") || normalized.includes("fetch") || normalized.includes("web")) {
+    return {
+      activityLabel: "search",
+      iconClass: "text-teal-700 dark:text-teal-400",
+      nameClass: "font-sans text-sm font-semibold text-foreground",
+      labelClass: "text-teal-700 dark:text-teal-400",
+      summaryClass: "font-serif text-[15px] leading-6 text-foreground/80",
+      detailsClass: "border-teal-700/30 dark:border-teal-500/30",
+      detailsLabel: "Lookup details",
+    };
+  }
+
+  if (normalized.includes("write") || normalized.includes("report") || normalized.includes("file")) {
+    return {
+      activityLabel: "write",
+      iconClass: "text-rose-700 dark:text-rose-400",
+      nameClass: "font-sans text-sm font-semibold text-foreground",
+      labelClass: "text-rose-700 dark:text-rose-400",
+      summaryClass: "font-serif text-[15px] leading-6 text-foreground/80",
+      detailsClass: "border-rose-700/30 dark:border-rose-500/30",
+      detailsLabel: "Write details",
+    };
+  }
+
+  if (normalized.includes("chart") || normalized.includes("analysis")) {
+    return {
+      activityLabel: "analyze",
+      iconClass: "text-indigo-700 dark:text-indigo-400",
+      nameClass: "font-sans text-sm font-semibold text-foreground",
+      labelClass: "text-indigo-700 dark:text-indigo-400",
+      summaryClass: "font-serif text-[15px] leading-6 text-foreground/80",
+      detailsClass: "border-indigo-700/30 dark:border-indigo-500/30",
+      detailsLabel: "Analysis details",
+    };
+  }
+
+  return {
+    activityLabel: "tool",
+    iconClass: "text-primary",
+    nameClass: "font-sans text-sm font-semibold text-foreground",
+    labelClass: "text-primary",
+    summaryClass: "font-serif text-[15px] leading-6 text-foreground/80",
+    detailsClass: "border-border/70",
+    detailsLabel: "Technical details",
+  };
+};
+
+const summarizePayload = (payload: string, variant: ToolActivityVariant): string => {
+  const trimmed = payload.trim();
+  if (!trimmed) return "No arguments provided.";
+  if (variant === "command") return "Running code or shell work for the current research step.";
+
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+
+    if (isRecord(parsed)) {
+      const keys = Object.keys(parsed);
+      if (keys.length === 0) return "Called without arguments.";
+      return `Arguments include ${keys.slice(0, 4).map(titleCase).join(", ")}${keys.length > 4 ? "..." : ""}.`;
+    }
+
+    if (Array.isArray(parsed)) return `Arguments include ${parsed.length.toLocaleString()} entries.`;
+  } catch {
+    return truncateText(trimmed, 140);
+  }
+
+  return truncateText(trimmed, 140);
+};
+
+const ToolActivityBlock = memo(function ToolActivityBlock({
+  agent,
+  tool,
+  variant,
+  payload,
+}: {
+  agent: string;
+  tool?: string;
+  variant: ToolActivityVariant;
+  payload: string;
+}) {
+  const isCommand = variant === "command";
+  const meta = payloadMeta(payload);
+  const rawToolName = tool || "tool";
+  const displayTool = titleCase(rawToolName);
+  const agentLabel = agent ? titleCase(agent) : "Orchestrator";
+  const statusLabel = isCommand ? "Running" : "Called";
+  const summary = summarizePayload(payload, variant);
+  const presentation = toolActivityPresentation(rawToolName, variant);
+
   return (
-    <div className="flex flex-col gap-4 border-l-4 border-primary pl-6">
-      <h2 className="text-3xl md:text-5xl font-serif tracking-tight text-foreground flex items-center gap-4">
-        <CustomSpinner />
-        <span>Synthesizing Intelligence</span>
-      </h2>
-      <p className="text-lg text-muted-foreground font-sans font-light max-w-2xl">
-        The orchestrator is currently coordinating specialized sub-agents to compile, analyze, and structure the requested intelligence.
-      </p>
-    </div>
+    <section className="not-prose my-4 max-w-full overflow-hidden py-1">
+      <div className="flex items-start gap-3">
+        <div className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center ${presentation.iconClass}`}>
+          <ToolIcon tool={tool} size={17} />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
+            <span className={`font-sans text-[10px] uppercase tracking-[0.14em] ${presentation.labelClass}`}>
+              {presentation.activityLabel}
+            </span>
+            <span className={presentation.nameClass}>{displayTool}</span>
+            <span className="max-w-full font-mono text-[11px] text-muted-foreground overflow-wrap-anywhere">
+              {rawToolName}
+            </span>
+            <span className="font-sans text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+              {statusLabel}
+            </span>
+            <span className="hidden font-sans text-xs text-muted-foreground sm:inline">by {agentLabel}</span>
+          </div>
+
+          <p className={`mt-1 overflow-wrap-anywhere ${presentation.summaryClass}`}>{summary}</p>
+
+          <details className="group/details mt-2">
+            <summary className="flex cursor-pointer list-none flex-wrap items-center gap-x-2 gap-y-1 font-sans text-[10px] uppercase tracking-[0.14em] text-muted-foreground [&::-webkit-details-marker]:hidden">
+              <span>{presentation.detailsLabel}</span>
+              <span className="flex min-w-0 items-center gap-1">
+                {meta.kind} / {meta.lines} lines / {meta.chars.toLocaleString()} chars
+                <CaretDown size={12} className="transition-transform group-open/details:rotate-180" />
+              </span>
+            </summary>
+            <div className={`mt-2 border-l pl-3 ${presentation.detailsClass}`}>
+              <code className="block max-h-72 overflow-auto whitespace-pre-wrap break-words font-mono text-[12px] leading-relaxed text-muted-foreground overflow-wrap-anywhere">
+                {isCommand ? `$ ${payload}` : payload}
+              </code>
+            </div>
+          </details>
+        </div>
+      </div>
+    </section>
   );
+});
+
+const ProgressMark = memo(function ProgressMark({ status }: { status?: string }) {
+  const isDone = status === "done" || status === "completed";
+  const isProgress = status === "in_progress" || status === "running";
+
+  if (isDone) {
+    return (
+      <div className="flex h-4 w-4 items-center justify-center border border-green-500/40 bg-green-500/10 text-green-700 dark:text-green-400">
+        <CheckCircle weight="fill" size={11} />
+      </div>
+    );
+  }
+
+  if (isProgress) {
+    return (
+      <div className="flex h-4 w-4 items-center justify-center text-primary">
+        <CircleNotch size={14} className="animate-spin" />
+      </div>
+    );
+  }
+
+  return <div className="h-4 w-4 border border-border bg-background" />;
 });
 
 const OrchestratorLogContent = memo(function OrchestratorLogContent({
@@ -56,83 +304,35 @@ const OrchestratorLogContent = memo(function OrchestratorLogContent({
   return (
     <div className="transition-all duration-300 ease-out">
       {displayedText ? (
-        <div data-testid="orchestrator-log-content" className="prose prose-sm max-w-none dark:prose-invert prose-p:font-sans prose-p:text-foreground/80 prose-p:leading-relaxed break-words overflow-wrap-anywhere">
-          <ReactMarkdown components={markdownComponents}>
-            {orchestratorText}
-          </ReactMarkdown>
-          <span className="inline-block w-2.5 h-4 ml-1 bg-primary align-middle mt-1 animate-[pulse_1s_steps(2,start)_infinite]">█</span>
+        <div
+          data-testid="orchestrator-log-content"
+          className="prose prose-lg max-w-none break-words dark:prose-invert prose-headings:font-serif prose-headings:tracking-tight prose-p:font-serif prose-p:text-foreground/85 prose-p:leading-7 prose-strong:text-foreground prose-a:text-primary overflow-wrap-anywhere"
+        >
+          <ReactMarkdown components={markdownComponents}>{orchestratorText}</ReactMarkdown>
+          <span className="ml-1 inline-block h-4 w-1 animate-pulse bg-primary align-middle" />
         </div>
       ) : (
-        <div className="font-mono text-sm text-muted-foreground flex items-center">
-          Initializing agent network...
-          <span className="inline-block w-2.5 h-4 ml-1 bg-primary align-middle animate-[pulse_1s_steps(2,start)_infinite]">█</span>
+        <div className="flex items-center gap-3 border-l-2 border-primary/40 pl-4 font-serif text-lg text-muted-foreground">
+          <CircleNotch size={16} className="animate-spin text-primary" />
+          Opening live research ledger...
         </div>
       )}
     </div>
   );
 });
 
-const TodoManifest = memo(function TodoManifest({ todos, className }: { todos: TodoItem[]; className?: string }) {
-  if (!todos || todos.length === 0) return null;
-  
-  return (
-    <div className={`border-b border-primary/20 bg-card/80 backdrop-blur-xl shadow-md shrink-0 relative z-30 ${className}`}>
-      <div className="flex items-center gap-2 px-6 py-3 bg-primary/10 border-b border-primary/10">
-        <ListChecks weight="light" size={18} className="text-primary/90" />
-        <span className="text-[10px] uppercase tracking-[0.3em] text-primary font-mono font-bold">Research Manifest</span>
-      </div>
-      <div className="p-4 flex flex-col gap-2 max-h-[220px] overflow-y-auto scrollbar-thin scrollbar-thumb-primary/30 scrollbar-track-transparent">
-        {todos.map((t, i) => {
-          const isDone = t.status === 'done' || t.status === 'completed';
-          const isProgress = t.status === 'in_progress';
-          return (
-            <div key={i} className={`flex items-start gap-3 p-2 border border-border/30 bg-background/40 transition-all duration-500 ${isProgress ? 'border-primary/40 shadow-[inset_2px_0_0_0_var(--primary)]' : isDone ? 'opacity-60' : 'opacity-40'}`}>
-              <div className="mt-0.5 shrink-0">
-                {isDone ? (
-                  <div className="w-3.5 h-3.5 flex items-center justify-center border border-primary/50 bg-primary/10 text-primary text-[9px] font-mono">✓</div>
-                ) : isProgress ? (
-                  <div className="w-3.5 h-3.5 flex items-center justify-center text-primary">
-                    <CustomSpinner />
-                  </div>
-                ) : (
-                  <div className="w-3.5 h-3.5 border border-border/50" />
-                )}
-              </div>
-              <span className={`font-mono text-[11px] min-w-0 flex-1 break-words ${isProgress ? 'text-foreground' : 'text-muted-foreground'}`}>
-                {t.content}
-              </span>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-});
-
-export default memo(function StreamingView({ orchestratorText, pipelineSteps }: { orchestratorText: string; pipelineSteps: PipelineStep[] }) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const spotlightRef = useRef<HTMLDivElement>(null);
+export default memo(function StreamingView({
+  orchestratorText,
+}: {
+  orchestratorText: string;
+}) {
   const logViewportRef = useRef<HTMLDivElement>(null);
   const displayedTextRef = useRef("");
-  const pointerFrameRef = useRef<number | null>(null);
-  const pendingPointerRef = useRef({ x: 0, y: 0 });
   const [isLogAutoScrolling, setIsLogAutoScrolling] = useState(true);
-
   const [displayedText, setDisplayedText] = useState("");
 
-  const latestTodos = useMemo(() => {
-    for (let i = pipelineSteps.length - 1; i >= 0; i--) {
-      const tool = pipelineSteps[i].tools.find(t => t.tool === 'write_todos');
-      const args = tool?.args as { todos?: unknown[] } | undefined;
-      if (Array.isArray(args?.todos)) {
-        return args.todos as TodoItem[];
-      }
-    }
-    return null;
-  }, [pipelineSteps]);
-
   const cleanOrchestratorText = useMemo(() => {
-    return orchestratorText.replace(/\n\n```tool-call\|[^|]*\|write_todos\n[\s\S]*?```/g, '');
+    return orchestratorText.replace(/\n\n```tool-call\|[^|]*\|write_todos\n[\s\S]*?```/g, "");
   }, [orchestratorText]);
 
   useEffect(() => {
@@ -171,12 +371,6 @@ export default memo(function StreamingView({ orchestratorText, pipelineSteps }: 
   }, [cleanOrchestratorText]);
 
   useEffect(() => {
-    return () => {
-      if (pointerFrameRef.current !== null) cancelAnimationFrame(pointerFrameRef.current);
-    };
-  }, []);
-
-  useEffect(() => {
     if (isLogAutoScrolling && logViewportRef.current) {
       logViewportRef.current.scrollTop = logViewportRef.current.scrollHeight;
     }
@@ -185,7 +379,7 @@ export default memo(function StreamingView({ orchestratorText, pipelineSteps }: 
   const handleLogScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const viewport = e.currentTarget;
     const isNearBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 100;
-    setIsLogAutoScrolling((current) => current === isNearBottom ? current : isNearBottom);
+    setIsLogAutoScrolling((current) => (current === isNearBottom ? current : isNearBottom));
   };
 
   const scrollToLatest = useCallback(() => {
@@ -195,266 +389,211 @@ export default memo(function StreamingView({ orchestratorText, pipelineSteps }: 
     setIsLogAutoScrolling(true);
   }, []);
 
-  const handleMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    if (!containerRef.current) return;
-    const rect = containerRef.current.getBoundingClientRect();
-    pendingPointerRef.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-
-    if (pointerFrameRef.current !== null) return;
-
-    pointerFrameRef.current = requestAnimationFrame(() => {
-      pointerFrameRef.current = null;
-      spotlightRef.current?.style.setProperty("--spotlight-x", `${pendingPointerRef.current.x}px`);
-      spotlightRef.current?.style.setProperty("--spotlight-y", `${pendingPointerRef.current.y}px`);
-    });
-  }, []);
-
   const processedText = useMemo(() => {
     if (!displayedText) return "";
     let text = displayedText;
-    
-    // Handle thinking tags (including unclosed)
+
     if (text.includes("<thinking>")) {
       if (text.includes("</thinking>")) {
-        text = text.replace(/<thinking>([\s\S]*?)<\/thinking>/g, '\n```thinking\n$1\n```\n');
+        text = text.replace(/<thinking>([\s\S]*?)<\/thinking>/g, "\n```thinking\n$1\n```\n");
       } else {
-        text = text.replace(/<thinking>([\s\S]*)$/g, '\n```thinking\n$1\n```\n');
+        text = text.replace(/<thinking>([\s\S]*)$/g, "\n```thinking\n$1\n```\n");
       }
     }
 
-    // Handle tool_use tags (including unclosed)
     if (text.includes("<tool_use>")) {
       if (text.includes("</tool_use>")) {
-        text = text.replace(/<tool_use>([\s\S]*?)<\/tool_use>/g, '\n```tool_use\n$1\n```\n');
+        text = text.replace(/<tool_use>([\s\S]*?)<\/tool_use>/g, "\n```tool_use\n$1\n```\n");
       } else {
-        text = text.replace(/<tool_use>([\s\S]*)$/g, '\n```tool_use\n$1\n```\n');
+        text = text.replace(/<tool_use>([\s\S]*)$/g, "\n```tool_use\n$1\n```\n");
       }
     }
 
-    return text.replace(/\\n/g, '\n');
+    return text.replace(/\\n/g, "\n");
   }, [displayedText]);
 
-  const markdownComponents = useMemo<Components>(() => ({
-    h3({ children, ...props }: React.HTMLAttributes<HTMLHeadingElement>) {
-      if (String(children) === "TASK_PLAN_HEADER") {
-        return <div className="text-[10px] uppercase tracking-[0.3em] text-primary/80 font-mono mt-8 mb-4 border-b border-primary/20 pb-2 flex items-center gap-2"><ListChecks size={14} /> Execution Plan</div>;
-      }
-      return <h3 className="text-xl font-serif tracking-tight mt-6 mb-3 text-foreground border-l-2 border-primary pl-3" {...props}>{children}</h3>;
-    },
-    ul({ children, ...props }: React.HTMLAttributes<HTMLUListElement>) {
-      return <ul className="flex flex-col gap-0 my-4 border border-border/30 bg-card/10 backdrop-blur-sm shadow-sm max-w-full overflow-hidden" {...props}>{children}</ul>;
-    },
-    li({ children }: React.HTMLAttributes<HTMLElement>) {
-      const childArray = Array.isArray(children) ? [...children] : [children];
-      const firstChild = childArray[0];
-      let status = "";
-      if (typeof firstChild === 'string' && firstChild.startsWith('STATUS:')) {
-        const match = firstChild.match(/^STATUS:(done|completed|in_progress|pending)\|(.*)/);
-        if (match) {
-          status = match[1];
-          childArray[0] = match[2];
-        }
-      }
-      if (status) {
-        const isDone = status === 'done' || status === 'completed';
-        const isProgress = status === 'in_progress';
-        return (
-          <li className={`flex items-start gap-4 p-3 border-b border-border/30 last:border-0 ${isProgress ? 'bg-primary/5' : isDone ? 'opacity-70' : 'opacity-50'} transition-all duration-500 max-w-full overflow-hidden`}>
-            <div className="mt-0.5 shrink-0">
-              {isDone ? (
-                <div className="w-4 h-4 flex items-center justify-center border border-primary/50 bg-primary/10 text-primary text-[10px] font-mono">✓</div>
-              ) : isProgress ? (
-                <div className="w-4 h-4 flex items-center justify-center text-primary">
-                  <CustomSpinner />
-                </div>
-              ) : (
-                <div className="w-4 h-4 border border-border/50 bg-background/50" />
-              )}
-            </div>
-            <div className={`font-sans text-sm min-w-0 flex-1 break-words ${isProgress ? 'text-foreground' : 'text-muted-foreground'}`}>
-              {childArray}
-            </div>
-          </li>
-        );
-      }
-      return <li className="list-disc ml-6 marker:text-primary/50 mb-1 font-sans text-sm text-foreground/80 leading-relaxed break-words">{children}</li>;
-    },
-    p({ children, ...props }: React.HTMLAttributes<HTMLParagraphElement>) {
-      return <p className="font-sans text-sm text-foreground/80 leading-relaxed mb-4 break-words" {...props}>{children}</p>;
-    },
-    code({ inline, className, children, ...props }: React.HTMLAttributes<HTMLElement> & { inline?: boolean }) {
-      const match = /language-([\w-]+)(?:\|([^|]+)\|([^|]+))?/.exec(className || "");
-      const type = match ? match[1] : "";
-      const agent = match ? match[2] : "";
-      const tool = match ? match[3] : "";
-      if (!inline && type === "thinking") {
-        return (
-          <div className="my-6 pl-4 border-l-2 border-border/40 group transition-all duration-500 max-w-full overflow-hidden">
-            <div className="flex items-center gap-2 mb-2 opacity-50">
-              <Brain weight="regular" size={14} />
-              <span className="text-[10px] uppercase tracking-widest font-mono font-medium">Internal Monologue</span>
-            </div>
-            <div className="font-serif text-[14px] text-muted-foreground/80 italic leading-relaxed break-words overflow-wrap-anywhere">
-              {children}
-            </div>
-          </div>
-        );
-      }
-      if (!inline && type === "tool-call") {
-        if (tool === "execute" || tool === "python") {
-          let cmd = String(children);
-          try {
-            const parsed = JSON.parse(cmd);
-            if (parsed.command) cmd = parsed.command;
-            if (parsed.code) cmd = parsed.code;
-          } catch {}
+  const markdownComponents = useMemo<Components>(
+    () => ({
+      h3({ children, ...props }: React.HTMLAttributes<HTMLHeadingElement>) {
+        if (String(children) === "TASK_PLAN_HEADER") {
           return (
-            <div className="my-6 border border-border/30 bg-card shadow-sm relative overflow-hidden max-w-full">
-              <div className="flex items-center justify-between px-3 py-2 bg-muted/20 border-b border-border/30">
-                <div className="flex items-center gap-2">
-                  <Terminal size={14} className="text-muted-foreground" />
-                  <span className="text-[10px] uppercase tracking-widest text-muted-foreground font-mono">
-                    {agent ? `${agent} • shell` : 'shell'}
-                  </span>
-                </div>
-              </div>
-              <div className="p-4 bg-transparent font-mono text-[12px] text-muted-foreground overflow-x-auto max-h-64 overflow-y-auto whitespace-pre-wrap break-words scrollbar-thin scrollbar-thumb-border/30 scrollbar-track-transparent">
-                <code>$ {cmd}</code>
-              </div>
+            <div className="not-prose mb-4 mt-8 flex items-center gap-2 border-b border-border pb-2 text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+              <ListChecks size={14} />
+              Research Plan
             </div>
           );
         }
         return (
-          <div className="my-6 border border-border/30 bg-card shadow-sm relative overflow-hidden max-w-full">
-            <div className="flex items-center justify-between px-3 py-2 bg-muted/20 border-b border-border/30">
-              <div className="flex items-center gap-2">
-                <Wrench weight="regular" size={14} className="text-muted-foreground" />
-                <span className="text-[10px] uppercase tracking-widest text-muted-foreground font-mono">
-                  {agent ? `${agent} • ${tool}` : tool}
-                </span>
-              </div>
-              <CustomSpinner />
-            </div>
-            <div className="p-4 bg-transparent font-mono text-[12px] text-muted-foreground overflow-x-auto max-h-64 overflow-y-auto whitespace-pre-wrap break-words scrollbar-thin scrollbar-thumb-border/30 scrollbar-track-transparent">
-              <code>{children}</code>
-            </div>
-          </div>
-        );
-      }
-
-      if (!inline && type === "tool-result") {
-        return (
-          <div className="my-6 border border-border/30 bg-card shadow-sm max-w-full overflow-hidden">
-            <div className="flex items-center justify-between px-3 py-2 bg-muted/20 border-b border-border/30">
-              <div className="flex items-center gap-2">
-                <Database weight="regular" size={14} className="text-muted-foreground" />
-                <span className="text-[10px] uppercase tracking-widest text-muted-foreground font-mono">
-                  {agent ? `${agent} • result` : 'result'}
-                </span>
-              </div>
-              <CheckCircle weight="regular" size={14} className="text-muted-foreground" />
-            </div>
-            <div className="p-4 bg-transparent font-mono text-[12px] text-foreground/80 overflow-x-auto max-h-64 overflow-y-auto whitespace-pre-wrap break-words scrollbar-thin scrollbar-thumb-border/30 scrollbar-track-transparent">
-              <code>{tryFormatJson(String(children))}</code>
-            </div>
-          </div>
-        );
-      }
-      return !inline ? (
-        <div className="bg-muted/10 border border-border/30 p-4 my-6 font-mono text-[12px] overflow-x-auto max-w-full break-words whitespace-pre-wrap overflow-wrap-anywhere">
-          <code className={className} {...props}>
+          <h3 className="mb-3 mt-7 border-l-2 border-primary pl-3 text-2xl font-serif leading-tight tracking-tight text-foreground" {...props}>
             {children}
-          </code>
-        </div>
-      ) : (
-        <code className="bg-muted/30 border border-border/30 px-1 py-0.5 font-mono text-[11px] text-foreground break-all" {...props}>
-          {children}
-        </code>
-      );
-    },
-    blockquote({ children }: React.BlockquoteHTMLAttributes<HTMLQuoteElement>) {
-      return (
-        <blockquote className="border-l-4 border-primary pl-4 py-3 my-6 bg-primary/5 text-muted-foreground font-serif text-sm italic shadow-[inset_10px_0_20px_-10px_color-mix(in_srgb,var(--primary)_10%,transparent)] break-words">
-          {children}
-        </blockquote>
-      );
-    },
-  }), []);
-
-  return (
-    <div data-testid="streaming-view" className="flex-1 px-6 py-12 md:px-12 lg:px-24 bg-background">
-      <div className="max-w-7xl mx-auto flex flex-col gap-16 pb-24 animate-in fade-in slide-in-from-bottom-8 duration-1000">
-        <StreamingHeader />
-
-        <div 
-          className="relative group flex h-[850px] w-full overflow-hidden" 
-          ref={containerRef}
-          onMouseMove={handleMouseMove}
-        >
-          {/* Unified Frame */}
-          <div className="relative border border-border bg-card/40 backdrop-blur-md transition-colors duration-500 group-hover:border-primary/50 flex-1 flex flex-col h-full overflow-hidden min-w-0">
-            {/* Interactive Lighting Overlay */}
-            <div 
-              ref={spotlightRef}
-              className="pointer-events-none absolute -inset-px opacity-0 transition-opacity duration-300 z-10 group-hover:opacity-100"
-              style={{
-                background: "radial-gradient(1000px circle at var(--spotlight-x, 50%) var(--spotlight-y, 50%), color-mix(in srgb, var(--primary) 8%, transparent), transparent 40%)",
-              }}
-            />
-
-            {/* Textures */}
-            <div className="absolute inset-0 opacity-[0.03] bg-[url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0IiBoZWlnaHQ9IjQiPjxyZWN0IHdpZHRoPSI0IiBoZWlnaHQ9IjQiIGZpbGw9IiNmZmYiIGZpbGwtb3BhY2l0eT0iMC4wNSIvPjwvc3ZnPg==')] pointer-events-none mix-blend-overlay z-0"></div>
-            <div className="absolute inset-0 bg-[linear-gradient(to_right,#80808012_1px,transparent_1px),linear-gradient(to_bottom,#80808012_1px,transparent_1px)] bg-[size:32px_32px] pointer-events-none z-0"></div>
-
-            {/* Header / Title Bar */}
-            <div className="flex items-center justify-between px-6 py-4 border-b border-border/50 bg-muted/20 shrink-0 relative z-20">
-              <div className="flex items-center gap-3">
-                <Terminal size={20} className="text-primary/70" />
-                <span className="text-[11px] uppercase tracking-[0.4em] text-muted-foreground font-mono font-bold">Orchestrator.System_Telemetry</span>
+          </h3>
+        );
+      },
+      ul({ children, ...props }: React.HTMLAttributes<HTMLUListElement>) {
+        const hasStatusItems = Children.toArray(children).some(nodeContainsStatusMarker);
+        if (!hasStatusItems) {
+          return (
+            <ul className="my-5 list-disc space-y-2 pl-6 marker:text-primary/60" {...props}>
+              {children}
+            </ul>
+          );
+        }
+        return (
+          <ul className="not-prose my-5 flex max-w-full flex-col gap-0 overflow-hidden border border-border bg-card/80" {...props}>
+            {children}
+          </ul>
+        );
+      },
+      li({ children }: React.HTMLAttributes<HTMLElement>) {
+        const childArray = Array.isArray(children) ? [...children] : [children];
+        const firstChild = childArray[0];
+        let status = "";
+        if (typeof firstChild === "string" && firstChild.startsWith("STATUS:")) {
+          const match = firstChild.match(/^STATUS:(done|completed|in_progress|pending)\|(.*)/);
+          if (match) {
+            status = match[1];
+            childArray[0] = match[2];
+          }
+        }
+        if (status) {
+          const isDone = status === "done" || status === "completed";
+          const isProgress = status === "in_progress";
+          return (
+            <li
+              className={`flex max-w-full list-none items-start gap-4 overflow-hidden border-b border-border/70 p-3.5 last:border-0 ${
+                isProgress ? "bg-primary/5" : isDone ? "bg-muted/15 text-muted-foreground" : "text-muted-foreground/70"
+              }`}
+            >
+              <div className="mt-0.5 shrink-0">
+                <ProgressMark status={status} />
               </div>
-              <div className="flex items-center gap-4">
-                 <div className="flex gap-2">
-                    <div className="w-2 h-2 bg-destructive/50"></div>
-                    <div className="w-2 h-2 bg-primary/50"></div>
-                    <div className="w-2 h-2 bg-green-500/50"></div>
-                 </div>
-                 <div className="flex items-center gap-2 border-l border-border/50 pl-4">
-                    <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
-                    <span className="text-[9px] uppercase tracking-widest text-green-500 font-mono font-bold underline decoration-green-500/30 underline-offset-4">Live.Link</span>
-                 </div>
-              </div>
-            </div>
-
-            {/* System Log Section */}
-            <div className="flex-1 min-h-0 relative z-20 flex flex-col">
-              <div 
-                ref={logViewportRef}
-                onScroll={handleLogScroll}
-                className="absolute inset-0 overflow-y-auto overflow-x-hidden scrollbar-thin scrollbar-thumb-primary/50 scrollbar-track-transparent"
-              >
-                <TodoManifest todos={latestTodos ?? []} className="sticky top-0" />
-                <div className="p-8 md:p-12">
-                  <OrchestratorLogContent 
-                    orchestratorText={processedText} 
-                    displayedText={displayedText}
-                    markdownComponents={markdownComponents}
-                  />
+              <div className="min-w-0 flex-1">
+                <div className={`break-words font-sans text-sm leading-relaxed ${isProgress ? "text-foreground" : ""}`}>
+                  {childArray}
+                </div>
+                <div className="mt-1 font-sans text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+                  {statusLabel(status)}
                 </div>
               </div>
-              {!isLogAutoScrolling && (
-                <button
-                  type="button"
-                  onClick={scrollToLatest}
-                  className="absolute bottom-5 right-5 z-40 inline-flex items-center gap-2 border border-primary/50 bg-card/95 px-3 py-2 font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-primary shadow-[8px_8px_0_color-mix(in_srgb,var(--primary)_18%,transparent)] backdrop-blur transition-colors hover:bg-primary hover:text-primary-foreground"
-                >
-                  <ArrowDown size={14} />
-                  Latest
-                </button>
-              )}
+            </li>
+          );
+        }
+        return <li className="break-words font-serif text-[16px] leading-7 text-foreground/80">{children}</li>;
+      },
+      p({ children, ...props }: React.HTMLAttributes<HTMLParagraphElement>) {
+        return (
+          <p className="mb-5 break-words font-serif text-[17px] leading-7 text-foreground/85" {...props}>
+            {children}
+          </p>
+        );
+      },
+      pre({ children }) {
+        return <>{children}</>;
+      },
+      code({ inline, className, children, ...props }: React.HTMLAttributes<HTMLElement> & { inline?: boolean }) {
+        const match = /language-([\w-]+)(?:\|([^|]+)\|([^|]+))?/.exec(className || "");
+        const type = match ? match[1] : "";
+        const agent = match ? match[2] : "";
+        const tool = match ? match[3] : "";
+        if (!inline && type === "thinking") {
+          return (
+            <div className="not-prose my-6 max-w-full overflow-hidden border-l-2 border-border/70 bg-muted/10 py-3 pl-4 pr-3">
+              <div className="mb-2 flex items-center gap-2 font-sans text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
+                <Brain weight="regular" size={14} />
+                Reasoning Notes
+              </div>
+              <div className="break-words font-serif text-[15px] italic leading-6 text-muted-foreground/90 overflow-wrap-anywhere">
+                {children}
+              </div>
+            </div>
+          );
+        }
+        if (!inline && type === "tool-call") {
+          if (tool === "execute" || tool === "python" || tool === "execute_python") {
+            let cmd = String(children);
+            try {
+              const parsed = JSON.parse(cmd);
+              if (parsed.command) cmd = parsed.command;
+              if (parsed.code) cmd = parsed.code;
+            } catch {}
+            return <ToolActivityBlock agent={agent} tool={tool || "execute"} variant="command" payload={cmd} />;
+          }
+          return <ToolActivityBlock agent={agent} tool={tool} variant="call" payload={tryFormatJson(String(children))} />;
+        }
+
+        if (!inline && type === "tool-result") {
+          return null;
+        }
+        return !inline ? (
+          <div className="not-prose my-6 max-w-full overflow-x-auto border border-border bg-muted/20 p-4 font-mono text-[12px] whitespace-pre-wrap break-words text-muted-foreground overflow-wrap-anywhere">
+            <code className={className} {...props}>
+              {children}
+            </code>
+          </div>
+        ) : (
+          <code className="break-all border border-border bg-muted/30 px-1 py-0.5 font-mono text-[11px] text-foreground" {...props}>
+            {children}
+          </code>
+        );
+      },
+      blockquote({ children }: React.BlockquoteHTMLAttributes<HTMLQuoteElement>) {
+        return (
+          <blockquote className="my-6 break-words border-l-4 border-primary bg-primary/5 py-3 pl-4 font-serif text-base italic leading-7 text-muted-foreground">
+            {children}
+          </blockquote>
+        );
+      },
+    }),
+    [],
+  );
+
+  return (
+    <div data-testid="streaming-view" className="flex min-h-0 flex-1 bg-background px-4 py-5 md:px-8 md:py-8 lg:px-12">
+      <section className="relative mx-auto flex min-h-0 w-full max-w-5xl flex-1 flex-col overflow-hidden animate-in fade-in slide-in-from-bottom-4 duration-500">
+        <div className="flex shrink-0 flex-col gap-4 border-b border-border/70 px-1 pb-5 md:flex-row md:items-center md:justify-between">
+          <div className="flex min-w-0 items-start gap-4">
+            <div className="mt-0.5 hidden h-10 w-10 shrink-0 items-center justify-center border border-primary/25 bg-primary/5 text-primary sm:flex">
+              <Brain weight="regular" size={18} />
+            </div>
+            <div className="min-w-0">
+              <div className="font-sans text-[10px] uppercase tracking-[0.22em] text-primary">Live Research Ledger</div>
+              <h3 className="mt-1 font-serif text-2xl leading-tight tracking-tight text-foreground">Research notes</h3>
+              <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">
+                Coordinating agents, collecting evidence, and recording material updates as they arrive.
+              </p>
             </div>
           </div>
+          <div className="flex shrink-0 items-center gap-3 border border-border/70 bg-muted/35 px-3 py-2 font-sans text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
+            <span className="h-1.5 w-1.5 animate-pulse bg-primary" aria-hidden="true" />
+            Live
+          </div>
         </div>
-      </div>
+
+        <div className="relative min-h-0 flex-1">
+          <div
+            ref={logViewportRef}
+            onScroll={handleLogScroll}
+            data-testid="orchestrator-log"
+            className="scrollbar-editorial absolute inset-0 overflow-y-auto overflow-x-hidden px-1 py-6 md:py-8"
+          >
+            <OrchestratorLogContent
+              orchestratorText={processedText}
+              displayedText={displayedText}
+              markdownComponents={markdownComponents}
+            />
+          </div>
+          {!isLogAutoScrolling && (
+            <button
+              type="button"
+              onClick={scrollToLatest}
+              className="absolute bottom-5 right-1 z-10 inline-flex items-center gap-2 border border-primary bg-background/90 px-3 py-2 font-sans text-[10px] uppercase tracking-[0.16em] text-primary shadow-lg backdrop-blur transition-colors hover:bg-primary hover:text-primary-foreground"
+            >
+              <ArrowDown size={14} />
+              Latest
+            </button>
+          )}
+        </div>
+      </section>
     </div>
   );
 });

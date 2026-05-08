@@ -1,5 +1,6 @@
 """Middleware guardrails for the quantitative developer subagent."""
 import ast
+import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
@@ -44,6 +45,7 @@ from .script_inspection import (
     _python_tree_for_write,
     _request_with_tool_content,
     _rewrite_manifest_paths,
+    _uses_runtime_installer,
     _unique_existing_sibling_data_path,
 )
 from .tool_utils import (
@@ -56,6 +58,22 @@ from .tool_utils import (
 
 class QuantDeveloperToolBoundaryMiddleware(AgentMiddleware):
     """Force quant-developer to write the analysis script before probing data."""
+
+    _PACKAGE_INSTALL_RE = re.compile(
+        r"(?ix)"
+        r"(^|[\s;&|()])("
+        r"(?:[\w./-]+/)?pip(?:3(?:\.\d+)?)?(?:\s+-[^\s;&|()]+)*\s+install"
+        r"|(?:[\w./-]+/)?python(?:3(?:\.\d+)?)?\s+-m\s+pip(?:\s+-[^\s;&|()]+)*\s+install"
+        r"|(?:[\w./-]+/)?uv\s+pip(?:\s+-[^\s;&|()]+)*\s+install"
+        r"|(?:[\w./-]+/)?uv\s+add"
+        r"|(?:[\w./-]+/)?poetry\s+add"
+        r"|(?:[\w./-]+/)?conda\s+install"
+        r"|(?:[\w./-]+/)?mamba\s+install"
+        r"|(?:[\w./-]+/)?apt(?:-get)?\s+install"
+        r"|ensurepip"
+        r"|get-pip\.py"
+        r")($|[\s;&|()])"
+    )
 
     def _allowed_tools(self, request: ModelRequest) -> set[str]:
         if _has_written_analysis_script(list(request.messages)):
@@ -165,6 +183,47 @@ class QuantDeveloperToolBoundaryMiddleware(AgentMiddleware):
             tool_call_id=_tool_call_id(request.tool_call),
             status="error",
         )
+
+    def _runtime_install_message(self, request: ToolCallRequest) -> ToolMessage | None:
+        tool_name = _tool_call_name(request.tool_call)
+        args = _tool_call_args(request.tool_call)
+
+        if tool_name == "execute":
+            command = str(args.get("command") or "")
+            if self._PACKAGE_INSTALL_RE.search(command):
+                return ToolMessage(
+                    content=(
+                        "Blocked quant-developer runtime package installation. "
+                        "The quant execution environment already includes the "
+                        "backend Python dependencies such as pandas, numpy, and scipy. "
+                        "Run the generated analysis script with the configured "
+                        "interpreter; do not run pip, uv, apt, poetry, conda, "
+                        "mamba, ensurepip, or get-pip.py."
+                    ),
+                    name="execute",
+                    tool_call_id=_tool_call_id(request.tool_call),
+                    status="error",
+                )
+
+        if tool_name == "write_file":
+            content = args.get("content")
+            file_path = str(args.get("file_path") or args.get("path") or "")
+            if isinstance(content, str) and file_path.endswith(".py"):
+                tree, syntax_error = _python_tree_for_write(content)
+                if syntax_error is None and tree is not None and _uses_runtime_installer(tree):
+                    return ToolMessage(
+                        content=(
+                            "Blocked quant analysis script before writing because it "
+                            "attempts runtime package installation. The quant "
+                            "environment already includes pandas, numpy, and scipy; "
+                            "optional libraries must degrade through the local helper "
+                            "fallbacks instead of installing packages."
+                        ),
+                        name="write_file",
+                        tool_call_id=_tool_call_id(request.tool_call),
+                        status="error",
+                    )
+        return None
 
     def _script_budget_message(self, request: ToolCallRequest) -> ToolMessage | None:
         if _tool_call_name(request.tool_call) != "write_file":
@@ -1085,6 +1144,8 @@ class QuantDeveloperToolBoundaryMiddleware(AgentMiddleware):
                     return self._blocked_tool_message(request)
             if tool_name not in _AFTER_WRITE_TOOL_NAMES:
                 return self._blocked_tool_message(request)
+            if runtime_install_message := self._runtime_install_message(request):
+                return runtime_install_message
             if path_message := self._script_path_message(request):
                 return path_message
             if existing_script_message := self._existing_initial_script_message(request):
@@ -1134,6 +1195,8 @@ class QuantDeveloperToolBoundaryMiddleware(AgentMiddleware):
                     return self._blocked_tool_message(request)
             if tool_name not in _AFTER_WRITE_TOOL_NAMES:
                 return self._blocked_tool_message(request)
+            if runtime_install_message := self._runtime_install_message(request):
+                return runtime_install_message
             if path_message := self._script_path_message(request):
                 return path_message
             if existing_script_message := self._existing_initial_script_message(request):
@@ -1163,5 +1226,4 @@ class QuantDeveloperToolBoundaryMiddleware(AgentMiddleware):
             return await handler(request)
         except Exception as exc:
             return self._tool_runtime_exception_message(request, exc)
-
 

@@ -21,26 +21,21 @@ describe('Research Agent — Happy Path (E2E)', () => {
     cy.snap('04-begin-research-button');
 
     // ── Phase 3: Streaming view (real backend handles resume) ──────────────────
-    // Backend emits execution_started + agent_start immediately from checkpoint
-    // before the full pipeline runs, so pipeline-step appears within seconds.
     cy.get('[data-testid="begin-research-button"]').click();
     cy.url().should('match', /\/chat\/.+/, { timeout: 15000 });
 
     cy.get('[data-testid="streaming-view"]', { timeout: 15000 }).should('exist');
     cy.snap('05-streaming-view');
 
-    cy.get('[data-testid="pipeline-step"]', { timeout: 30000 }).should('have.length.at.least', 1);
-    cy.snap('06-pipeline-steps');
-
     cy.get('[data-testid="orchestrator-log-content"]', { timeout: 30000 }).should('exist');
-    cy.snap('07-orchestrator-streaming');
+    cy.snap('06-orchestrator-streaming');
 
     // ── Phase 4: Final report (real pipeline takes 5–10 minutes) ──────────────
     cy.get('[data-testid="report-view"]', { timeout: 600000 }).should('exist');
     cy.get('[data-testid="report-title"]').should('exist').and('not.be.empty');
-    cy.snap('08-report-rendered');
+    cy.snap('07-report-rendered');
 
     cy.get('.recharts-wrapper').should('exist');
-    cy.snap('09-chart-visible');
+    cy.snap('08-chart-visible');
   });
 });

@@ -16,7 +16,7 @@ export default function ChatPageClient({ jobId }: { jobId: string }) {
     return stored ? (JSON.parse(stored) as Message[]) : [];
   });
 
-  const { status, orchestratorText, pipelineSteps, report, errorText } = useResearchStream({
+  const { status, orchestratorText, report, errorText } = useResearchStream({
     jobId,
     messages,
   });
@@ -31,7 +31,7 @@ export default function ChatPageClient({ jobId }: { jobId: string }) {
           </div>
         )}
         {status === "streaming" && (
-          <StreamingView orchestratorText={orchestratorText} pipelineSteps={pipelineSteps} />
+          <StreamingView orchestratorText={orchestratorText} />
         )}
         {status === "report_ready" && report && <ReportView report={report} />}
         {(status === "failed" || status === "error") && (

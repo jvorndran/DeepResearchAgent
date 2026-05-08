@@ -4,8 +4,9 @@ import logging
 from uuid import uuid4
 
 from langchain.chat_models import init_chat_model
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
+from ..chat_surface_tool import emit_chat_message
 from .heuristics import (
     _actionable_fred_macro_summary,
     _actionable_macro_scenario_summary,

@@ -66,7 +66,7 @@ async def get_report(
             raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
         if read_job_status(job_id) is not None or report_path.exists():
             raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
-    elif owned_job.status == JobStatus.RUNNING.value:
+    elif owned_job.status == JobStatus.RUNNING.value and not report_path.exists():
         raise HTTPException(status_code=202, detail="Research in progress")
 
     if report_path.exists():
