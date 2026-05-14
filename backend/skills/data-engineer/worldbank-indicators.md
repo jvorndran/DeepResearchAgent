@@ -6,22 +6,20 @@ triggers: [World Bank, cross-country, Canada, Germany, Japan, Mexico, annual inf
 
 # World Bank Indicators Workflow
 
-Use `worldbank_get_indicator` only for cross-country annual macro comparisons where World Bank adds non-US context beyond FRED.
+Cross-country annual inflation and GDP growth use World Bank annual indicators
+via `worldbank_get_indicator`.
 
-Supported scope:
-- Countries: `USA`, `CAN`, `DEU`, `JPN`, `MEX` plus common aliases.
-- Indicators: `inflation` / `FP.CPI.TOTL.ZG`, `gdp_growth` / `NY.GDP.MKTP.KD.ZG`.
-- Authentication: none. Do not request keys, signups, OAuth, paid providers, hosted services, or FMP.
-
-Call budget:
-1. One call per indicator is usually enough: fetch all needed countries together.
-2. For the evaluation query, call once for `inflation` and once for `gdp_growth`, then use FRED separately only for useful US monthly/quarterly context.
-3. If a call returns `status:error`, correct country/indicator/year input once. If unavailable after that, return the compact error and do not switch providers.
-
-Output handling:
-- `worldbank_get_indicator` saves the CSV and returns `data_files`, `row_counts`, and metadata. Do not call `save_data` afterward.
-- Return only paths and compact metadata to downstream agents. Never paste raw observations into chat.
-- Preserve the `handoff_guidance` metadata so quant-developer knows the World Bank data is annual.
-
-Frequency caveat:
-World Bank annual indicators are not a drop-in replacement for monthly or quarterly FRED series. When combining them, tell quant-developer to align frequencies explicitly and to state limitations. Do not forward-fill annual values into monthly analysis without disclosing that assumption.
+- **WORLD BANK CROSS-COUNTRY MACRO:** Use World Bank for inflation or growth
+  comparisons across USA, Canada, Germany, Japan, or Mexico. It requires no API
+  key; `worldbank_get_indicator` saves World Bank CSVs and returns `data_files`;
+  do not call `save_data` afterward.
+- Supported countries: `USA`, `CAN`, `DEU`, `JPN`, `MEX`. Supported indicators:
+  `inflation`/`FP.CPI.TOTL.ZG` and `gdp_growth`/`NY.GDP.MKTP.KD.ZG`.
+- World Bank data is annual. For US monthly/quarterly context use FRED
+  separately and tell quant-developer to align frequencies explicitly. Do not
+  forward-fill annual values into monthly analysis without calling out the
+  limitation.
+- If World Bank returns `status:disabled` or `status:error`, report that
+  compactly; do not switch to paid providers and do not replace the
+  peer-country request with guessed FRED/OECD series searches unless the user
+  specifically asked for FRED international series.

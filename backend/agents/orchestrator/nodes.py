@@ -1,10 +1,23 @@
 """Deterministic nodes and routing helpers for orchestrator graph."""
-import json
+
 import re
 from typing import Any
 
-from .common import FredMCPRequiredError, HumanMessage, MCPTimeoutError, ToolMessage, google, httpx, interrupt
-from .prompts import EXECUTION_SYSTEM_PROMPT
+from langgraph.runtime import Runtime
+
+from ..data_toolbox import (
+    DATA_TOOLBOX_PREFERENCE_KEY,
+    format_data_toolbox_for_prompt,
+    normalize_data_toolbox,
+)
+from .common import (
+    FredMCPRequiredError,
+    HumanMessage,
+    ResearchContext,
+    google,
+    httpx,
+    interrupt,
+)
 
 # =============================================================================
 # DETERMINISTIC NODE FUNCTIONS
@@ -35,6 +48,19 @@ def approval_gate_node(state: dict) -> dict:
         "research_summary": "",
         "messages": [HumanMessage(content=str(result))],
     }
+
+
+def prepare_execution_node(
+    state: dict,
+    *,
+    runtime: Runtime[ResearchContext],
+) -> dict[str, Any]:
+    """Copy checkpointed toolbox metadata into runtime context before execution."""
+    toolbox = normalize_data_toolbox(state.get("data_toolbox"))
+    preferences = runtime.context.preferences or {}
+    preferences[DATA_TOOLBOX_PREFERENCE_KEY] = toolbox
+    runtime.context.preferences = preferences
+    return {}
 
 
 def _message_content_text(content: Any) -> str:
@@ -77,13 +103,14 @@ def _build_execution_kickoff_message(state: dict) -> HumanMessage:
         if approved_request
         else "Full approved user request for `original_query`: use the latest user research request from the conversation."
     )
+    toolbox_line = format_data_toolbox_for_prompt(state.get("data_toolbox"))
     return HumanMessage(
         content=(
             "Research is approved. Begin the execution pipeline now. "
             "On your first execution turn, emit no assistant prose and make exactly "
             "two tool calls: first `emit_chat_message` with a brief status update, "
-            "then `task` with `subagent_type=\"data-engineer\"`. "
-            f"{summary_line}\n{request_line}"
+            'then `task` with `subagent_type="data-engineer"`. '
+            f"{summary_line}\n{request_line}\n{toolbox_line}"
         )
     )
 

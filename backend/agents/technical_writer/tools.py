@@ -56,7 +56,20 @@ _SCENARIO_QUERY_KEYWORDS = {
     "bear case",
 }
 
-_SUPPORTED_CHART_TYPES = {"line", "bar", "area", "composed", "scatter", "pie"}
+_SUPPORTED_CHART_TYPES = {
+    "line",
+    "bar",
+    "area",
+    "composed",
+    "scatter",
+    "pie",
+    "treemap",
+    "radar",
+    "radialBar",
+    "funnel",
+    "sankey",
+    "sunburst",
+}
 _BACKEND_DIR = Path(__file__).resolve().parents[2]
 _PLAN_CONTEXT_FILENAME = ".technical_writer_plan_context.json"
 
@@ -273,6 +286,35 @@ def _series_from_keyed_config(series_config: dict) -> list[dict]:
     return series
 
 
+def _series_from_config_y_axis(config: dict) -> list[dict]:
+    """Normalize legacy `config.yAxis` lists into canonical series entries."""
+    y_axis = config.get("yAxis") or config.get("y_axis")
+    if not isinstance(y_axis, list):
+        return []
+    colors = config.get("colors") if isinstance(config.get("colors"), list) else []
+    series: list[dict] = []
+    for idx, item in enumerate(y_axis):
+        if not isinstance(item, dict):
+            continue
+        data_key = item.get("dataKey") or item.get("key")
+        if not isinstance(data_key, str) or not data_key:
+            continue
+        series_item = {
+            "dataKey": data_key,
+            "label": item.get("label") or item.get("name") or _labelize_key(data_key),
+            "color": item.get("color") or (colors[idx] if idx < len(colors) else "#3b82f6"),
+        }
+        y_axis_id = item.get("yAxisId") or item.get("axis")
+        if y_axis_id in {"left", "right"}:
+            series_item["yAxisId"] = y_axis_id
+        elif len(y_axis) > 1:
+            series_item["yAxisId"] = "left" if idx == 0 else "right"
+        if item.get("type") in {"line", "bar", "area"}:
+            series_item["type"] = item["type"]
+        series.append(series_item)
+    return series
+
+
 def _coerce_radar_to_bar(chart_copy: dict) -> dict:
     """Represent unsupported radar charts as canonical grouped bar charts."""
     data = chart_copy.get("data")
@@ -309,6 +351,87 @@ def _coerce_radar_to_bar(chart_copy: dict) -> dict:
     if isinstance(chart_copy.get("description"), str):
         chart_copy["description"] = chart_copy["description"].replace("Radar chart", "Bar chart")
     return chart_copy
+
+
+def _infer_category_key_from_rows(data: Any, preferred: tuple[str, ...]) -> str | None:
+    if not isinstance(data, list):
+        return None
+    first_row = next((row for row in data if isinstance(row, dict)), None)
+    if not isinstance(first_row, dict):
+        return None
+    for key in preferred:
+        if key in first_row:
+            return key
+    return next(
+        (
+            key
+            for key, value in first_row.items()
+            if isinstance(value, str) or key.lower() in {"date", "period", "name", "label"}
+        ),
+        next(iter(first_row.keys()), None),
+    )
+
+
+def _infer_numeric_series_from_rows(data: Any, category_key: str | None) -> list[dict]:
+    if not isinstance(data, list):
+        return []
+    first_row = next((row for row in data if isinstance(row, dict)), None)
+    if not isinstance(first_row, dict):
+        return []
+    colors = ["#3b82f6", "#f59e0b", "#10b981", "#ef4444", "#8b5cf6"]
+    series: list[dict] = []
+    for key, value in first_row.items():
+        if key == category_key or isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        series.append(
+            {
+                "dataKey": key,
+                "label": _labelize_key(key),
+                "color": colors[len(series) % len(colors)],
+            }
+        )
+    return series
+
+
+def _normalize_radar_chart_schema(chart_copy: dict) -> None:
+    if not isinstance(chart_copy.get("angleKey"), str):
+        angle_key = (
+            chart_copy.get("categoryKey")
+            or chart_copy.get("subjectKey")
+            or chart_copy.get("nameKey")
+            or _infer_category_key_from_rows(
+                chart_copy.get("data"),
+                ("subject", "metric", "dimension", "name", "label", "period"),
+            )
+        )
+        if isinstance(angle_key, str) and angle_key:
+            chart_copy["angleKey"] = angle_key
+    if "series" not in chart_copy:
+        chart_copy["series"] = _infer_numeric_series_from_rows(
+            chart_copy.get("data"),
+            chart_copy.get("angleKey"),
+        )
+
+
+def _normalize_segment_chart_values(chart_copy: dict) -> None:
+    data = chart_copy.get("data")
+    if not isinstance(data, list):
+        return
+    normalized_rows = []
+    for row in data:
+        if not isinstance(row, dict):
+            normalized_rows.append(row)
+            continue
+        row_copy = dict(row)
+        if "value" not in row_copy and "size" in row_copy:
+            row_copy["value"] = row_copy["size"]
+        if "name" not in row_copy:
+            for alias in ("label", "stage", "category", "metric"):
+                if isinstance(row_copy.get(alias), str) and row_copy[alias].strip():
+                    row_copy["name"] = row_copy[alias]
+                    break
+        normalized_rows.append(row_copy)
+    chart_copy["data"] = normalized_rows
 
 
 def _flatten_panel_axis_data(chart_copy: dict) -> None:
@@ -371,6 +494,8 @@ def _normalize_chart_definitions(charts_on_disk: dict) -> dict:
     chart_type_aliases = {
         "composite": "composed",
         "combo": "composed",
+        "dualaxis": "composed",
+        "dual_axis": "composed",
         "dualaxislinebar": "composed",
         "dual_axis_line_bar": "composed",
         "duallaxischart": "composed",
@@ -383,6 +508,13 @@ def _normalize_chart_definitions(charts_on_disk: dict) -> dict:
         "compositechart": "composed",
         "scatterchart": "scatter",
         "piechart": "pie",
+        "treemapchart": "treemap",
+        "radarchart": "radar",
+        "radialbar": "radialBar",
+        "radialbarchart": "radialBar",
+        "funnelchart": "funnel",
+        "sankeychart": "sankey",
+        "sunburstchart": "sunburst",
     }
 
     for chart_id, chart_def in charts_on_disk.items():
@@ -408,24 +540,30 @@ def _normalize_chart_definitions(charts_on_disk: dict) -> dict:
         if "referenceLines" not in chart_copy and isinstance(chart_copy.get("reference_lines"), list):
             chart_copy["referenceLines"] = chart_copy["reference_lines"]
         chart_copy.setdefault("description", _infer_chart_description(chart_copy, chart_id))
+        if isinstance(chart_copy.get("layout"), dict):
+            layout_value = layout.get("layout") or layout.get("chartLayout") or layout.get("orientation")
+            if layout_value in {"horizontal", "vertical"}:
+                chart_copy["layout"] = layout_value
+            else:
+                chart_copy.pop("layout", None)
 
         if "type" not in chart_copy and isinstance(chart_copy.get("chart_type"), str):
             chart_copy["type"] = chart_copy["chart_type"]
         if "type" not in chart_copy and isinstance(chart_copy.get("chartType"), str):
             chart_copy["type"] = chart_copy["chartType"]
         if isinstance(chart_copy.get("type"), str):
-            normalized_type = chart_copy["type"].replace(" ", "").lower()
+            normalized_type = re.sub(r"[\s_-]+", "", chart_copy["type"]).lower()
             chart_copy["type"] = chart_type_aliases.get(normalized_type, normalized_type)
         chart_copy.setdefault("title", _infer_chart_title(chart_copy, chart_id))
 
         config = chart_copy.get("config") if isinstance(chart_copy.get("config"), dict) else {}
         recharts_children = _recharts_children(chart_copy)
 
-        if chart_copy.get("type") == "radar":
-            chart_copy = _coerce_radar_to_bar(chart_copy)
-
         if chart_copy.get("type") not in _SUPPORTED_CHART_TYPES:
             continue
+
+        if chart_copy.get("type") == "radar":
+            _normalize_radar_chart_schema(chart_copy)
 
         if chart_copy.get("type") in {"line", "bar", "area", "composed"}:
             _flatten_panel_axis_data(chart_copy)
@@ -436,6 +574,10 @@ def _normalize_chart_definitions(charts_on_disk: dict) -> dict:
                     chart_copy["xAxisKey"] = child_x_axis_key
             if "xAxisKey" not in chart_copy and isinstance(config.get("xKey"), str):
                 chart_copy["xAxisKey"] = config["xKey"]
+            if "xAxisKey" not in chart_copy and isinstance(config.get("xAxis"), dict):
+                x_axis_data_key = config["xAxis"].get("dataKey")
+                if isinstance(x_axis_data_key, str) and x_axis_data_key:
+                    chart_copy["xAxisKey"] = x_axis_data_key
             if "xAxisKey" not in chart_copy and isinstance(chart_copy.get("xKey"), str):
                 chart_copy["xAxisKey"] = chart_copy["xKey"]
             if "xAxisKey" not in chart_copy and isinstance(chart_copy.get("x_key"), str):
@@ -475,6 +617,9 @@ def _normalize_chart_definitions(charts_on_disk: dict) -> dict:
                         for item in config_series
                         if isinstance(item, dict) and (item.get("dataKey") or item.get("key"))
                     ]
+                config_y_axis_series = _series_from_config_y_axis(config)
+                if "series" not in chart_copy and config_y_axis_series:
+                    chart_copy["series"] = config_y_axis_series
                 series_config = chart_copy.get("series_config")
                 if "series" not in chart_copy and isinstance(series_config, list):
                     chart_copy["series"] = [
@@ -586,17 +731,8 @@ def _normalize_chart_definitions(charts_on_disk: dict) -> dict:
                 chart_copy.get("color") or first_config_series.get("color") or "#3b82f6"
             )
 
-        if chart_copy.get("type") == "pie" and isinstance(chart_copy.get("data"), list):
-            pie_data = []
-            for point in chart_copy["data"]:
-                if not isinstance(point, dict):
-                    pie_data.append(point)
-                    continue
-                point_copy = dict(point)
-                if "value" not in point_copy and "size" in point_copy:
-                    point_copy["value"] = point_copy["size"]
-                pie_data.append(point_copy)
-            chart_copy["data"] = pie_data
+        if chart_copy.get("type") in {"pie", "radialBar", "funnel"}:
+            _normalize_segment_chart_values(chart_copy)
 
         normalized[chart_id] = chart_copy
 
@@ -640,6 +776,134 @@ def _chart_map_from_parsed_json(parsed: Any) -> dict:
         return parsed
 
     return {}
+
+
+def _series_fact(series: dict[str, Any]) -> str | None:
+    data_key = series.get("dataKey") or series.get("key")
+    if not isinstance(data_key, str) or not data_key.strip():
+        return None
+    label = series.get("label") or series.get("name") or _labelize_key(data_key)
+    series_type = series.get("type")
+    if isinstance(series_type, str) and series_type.strip():
+        return f"{label} ({data_key}, {series_type})"
+    return f"{label} ({data_key})"
+
+
+def _compact_chart_facts_for_draft(charts_map: dict[str, Any]) -> str:
+    """Return concise chart facts so prose matches the renderable artifacts."""
+
+    if not charts_map:
+        return ""
+
+    normalized = _normalize_chart_definitions(charts_map)
+    lines = [
+        "Chart facts from charts.json. Describe only the listed chart type, series, axes, reference bands, nodes, and data categories; do not invent overlays, rankings, or fields absent from these facts."
+    ]
+    for chart_id, chart in list(normalized.items())[:10]:
+        if not isinstance(chart, dict):
+            continue
+        chart_type = chart.get("type") or "unknown"
+        title = chart.get("title") or chart_id
+        pieces = [f"- {chart_id}: type={chart_type}; title={title}"]
+        description = chart.get("description")
+        if isinstance(description, str) and description.strip():
+            pieces.append(f"description={description.strip()}")
+
+        if chart_type in {"line", "bar", "area", "composed"}:
+            x_key = chart.get("xAxisKey") or chart.get("xKey")
+            if isinstance(x_key, str) and x_key:
+                pieces.append(f"xAxisKey={x_key}")
+            series_facts = [
+                fact
+                for item in chart.get("series", [])
+                if isinstance(item, dict)
+                for fact in [_series_fact(item)]
+                if fact
+            ]
+            if series_facts:
+                pieces.append("series=" + "; ".join(series_facts[:8]))
+            reference_areas = chart.get("referenceAreas")
+            if isinstance(reference_areas, list) and reference_areas:
+                labels = [
+                    str(area.get("label")).strip()
+                    for area in reference_areas[:6]
+                    if isinstance(area, dict) and area.get("label")
+                ]
+                pieces.append(
+                    "referenceAreas="
+                    + (", ".join(labels) if labels else str(len(reference_areas)))
+                )
+
+        elif chart_type == "scatter":
+            for key in ("xKey", "yKey", "sizeKey", "colorKey"):
+                value = chart.get(key)
+                if isinstance(value, str) and value:
+                    pieces.append(f"{key}={value}")
+            data = chart.get("data")
+            if isinstance(data, list) and data:
+                labels = [
+                    str(row.get("analog") or row.get("name") or row.get("label")).strip()
+                    for row in data[:6]
+                    if isinstance(row, dict)
+                    and (row.get("analog") or row.get("name") or row.get("label"))
+                ]
+                if labels:
+                    pieces.append("points=" + ", ".join(labels))
+
+        elif chart_type == "radar":
+            angle_key = chart.get("angleKey")
+            if isinstance(angle_key, str) and angle_key:
+                pieces.append(f"angleKey={angle_key}")
+            series_facts = [
+                fact
+                for item in chart.get("series", [])
+                if isinstance(item, dict)
+                for fact in [_series_fact(item)]
+                if fact
+            ]
+            if series_facts:
+                pieces.append("series=" + "; ".join(series_facts[:8]))
+            data = chart.get("data")
+            if isinstance(data, list) and data:
+                labels = [
+                    str(row.get(angle_key) or row.get("metric") or row.get("name")).strip()
+                    for row in data[:8]
+                    if isinstance(row, dict)
+                    and (row.get(angle_key) or row.get("metric") or row.get("name"))
+                ]
+                if labels:
+                    pieces.append("metrics=" + ", ".join(labels))
+
+        elif chart_type == "sankey":
+            data = chart.get("data") if isinstance(chart.get("data"), dict) else {}
+            nodes = data.get("nodes") if isinstance(data, dict) else []
+            links = data.get("links") if isinstance(data, dict) else []
+            if isinstance(nodes, list) and nodes:
+                node_names = [
+                    str(node.get("name")).strip()
+                    for node in nodes[:8]
+                    if isinstance(node, dict) and node.get("name")
+                ]
+                if node_names:
+                    pieces.append("nodes=" + ", ".join(node_names))
+            if isinstance(links, list) and links:
+                pieces.append(f"links={len(links)}")
+
+        elif chart_type in {"pie", "treemap", "radialBar", "funnel", "sunburst"}:
+            data = chart.get("data")
+            if isinstance(data, list) and data:
+                labels = [
+                    str(row.get("name") or row.get("label") or row.get("metric")).strip()
+                    for row in data[:8]
+                    if isinstance(row, dict)
+                    and (row.get("name") or row.get("label") or row.get("metric"))
+                ]
+                if labels:
+                    pieces.append("segments=" + ", ".join(labels))
+
+        lines.append("; ".join(pieces))
+
+    return "\n".join(lines)[:4500]
 
 
 def _resolve_charts_json_path(
@@ -1583,6 +1847,93 @@ def _compact_shallow_statistical_summary(stats_payload: dict[str, Any]) -> str |
         "Use these values as controlling facts and do not substitute stale public-memory numbers:\n"
         + "\n".join(lines[:24])
     )
+
+
+def _compact_macro_cycle_chart_pack_payload(parsed: dict[str, Any]) -> str | None:
+    if parsed.get("analysis_type") != "macro_cycle_chart_pack":
+        return None
+
+    lines: list[str] = ["Exact macro-cycle chart-pack facts from execution_summary.json:"]
+    snapshot = parsed.get("latest_snapshot")
+    if isinstance(snapshot, dict) and snapshot:
+        fields = [
+            f"{key}={_fmt_summary_number(value) if isinstance(value, (int, float)) else value}"
+            for key, value in snapshot.items()
+            if value is not None
+        ]
+        if fields:
+            lines.append("- latest_snapshot: " + "; ".join(fields[:16]))
+
+    changes = parsed.get("latest_year_changes")
+    if isinstance(changes, list) and changes:
+        change_rows = []
+        for row in changes[:12]:
+            if not isinstance(row, dict):
+                continue
+            indicator = row.get("indicator")
+            change = _fmt_summary_number(row.get("change"))
+            latest = _fmt_summary_number(row.get("latest_value"))
+            unit = row.get("unit")
+            if indicator and change is not None:
+                suffix = f" {unit}" if unit else ""
+                latest_part = f", latest={latest}" if latest is not None else ""
+                change_rows.append(f"{indicator}: change={change}{suffix}{latest_part}")
+        if change_rows:
+            lines.append("- latest_year_changes: " + "; ".join(change_rows))
+
+    analogs = parsed.get("analog_similarity_ranking")
+    if isinstance(analogs, list) and analogs:
+        analog_rows = []
+        for row in analogs[:8]:
+            if not isinstance(row, dict):
+                continue
+            fields = []
+            for key in (
+                "distance_score",
+                "labor_gap",
+                "inflation_gap",
+                "rates_gap",
+                "consumer_gap",
+            ):
+                if row.get(key) is not None:
+                    fields.append(f"{key}={_fmt_summary_number(row.get(key))}")
+            if row.get("analog") and fields:
+                analog_rows.append(f"{row['analog']}: " + ", ".join(fields))
+        if analog_rows:
+            lines.append(
+                "- analog_similarity_ranking, closest first: " + "; ".join(analog_rows)
+            )
+
+    category_scores = parsed.get("category_scores")
+    if isinstance(category_scores, list) and category_scores:
+        scores = []
+        for row in category_scores[:8]:
+            if not isinstance(row, dict):
+                continue
+            name = row.get("name")
+            value = _fmt_summary_number(row.get("value"))
+            if name and value is not None:
+                scores.append(f"{name}={value}")
+        if scores:
+            lines.append("- category_stress_scores_0_100: " + "; ".join(scores))
+
+    chart_map = parsed.get("chart_insight_map")
+    if isinstance(chart_map, dict) and chart_map:
+        insights = [
+            f"{chart_id}: {insight}"
+            for chart_id, insight in list(chart_map.items())[:10]
+            if isinstance(insight, str) and insight.strip()
+        ]
+        if insights:
+            lines.append("- chart_insight_map: " + "; ".join(insights))
+
+    limitations = parsed.get("limitations")
+    if isinstance(limitations, list) and limitations:
+        items = [str(item).strip() for item in limitations[:10] if str(item).strip()]
+        if items:
+            lines.append("- limitations: " + "; ".join(items))
+
+    return "\n".join(lines)
 
 
 def _compact_feature_acceptance_payload(parsed: dict) -> str | None:
@@ -2536,6 +2887,11 @@ def _compact_execution_summary_payload(parsed: dict) -> str:
         parts.append(validation_summary)
         compact_limit = max(compact_limit, 8000)
 
+    macro_cycle_summary = _compact_macro_cycle_chart_pack_payload(parsed)
+    if macro_cycle_summary:
+        parts.append(macro_cycle_summary)
+        compact_limit = max(compact_limit, 8000)
+
     scalar_summary = _compact_headline_scalar_metrics(parsed)
     if scalar_summary:
         parts.append(scalar_summary)
@@ -2860,6 +3216,7 @@ def plan_report_structure(
         - chart_ids: List of chart IDs discovered from charts.json
         - recommended_word_count: Target word count for the report
         - charts_json_path: Resolved absolute path to charts.json (pass unchanged to `write_research_report`)
+        - chart_facts_for_draft: Compact chart type, axis, series, and node facts from charts.json
         - execution_summary_for_draft: Writer-useful computed findings extracted from inline JSON or a job-local summary file
         - original_query: Echo of `original_query` (pass unchanged to `write_research_report`)
     """
@@ -2872,10 +3229,13 @@ def plan_report_structure(
 
     # Load chart IDs from disk — never from caller context
     chart_ids: list[str] = []
+    chart_facts_for_draft = ""
     try:
         raw = Path(charts_json_path).read_text(encoding="utf-8")
         charts_data = json.loads(raw)
-        chart_ids = list(_chart_map_from_parsed_json(charts_data).keys())
+        charts_map = _chart_map_from_parsed_json(charts_data)
+        chart_ids = list(charts_map.keys())
+        chart_facts_for_draft = _compact_chart_facts_for_draft(charts_map)
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         chart_ids = []
 
@@ -2891,7 +3251,8 @@ def plan_report_structure(
             "Do not write a disclaimer block — the system appends a standard legal footer on save. "
             "CRITICAL: You MUST include every chart from the `chart_ids` list in your markdown using the syntax `<!-- CHART:id -->`. "
             "Use ONLY those exact chart IDs; never invent chart markers for requested-but-unavailable visuals. "
-            "Place each chart marker immediately after the paragraph that discusses its data."
+            "Place each chart marker immediately after the paragraph that discusses its data. "
+            "Use `chart_facts_for_draft` as the controlling chart contract; do not describe chart series, overlays, reference bands, rankings, nodes, or fields that are absent from those facts."
         )
     else:
         general_rules = (
@@ -2903,10 +3264,17 @@ def plan_report_structure(
             "Do not write a disclaimer block — the system appends a standard legal footer on save. "
             "CRITICAL: You MUST include every chart from the `chart_ids` list in your markdown using the syntax `<!-- CHART:id -->`. "
             "Use ONLY those exact chart IDs; never invent chart markers for requested-but-unavailable visuals. "
-            "Place each chart marker immediately after the paragraph that discusses its data."
+            "Place each chart marker immediately after the paragraph that discusses its data. "
+            "Use `chart_facts_for_draft` as the controlling chart contract; do not describe chart series, overlays, reference bands, rankings, nodes, or fields that are absent from those facts."
         )
 
     execution_summary_for_draft = _compact_execution_summary(runtime, execution_summary)
+    if chart_facts_for_draft:
+        execution_summary_for_draft = (
+            chart_facts_for_draft
+            if not execution_summary_for_draft
+            else chart_facts_for_draft + "\n\n" + execution_summary_for_draft
+        )
     if _requires_scenario_table(original_query):
         general_rules += (
             " Because the query asks for scenarios or stress testing, you MUST include a "
@@ -2924,6 +3292,7 @@ def plan_report_structure(
             "chart_ids": chart_ids,
             "recommended_word_count": "1000+ words",
             "charts_json_path": charts_json_path,
+            "chart_facts_for_draft": chart_facts_for_draft,
             "execution_summary_for_draft": execution_summary_for_draft,
             "original_query": original_query,
             "echo_for_write_research_report": (
@@ -3174,13 +3543,15 @@ def validate_research_report_file(
 ) -> str:
     """
     Run the static report gate: Pydantic schema, chart marker resolution, chart coverage,
-    and optional safe auto-patches. Call after `write_research_report`.
+    chart render/data semantics, and optional safe auto-patches. Call after
+    `write_research_report`.
 
-    When `auto_patch` is True, may re-apply the canonical disclaimer footer (idempotent),
-    remove broken `<!-- CHART:id -->` markers, then write `report.json` when patches apply.
+    When `auto_patch` is True, may re-apply the canonical disclaimer footer (idempotent).
+    For non-chart queries only, it may also remove broken `<!-- CHART:id -->` markers.
 
-    `passes_gate` is false for load/schema errors, unresolved broken chart markers, or
-    charts defined in charts.json that are not referenced by a `<!-- CHART:id -->` marker.
+    `passes_gate` is false for load/schema errors, unresolved broken chart markers,
+    charts defined in charts.json that are not referenced by a `<!-- CHART:id -->` marker,
+    or chart render/data semantics blockers.
     Check `warnings` for non-blocking hints (e.g. empty executive summary). Prose compliance
     is for quality-analyst review, not static regex.
 
@@ -3190,8 +3561,9 @@ def validate_research_report_file(
         auto_patch: If True, apply auto footer re-sync and chart-marker patches when applicable.
 
     Returns:
-        JSON string with `passes_gate`, `format`, `charts`, `warnings`, `auto_patched`,
-        `patches_applied`, and `blockers`. Revise markdown and call
+        JSON string with `passes_gate`, `format`, `charts`, `chart_render`,
+        `chart_semantics`, `warnings`, `auto_patched`, `patches_applied`, and `blockers`.
+        Revise markdown and call
         `write_research_report` again if structural `blockers` remain.
     """
     if str(report_json_path).strip():

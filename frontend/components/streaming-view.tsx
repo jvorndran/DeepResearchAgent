@@ -19,6 +19,8 @@ import {
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 
+const TOOL_ACTIVITY_SETTLE_MS = 720;
+
 const tryFormatJson = (str: string | undefined): string => {
   if (!str) return "";
   try {
@@ -83,6 +85,21 @@ const payloadMeta = (value: string) => {
     lines: Math.max(1, value.split("\n").length),
     chars: value.length,
   };
+};
+
+const countCompletedToolCalls = (value: string): number => {
+  return value.match(/```tool-call\|[^\n]*\n[\s\S]*?```/g)?.length ?? 0;
+};
+
+const stripIncompleteTrailingToolCall = (value: string): string => {
+  const start = value.lastIndexOf("```tool-call|");
+  if (start === -1) return value;
+
+  const payloadStart = value.indexOf("\n", start);
+  if (payloadStart === -1) return value.slice(0, start).trimEnd();
+
+  const closingFence = value.indexOf("```", payloadStart + 1);
+  return closingFence === -1 ? value.slice(0, start).trimEnd() : value;
 };
 
 const ToolIcon = memo(function ToolIcon({ tool, size = 18 }: { tool?: string; size?: number }) {
@@ -227,7 +244,7 @@ const ToolActivityBlock = memo(function ToolActivityBlock({
   const presentation = toolActivityPresentation(rawToolName, variant);
 
   return (
-    <section className="not-prose my-4 max-w-full overflow-hidden py-1">
+    <section className="not-prose tool-activity-enter my-4 max-w-full overflow-hidden py-1">
       <div className="flex items-start gap-3">
         <div className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center ${presentation.iconClass}`}>
           <ToolIcon tool={tool} size={17} />
@@ -266,6 +283,35 @@ const ToolActivityBlock = memo(function ToolActivityBlock({
         </div>
       </div>
     </section>
+  );
+});
+
+const StreamThinkingIndicator = memo(function StreamThinkingIndicator() {
+  return (
+    <div
+      aria-live="polite"
+      aria-label="Research stream is thinking"
+      className="not-prose thinking-indicator-enter mt-5 flex items-center gap-3 py-1 text-muted-foreground"
+    >
+      <div className="flex h-7 shrink-0 items-center gap-1.5" aria-hidden="true">
+        <span className="thinking-bar h-2.5 w-1 bg-primary/45" />
+        <span className="thinking-bar h-4 w-1 bg-primary/70" />
+        <span className="thinking-bar h-6 w-1 bg-primary" />
+        <span className="thinking-bar h-4 w-1 bg-primary/70" />
+        <span className="thinking-bar h-2.5 w-1 bg-primary/45" />
+      </div>
+      <div className="min-w-0">
+        <div className="font-sans text-[10px] uppercase tracking-[0.18em] text-primary">Thinking</div>
+        <div className="mt-1 flex items-center gap-1.5 font-serif text-[15px] leading-6 text-muted-foreground">
+          <span>Working through the next step</span>
+          <span className="thinking-dots inline-flex items-end gap-1" aria-hidden="true">
+            <span className="h-1 w-1 bg-muted-foreground/70" />
+            <span className="h-1 w-1 bg-muted-foreground/70" />
+            <span className="h-1 w-1 bg-muted-foreground/70" />
+          </span>
+        </div>
+      </div>
+    </div>
   );
 });
 
@@ -309,7 +355,6 @@ const OrchestratorLogContent = memo(function OrchestratorLogContent({
           className="prose prose-lg max-w-none break-words dark:prose-invert prose-headings:font-serif prose-headings:tracking-tight prose-p:font-serif prose-p:text-foreground/85 prose-p:leading-7 prose-strong:text-foreground prose-a:text-primary overflow-wrap-anywhere"
         >
           <ReactMarkdown components={markdownComponents}>{orchestratorText}</ReactMarkdown>
-          <span className="ml-1 inline-block h-4 w-1 animate-pulse bg-primary align-middle" />
         </div>
       ) : (
         <div className="flex items-center gap-3 border-l-2 border-primary/40 pl-4 font-serif text-lg text-muted-foreground">
@@ -328,8 +373,11 @@ export default memo(function StreamingView({
 }) {
   const logViewportRef = useRef<HTMLDivElement>(null);
   const displayedTextRef = useRef("");
+  const completedToolCallCountRef = useRef(0);
+  const toolActivitySettleTimeoutRef = useRef<number | null>(null);
   const [isLogAutoScrolling, setIsLogAutoScrolling] = useState(true);
   const [displayedText, setDisplayedText] = useState("");
+  const [isToolActivitySettling, setIsToolActivitySettling] = useState(false);
 
   const cleanOrchestratorText = useMemo(() => {
     return orchestratorText.replace(/\n\n```tool-call\|[^|]*\|write_todos\n[\s\S]*?```/g, "");
@@ -356,6 +404,28 @@ export default memo(function StreamingView({
         nextText = cleanOrchestratorText.slice(0, current.length + stepSize);
       }
 
+      const completedToolCallCount = countCompletedToolCalls(nextText);
+      if (completedToolCallCount < completedToolCallCountRef.current) {
+        completedToolCallCountRef.current = completedToolCallCount;
+        setIsToolActivitySettling(false);
+        if (toolActivitySettleTimeoutRef.current !== null) {
+          window.clearTimeout(toolActivitySettleTimeoutRef.current);
+          toolActivitySettleTimeoutRef.current = null;
+        }
+      } else if (completedToolCallCount > completedToolCallCountRef.current) {
+        completedToolCallCountRef.current = completedToolCallCount;
+        setIsToolActivitySettling(true);
+
+        if (toolActivitySettleTimeoutRef.current !== null) {
+          window.clearTimeout(toolActivitySettleTimeoutRef.current);
+        }
+
+        toolActivitySettleTimeoutRef.current = window.setTimeout(() => {
+          setIsToolActivitySettling(false);
+          toolActivitySettleTimeoutRef.current = null;
+        }, TOOL_ACTIVITY_SETTLE_MS);
+      }
+
       displayedTextRef.current = nextText;
       setDisplayedText(nextText);
 
@@ -371,10 +441,24 @@ export default memo(function StreamingView({
   }, [cleanOrchestratorText]);
 
   useEffect(() => {
+    return () => {
+      if (toolActivitySettleTimeoutRef.current !== null) {
+        window.clearTimeout(toolActivitySettleTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  const isStreamingUpdate = displayedText !== cleanOrchestratorText || isToolActivitySettling;
+  const showThinkingIndicator = Boolean(displayedText) && !isStreamingUpdate;
+
+  useEffect(() => {
     if (isLogAutoScrolling && logViewportRef.current) {
-      logViewportRef.current.scrollTop = logViewportRef.current.scrollHeight;
+      logViewportRef.current.scrollTo({
+        top: logViewportRef.current.scrollHeight,
+        behavior: isToolActivitySettling || showThinkingIndicator ? "smooth" : "auto",
+      });
     }
-  }, [displayedText, isLogAutoScrolling]);
+  }, [displayedText, isLogAutoScrolling, isToolActivitySettling, showThinkingIndicator]);
 
   const handleLogScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const viewport = e.currentTarget;
@@ -391,7 +475,7 @@ export default memo(function StreamingView({
 
   const processedText = useMemo(() => {
     if (!displayedText) return "";
-    let text = displayedText;
+    let text = stripIncompleteTrailingToolCall(displayedText);
 
     if (text.includes("<thinking>")) {
       if (text.includes("</thinking>")) {
@@ -581,6 +665,7 @@ export default memo(function StreamingView({
               displayedText={displayedText}
               markdownComponents={markdownComponents}
             />
+            {showThinkingIndicator && <StreamThinkingIndicator />}
           </div>
           {!isLogAutoScrolling && (
             <button

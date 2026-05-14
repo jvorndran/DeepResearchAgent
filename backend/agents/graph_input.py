@@ -4,6 +4,8 @@ from typing import Any, Dict, Union
 
 from langgraph.types import Command
 
+from .data_toolbox import format_data_toolbox_for_prompt
+
 
 def _message_content_text(content: Any) -> str:
     if isinstance(content, str):
@@ -56,6 +58,7 @@ def _execution_override_message(state: Any) -> dict[str, str]:
         if approved_request
         else "Full approved user request for `original_query`: use the latest user research request from the conversation."
     )
+    toolbox_line = format_data_toolbox_for_prompt(values.get("data_toolbox"))
     return {
         "role": "user",
         "content": (
@@ -63,8 +66,8 @@ def _execution_override_message(state: Any) -> dict[str, str]:
             "Ignore earlier intake clarification prompts and do not wait for more "
             "answers. On your first execution turn, emit no assistant prose and "
             "make exactly two tool calls: first `emit_chat_message` with a brief "
-            "status update, then `task` with `subagent_type=\"data-engineer\"`. "
-            f"{summary_line}\n{request_line}"
+            'status update, then `task` with `subagent_type="data-engineer"`. '
+            f"{summary_line}\n{request_line}\n{toolbox_line}"
         ),
     }
 
@@ -113,9 +116,7 @@ async def resolve_graph_input(
     # prior runs.  Only pass the NEW user message to avoid duplicating
     # every message via the add_messages reducer.
     has_prior_state = (
-        state is not None
-        and hasattr(state, "values")
-        and bool(state.values.get("messages"))
+        state is not None and hasattr(state, "values") and bool(state.values.get("messages"))
     )
 
     # Manual override: user clicked "Commence Deep Research" but the graph

@@ -90,6 +90,15 @@ def _chart_series_keys(chart: dict[str, Any]) -> list[str]:
         keys = keys_from_series(config.get("series"))
         if keys:
             return keys
+        y_axis = config.get("yAxis") or config.get("y_axis")
+        if isinstance(y_axis, list):
+            keys = [
+                str(item.get("dataKey") or item.get("key"))
+                for item in y_axis
+                if isinstance(item, dict) and (item.get("dataKey") or item.get("key"))
+            ]
+            if keys:
+                return keys
         for field in ("y_keys", "yKeys"):
             values = config.get(field)
             if isinstance(values, list):
@@ -121,13 +130,55 @@ def _chart_series_keys(chart: dict[str, Any]) -> list[str]:
     return []
 
 
-def _chart_has_finite_values(chart: dict[str, Any]) -> bool:
-    data = chart.get("data")
-    if not isinstance(data, list) or not data:
-        return False
+def _is_positive_finite(value: Any) -> bool:
+    numeric = _finite_float(value)
+    return numeric is not None and numeric > 0
 
-    chart_type = str(chart.get("type") or chart.get("chart_type") or "").lower()
-    if chart_type in {"line", "bar", "area", "composed"} or _chart_series_keys(chart):
+
+def _hierarchy_value_key(value: Any, preferred: Any = None) -> str:
+    if preferred in {"size", "value"}:
+        return str(preferred)
+    stack = list(value) if isinstance(value, list) else [value]
+    while stack:
+        node = stack.pop(0)
+        if not isinstance(node, dict):
+            continue
+        if node.get("size") is not None:
+            return "size"
+        if node.get("value") is not None:
+            return "value"
+        children = node.get("children")
+        if isinstance(children, list):
+            stack.extend(children)
+    return "value"
+
+
+def _hierarchy_has_positive_values(value: Any, value_key: str, *, require_children: bool = False) -> bool:
+    if not isinstance(value, dict):
+        return False
+    children = value.get("children")
+    if children is not None:
+        return isinstance(children, list) and bool(children) and all(
+            _hierarchy_has_positive_values(child, value_key) for child in children
+        )
+    if require_children:
+        return False
+    fallback_key = "value" if value_key == "size" else "size"
+    return _is_positive_finite(value.get(value_key)) or _is_positive_finite(
+        value.get(fallback_key)
+    )
+
+
+def _chart_has_finite_values(chart: dict[str, Any]) -> bool:
+    raw_chart_type = chart.get("type") or chart.get("chart_type") or ""
+    chart_type = _canonical_chart_type(raw_chart_type) or str(raw_chart_type).strip()
+    data = chart.get("data")
+
+    if chart_type in {"line", "bar", "area", "composed"} or (
+        not chart_type and _chart_series_keys(chart)
+    ):
+        if not isinstance(data, list) or not data:
+            return False
         x_key = chart.get("xAxisKey") or chart.get("xKey") or chart.get("x_key")
         if isinstance(x_key, str) and x_key:
             if any(
@@ -145,16 +196,72 @@ def _chart_has_finite_values(chart: dict[str, Any]) -> bool:
             for key in keys
         )
     if chart_type == "scatter":
+        if not isinstance(data, list) or not data:
+            return False
         keys = [chart.get("xKey"), chart.get("yKey")]
-        return all(
+        if not all(
             isinstance(key, str)
             and any(isinstance(row, dict) and _finite_float(row.get(key)) is not None for row in data)
             for key in keys
+        ):
+            return False
+        size_key = chart.get("sizeKey")
+        return not isinstance(size_key, str) or any(
+            isinstance(row, dict) and _is_positive_finite(row.get(size_key)) for row in data
         )
-    if chart_type == "pie":
-        return all(
-            isinstance(row, dict) and _finite_float(row.get("value")) is not None
+    if chart_type == "radar":
+        if not isinstance(data, list) or not data:
+            return False
+        angle_key = chart.get("angleKey")
+        if isinstance(angle_key, str) and angle_key and any(
+            not isinstance(row, dict)
+            or row.get(angle_key) is None
+            or str(row.get(angle_key)).strip() == ""
             for row in data
+        ):
+            return False
+        keys = _chart_series_keys(chart)
+        return bool(keys) and all(
+            any(isinstance(row, dict) and _finite_float(row.get(key)) is not None for row in data)
+            for key in keys
+        )
+    if chart_type in {"pie", "radialBar", "funnel"}:
+        if not isinstance(data, list) or not data:
+            return False
+        data_key = chart.get("dataKey") if chart_type != "pie" else "value"
+        if not isinstance(data_key, str) or not data_key:
+            data_key = "value"
+        return all(
+            isinstance(row, dict) and _is_positive_finite(row.get(data_key))
+            for row in data
+        )
+    if chart_type == "treemap":
+        if not isinstance(data, list) or not data:
+            return False
+        value_key = _hierarchy_value_key(data, chart.get("valueKey"))
+        return all(_hierarchy_has_positive_values(node, value_key) for node in data)
+    if chart_type == "sunburst":
+        value_key = _hierarchy_value_key(data, chart.get("valueKey"))
+        return _hierarchy_has_positive_values(data, value_key, require_children=True)
+    if chart_type == "sankey":
+        if not isinstance(data, dict):
+            return False
+        nodes = data.get("nodes")
+        links = data.get("links")
+        return (
+            isinstance(nodes, list)
+            and bool(nodes)
+            and isinstance(links, list)
+            and bool(links)
+            and all(
+                isinstance(link, dict)
+                and isinstance(link.get("source"), int)
+                and isinstance(link.get("target"), int)
+                and 0 <= link["source"] < len(nodes)
+                and 0 <= link["target"] < len(nodes)
+                and _is_positive_finite(link.get("value"))
+                for link in links
+            )
         )
     return True
 
@@ -172,10 +279,25 @@ def _canonical_chart_type(value: Any) -> str | None:
         "areachart": "area",
         "composed": "composed",
         "composedchart": "composed",
+        "dualaxis": "composed",
+        "dualaxischart": "composed",
+        "dualaxislinebar": "composed",
         "scatter": "scatter",
         "scatterchart": "scatter",
         "pie": "pie",
         "piechart": "pie",
+        "treemap": "treemap",
+        "treemapchart": "treemap",
+        "radar": "radar",
+        "radarchart": "radar",
+        "radialbar": "radialBar",
+        "radialbarchart": "radialBar",
+        "funnel": "funnel",
+        "funnelchart": "funnel",
+        "sankey": "sankey",
+        "sankeychart": "sankey",
+        "sunburst": "sunburst",
+        "sunburstchart": "sunburst",
     }
     return aliases.get(cleaned)
 
@@ -186,22 +308,33 @@ def _canonicalize_axis_chart_schema(chart: dict[str, Any]) -> dict[str, Any]:
     chart_type = _canonical_chart_type(chart.get("type")) or _canonical_chart_type(
         chart.get("chart_type")
     )
-    if chart_type and not isinstance(chart.get("type"), str):
+    if chart_type and chart.get("type") != chart_type:
         chart["type"] = chart_type
 
     layout = chart.get("layout")
-    if not isinstance(layout, dict):
+    config = chart.get("config")
+    axis_source = layout if isinstance(layout, dict) else config if isinstance(config, dict) else {}
+    if not isinstance(axis_source, dict):
         return chart
+    if isinstance(layout, dict):
+        layout_value = layout.get("layout") or layout.get("chartLayout") or layout.get("orientation")
+        if layout_value in {"horizontal", "vertical"}:
+            chart["layout"] = layout_value
+        else:
+            chart.pop("layout", None)
 
     x_key = (
         chart.get("xAxisKey")
         or chart.get("xKey")
         or chart.get("x_key")
-        or layout.get("xAxisKey")
-        or layout.get("xKey")
-        or layout.get("x_key")
-        or layout.get("x_data_key")
+        or axis_source.get("xAxisKey")
+        or axis_source.get("xKey")
+        or axis_source.get("x_key")
+        or axis_source.get("x_data_key")
     )
+    x_axis = axis_source.get("xAxis") or axis_source.get("x_axis")
+    if not x_key and isinstance(x_axis, dict):
+        x_key = x_axis.get("dataKey") or x_axis.get("key")
     if isinstance(x_key, str) and x_key and not isinstance(chart.get("xAxisKey"), str):
         chart["xAxisKey"] = x_key
 
@@ -210,7 +343,7 @@ def _canonicalize_axis_chart_schema(chart: dict[str, Any]) -> dict[str, Any]:
 
     series_items: list[dict[str, Any]] = []
     for field, default_type in (("lines", "line"), ("bars", "bar"), ("areas", "area")):
-        raw_items = layout.get(field)
+        raw_items = axis_source.get(field)
         if not isinstance(raw_items, list):
             continue
         for item in raw_items:
@@ -231,6 +364,30 @@ def _canonicalize_axis_chart_schema(chart: dict[str, Any]) -> dict[str, Any]:
                 series_item["yAxisId"] = item["y_axis_id"]
             if isinstance(item.get("stroke_dasharray"), str):
                 series_item["strokeDasharray"] = item["stroke_dasharray"]
+            series_items.append(series_item)
+
+    y_axis = axis_source.get("yAxis") or axis_source.get("y_axis")
+    colors = axis_source.get("colors") if isinstance(axis_source.get("colors"), list) else []
+    if isinstance(y_axis, list):
+        for idx, item in enumerate(y_axis):
+            if not isinstance(item, dict):
+                continue
+            data_key = item.get("dataKey") or item.get("data_key") or item.get("key")
+            if not isinstance(data_key, str) or not data_key:
+                continue
+            series_item = {
+                "dataKey": data_key,
+                "label": item.get("label") or item.get("name") or data_key,
+                "color": item.get("color") or (colors[idx] if idx < len(colors) else "#2563eb"),
+            }
+            item_type = _canonical_chart_type(item.get("type"))
+            if chart_type == "composed" and item_type:
+                series_item["type"] = item_type
+            y_axis_id = item.get("yAxisId") or item.get("y_axis_id") or item.get("axis")
+            if isinstance(y_axis_id, str):
+                series_item["yAxisId"] = y_axis_id
+            elif len(y_axis) > 1:
+                series_item["yAxisId"] = "left" if idx == 0 else "right"
             series_items.append(series_item)
 
     if series_items:
@@ -338,6 +495,83 @@ def _normalize_axis_chart_extent(chart: dict[str, Any]) -> dict[str, Any]:
     return chart
 
 
+def _finite_chart_values(data: list[Any], key: str) -> list[float]:
+    values: list[float] = []
+    for row in data:
+        if not isinstance(row, dict):
+            continue
+        value = _finite_float(row.get(key))
+        if value is not None:
+            values.append(value)
+    return values
+
+
+def _collapse_same_scale_dual_axes(chart: dict[str, Any]) -> dict[str, Any]:
+    """Use one axis when dual-axis series are already on similar numeric scales."""
+
+    chart_type = _canonical_chart_type(chart.get("type")) or _canonical_chart_type(
+        chart.get("chart_type")
+    )
+    if chart_type not in {"line", "bar", "area", "composed"}:
+        return chart
+
+    data = chart.get("data")
+    series = chart.get("series")
+    if not isinstance(data, list) or not isinstance(series, list):
+        return chart
+
+    axis_ids = {
+        item.get("yAxisId") or item.get("y_axis_id") or item.get("axis")
+        for item in series
+        if isinstance(item, dict)
+    }
+    if not {"left", "right"}.issubset(axis_ids):
+        return chart
+
+    ranges: list[float] = []
+    magnitudes: list[float] = []
+    for item in series:
+        if not isinstance(item, dict):
+            continue
+        key = item.get("dataKey") or item.get("key")
+        if not isinstance(key, str) or not key:
+            continue
+        values = _finite_chart_values(data, key)
+        if len(values) < 2:
+            continue
+        value_range = max(values) - min(values)
+        if value_range > 0:
+            ranges.append(value_range)
+        magnitude = max(abs(value) for value in values)
+        if magnitude > 0:
+            magnitudes.append(magnitude)
+
+    if len(ranges) < 2 or len(magnitudes) < 2:
+        return chart
+    min_range = min(ranges)
+    max_range = max(ranges)
+    min_magnitude = min(magnitudes)
+    max_magnitude = max(magnitudes)
+    if (
+        min_range <= 0
+        or min_magnitude <= 0
+        or max_range / min_range >= 2
+        or max_magnitude / min_magnitude >= 5
+    ):
+        return chart
+
+    for item in series:
+        if not isinstance(item, dict):
+            continue
+        if item.get("yAxisId") == "right":
+            item["yAxisId"] = "left"
+        if item.get("y_axis_id") == "right":
+            item["y_axis_id"] = "left"
+        if item.get("axis") == "right":
+            item["axis"] = "left"
+    return chart
+
+
 def _drop_empty_chart_definitions(chart_map: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     """Remove charts that cannot satisfy the frontend render contract."""
 
@@ -348,6 +582,7 @@ def _drop_empty_chart_definitions(chart_map: dict[str, Any]) -> tuple[dict[str, 
             chart = _canonicalize_axis_chart_schema(chart)
             chart = _repair_axis_chart_x_aliases(chart)
             chart = _normalize_axis_chart_extent(chart)
+            chart = _collapse_same_scale_dual_axes(chart)
         if not isinstance(chart, dict) or not _chart_has_finite_values(chart):
             dropped.append(chart_id)
             continue
@@ -396,4 +631,3 @@ def _normalize_declared_since_lists(value: Any, key: str | None = None) -> None:
         if (end or start) >= cutoff:
             filtered.append(item)
     value[:] = filtered
-

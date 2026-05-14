@@ -4,6 +4,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from langgraph.types import Command
+
 from .common import (
     AgentMiddleware,
     Awaitable,
@@ -25,6 +27,10 @@ from .common import (
     _SECRET_SHELL_RE,
     _SENSITIVE_DIR_PARTS,
     _SENSITIVE_PATH_PARTS,
+)
+from ..quantitative_developer.handoff import (
+    _job_id_from_runtime,
+    _prewrite_failure_handoff,
 )
 from ..tool_utils import (
     state_messages,
@@ -73,6 +79,7 @@ class OrchestratorToolBoundaryMiddleware(AgentMiddleware):
     """Keep top-level execution focused on status updates and delegation."""
 
     _ALLOWED_TOOL_NAMES = {"emit_chat_message", "task"}
+    _QUANT_HANDOFF_FIELDS = ("charts_json", "execution_summary_json", "chart_ids")
     _PIPELINE_SUBAGENTS = {
         "data-engineer",
         "quant-developer",
@@ -191,8 +198,8 @@ class OrchestratorToolBoundaryMiddleware(AgentMiddleware):
         return ToolMessage(
             content=(
                 "Blocked terminal approval message because the latest structured "
-                "quality-analyst decision is rejected. Do not tell the user the "
-                "report is approved. Re-delegate exactly once to the specialist "
+                "quality-analyst decision is rejected or report gate failed. Do "
+                "not tell the user the report is approved. Re-delegate exactly once to the specialist "
                 "named by the QA required_fixes, or if the repair budget is "
                 "exhausted, emit a concise status explaining that QA rejected the "
                 "report and include the rejection reason."
@@ -208,8 +215,19 @@ class OrchestratorToolBoundaryMiddleware(AgentMiddleware):
             content = str(getattr(message, "content", "") or "")
             if (
                 "quant-developer exceeded the pre-write guardrail retry budget" in content
-                or '"failure_stage": "quant_initial_script_write"' in content
-                or '"methods_used": ["quant_prewrite_retry_budget_guard"]' in content
+                or re.search(
+                    r'"failure_stage"\s*:\s*"('
+                    r"quant_initial_script_write|quant_malformed_tool_call|"
+                    r'quant_invalid_task_handoff)"',
+                    content,
+                )
+                or re.search(
+                    r'"methods_used"\s*:\s*\[\s*"('
+                    r"quant_prewrite_retry_budget_guard|"
+                    r"quant_malformed_tool_call_guard|"
+                    r'orchestrator_quant_task_result_guard)"',
+                    content,
+                )
             ):
                 return True
         return False
@@ -292,6 +310,18 @@ class OrchestratorToolBoundaryMiddleware(AgentMiddleware):
             "stale charts",
             "invalid charts",
             "missing charts",
+            "missing chart family",
+            "missing chart families",
+            "missing chart marker",
+            "missing chart markers",
+            "missing chart definition",
+            "missing chart definitions",
+            "new chart definition",
+            "new chart definitions",
+            "chart definition needed",
+            "chart definitions needed",
+            "chart artifact missing",
+            "chart artifacts missing",
             "non-finite",
             "no finite numeric values",
             "nan/inf",
@@ -374,6 +404,14 @@ class OrchestratorToolBoundaryMiddleware(AgentMiddleware):
             "computed charts are invalid",
             "chart rendering",
             "chart render",
+            "missing chart family",
+            "missing chart families",
+            "missing chart marker",
+            "missing chart markers",
+            "missing chart definition",
+            "missing chart definitions",
+            "new chart definition",
+            "new chart definitions",
             "charts.json data",
             "non-finite",
             "no finite numeric values",
@@ -392,7 +430,7 @@ class OrchestratorToolBoundaryMiddleware(AgentMiddleware):
         return state_messages(state)
 
     @staticmethod
-    def _latest_structured_quality_status(messages: list[Any]) -> str | None:
+    def _latest_structured_pipeline_status(messages: list[Any]) -> str | None:
         latest: str | None = None
         for message in messages:
             content = getattr(message, "content", None)
@@ -405,11 +443,23 @@ class OrchestratorToolBoundaryMiddleware(AgentMiddleware):
             if not isinstance(payload, dict):
                 continue
             status = payload.get("status")
-            if status not in {"approved", "rejected"}:
+            if status in {"approved", "rejected"}:
+                if "report_path" not in payload:
+                    continue
+                if status == "rejected" and "required_fixes" not in payload:
+                    continue
+                latest = status
                 continue
-            if "report_path" not in payload:
+            if status != "failed":
                 continue
-            if status == "rejected" and "required_fixes" not in payload:
+            report_path = payload.get("report_path") or payload.get("report_json")
+            if not isinstance(report_path, str) or not report_path.endswith("/report.json"):
+                continue
+            if not (
+                "required_fixes" in payload
+                or "required_upstream" in payload
+                or "reason" in payload
+            ):
                 continue
             latest = status
         return latest
@@ -419,12 +469,9 @@ class OrchestratorToolBoundaryMiddleware(AgentMiddleware):
         markdown = args.get("markdown") if isinstance(args, dict) else None
         if not (isinstance(markdown, str) and markdown.startswith("Report approved:")):
             return False
-        return (
-            self._latest_structured_quality_status(
-                self._state_messages(getattr(request, "state", None))
-            )
-            == "rejected"
-        )
+        return self._latest_structured_pipeline_status(
+            self._state_messages(getattr(request, "state", None))
+        ) in {"rejected", "failed"}
 
     def _enforce_tool_boundary(self, request: ToolCallRequest) -> ToolMessage | None:
         tool_name = _tool_call_name(request.tool_call)
@@ -459,6 +506,87 @@ class OrchestratorToolBoundaryMiddleware(AgentMiddleware):
             return self._blocked_repeat_quant_success_message(request)
         return None
 
+    @classmethod
+    def _has_quant_handoff_fields(cls, content: str) -> bool:
+        try:
+            payload = json.loads(content)
+        except json.JSONDecodeError:
+            return False
+        if not isinstance(payload, dict):
+            return False
+        return all(field in payload for field in cls._QUANT_HANDOFF_FIELDS)
+
+    def _quant_task_failure_handoff_message(
+        self,
+        request: ToolCallRequest,
+        result: ToolMessage,
+    ) -> ToolMessage:
+        args = self._tool_call_args(request.tool_call)
+        description = str(args.get("description") or "")
+        result_content = str(getattr(result, "content", "") or "")
+        state = getattr(request, "state", None)
+        messages = [
+            *self._state_messages(state),
+            AIMessage(content=description),
+            AIMessage(content=result_content[:2_000]),
+        ]
+        handoff = _prewrite_failure_handoff(
+            messages,
+            job_id=_job_id_from_runtime(getattr(request, "runtime", None)),
+            failure_stage="quant_invalid_task_handoff",
+            error=(
+                "quant-developer task completed without returning a compact artifact "
+                "handoff containing charts_json, execution_summary_json, and chart_ids"
+            ),
+            methods_used=["orchestrator_quant_task_result_guard"],
+        )
+        return ToolMessage(
+            content=handoff,
+            name="task",
+            tool_call_id=self._tool_call_id(request.tool_call),
+            status="success",
+        )
+
+    def _postprocess_quant_tool_message(
+        self,
+        request: ToolCallRequest,
+        result: ToolMessage,
+    ) -> ToolMessage:
+        if getattr(result, "status", None) == "error":
+            return result
+        content = str(getattr(result, "content", "") or "")
+        if self._has_quant_handoff_fields(content):
+            return result
+        return self._quant_task_failure_handoff_message(request, result)
+
+    def _postprocess_task_result(
+        self,
+        request: ToolCallRequest,
+        result: ToolMessage | Command,
+    ) -> ToolMessage | Command:
+        args = self._tool_call_args(request.tool_call)
+        if str(args.get("subagent_type") or "").strip() != "quant-developer":
+            return result
+        if type(result).__name__ == "ToolMessage":
+            return self._postprocess_quant_tool_message(request, result)
+        if isinstance(result, Command) and isinstance(result.update, dict):
+            messages = result.update.get("messages")
+            if (
+                isinstance(messages, list)
+                and len(messages) == 1
+                and type(messages[0]).__name__ == "ToolMessage"
+            ):
+                normalized = self._postprocess_quant_tool_message(request, messages[0])
+                if normalized is not messages[0]:
+                    update = {**result.update, "messages": [normalized]}
+                    return Command(
+                        graph=result.graph,
+                        update=update,
+                        resume=result.resume,
+                        goto=result.goto,
+                    )
+        return result
+
     def wrap_tool_call(
         self,
         request: ToolCallRequest,
@@ -466,7 +594,8 @@ class OrchestratorToolBoundaryMiddleware(AgentMiddleware):
     ) -> ToolMessage:
         if blocked := self._enforce_tool_boundary(request):
             return blocked
-        return handler(request)
+        result = handler(request)
+        return self._postprocess_task_result(request, result)
 
     async def awrap_tool_call(
         self,
@@ -475,7 +604,8 @@ class OrchestratorToolBoundaryMiddleware(AgentMiddleware):
     ) -> ToolMessage:
         if blocked := self._enforce_tool_boundary(request):
             return blocked
-        return await handler(request)
+        result = await handler(request)
+        return self._postprocess_task_result(request, result)
 
 
 _ORCHESTRATOR_TOOL_BOUNDARY_MIDDLEWARE = OrchestratorToolBoundaryMiddleware()

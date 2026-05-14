@@ -136,3 +136,4 @@ outputs
 .pytest-tmp*
 .playwright/
 .claude
+.playwright-cli

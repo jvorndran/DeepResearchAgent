@@ -40,6 +40,9 @@ class AxisSeries(BaseModel):
     color: str
     type: str | None = None
     yAxisId: str | None = None
+    stackId: str | None = None
+    shape: str | None = None
+    strokeDasharray: str | None = None
 
 
 class AxisChartDef(BaseModel):
@@ -50,6 +53,7 @@ class AxisChartDef(BaseModel):
     xAxisKey: str
     series: list[AxisSeries]
     data: list[dict]
+    layout: Literal["horizontal", "vertical"] | None = None
     referenceLines: list[ReferenceLine] | None = None
     referenceAreas: list[ReferenceArea] | None = None
 
@@ -65,6 +69,9 @@ class ScatterChartDef(BaseModel):
     yLabel: str
     color: str
     data: list[dict]
+    sizeKey: str | None = None
+    colorKey: str | None = None
+    nameKey: str | None = None
 
 
 class PieSlice(BaseModel):
@@ -79,9 +86,115 @@ class PieChartDef(BaseModel):
     title: str
     description: str
     data: list[PieSlice]
+    innerRadius: float | str | None = None
 
 
-ChartDef = Annotated[Union[AxisChartDef, ScatterChartDef, PieChartDef], Field(discriminator="type")]
+class RadarChartDef(BaseModel):
+    id: str
+    type: Literal["radar"]
+    title: str
+    description: str
+    angleKey: str
+    series: list[AxisSeries]
+    data: list[dict]
+
+
+class SegmentDatum(BaseModel):
+    name: str
+    value: float
+    color: str | None = None
+    fill: str | None = None
+
+
+class RadialBarChartDef(BaseModel):
+    id: str
+    type: Literal["radialBar"]
+    title: str
+    description: str
+    data: list[SegmentDatum]
+    dataKey: str | None = None
+    innerRadius: float | str | None = None
+    outerRadius: float | str | None = None
+
+
+class FunnelChartDef(BaseModel):
+    id: str
+    type: Literal["funnel"]
+    title: str
+    description: str
+    data: list[SegmentDatum]
+    dataKey: str | None = None
+    nameKey: str | None = None
+
+
+class HierarchyDatum(BaseModel):
+    name: str
+    value: float | None = None
+    size: float | None = None
+    color: str | None = None
+    fill: str | None = None
+    children: list["HierarchyDatum"] | None = None
+
+
+class TreemapChartDef(BaseModel):
+    id: str
+    type: Literal["treemap"]
+    title: str
+    description: str
+    data: list[HierarchyDatum]
+    valueKey: Literal["size", "value"] | None = None
+
+
+class SankeyNode(BaseModel):
+    name: str
+    color: str | None = None
+    fill: str | None = None
+
+
+class SankeyLink(BaseModel):
+    source: int
+    target: int
+    value: float
+    color: str | None = None
+    fill: str | None = None
+
+
+class SankeyData(BaseModel):
+    nodes: list[SankeyNode]
+    links: list[SankeyLink]
+
+
+class SankeyChartDef(BaseModel):
+    id: str
+    type: Literal["sankey"]
+    title: str
+    description: str
+    data: SankeyData
+
+
+class SunburstChartDef(BaseModel):
+    id: str
+    type: Literal["sunburst"]
+    title: str
+    description: str
+    data: HierarchyDatum
+    valueKey: Literal["value", "size"] | None = None
+
+
+ChartDef = Annotated[
+    Union[
+        AxisChartDef,
+        ScatterChartDef,
+        PieChartDef,
+        RadarChartDef,
+        RadialBarChartDef,
+        FunnelChartDef,
+        TreemapChartDef,
+        SankeyChartDef,
+        SunburstChartDef,
+    ],
+    Field(discriminator="type"),
+]
 
 
 # =============================================================================
@@ -165,6 +278,17 @@ __all__ = [
     "ScatterChartDef",
     "PieSlice",
     "PieChartDef",
+    "RadarChartDef",
+    "SegmentDatum",
+    "RadialBarChartDef",
+    "FunnelChartDef",
+    "HierarchyDatum",
+    "TreemapChartDef",
+    "SankeyNode",
+    "SankeyLink",
+    "SankeyData",
+    "SankeyChartDef",
+    "SunburstChartDef",
     "ChartDef",
     "DataSource",
     "ScenarioRow",

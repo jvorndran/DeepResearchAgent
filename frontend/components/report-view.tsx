@@ -58,7 +58,7 @@ export default memo(function ReportView({ report }: ReportViewProps) {
         const chartId = match[1];
         const chart = report.charts?.[chartId];
         return chart ? (
-          <div key={index} className="my-12 p-6 bg-muted/30 rounded-xl border border-border">
+          <div key={index} className="not-prose my-12 p-6 bg-muted/30 rounded-xl border border-border">
             <ReportChart chartId={chartId} chart={chart} />
           </div>
         ) : null;

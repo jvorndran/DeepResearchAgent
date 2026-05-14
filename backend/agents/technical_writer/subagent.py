@@ -78,6 +78,21 @@ def _latest_successful_validation(messages: list[Any]) -> dict[str, Any] | None:
     return None
 
 
+def _latest_zero_chart_validation(messages: list[Any]) -> dict[str, Any] | None:
+    for message in reversed(messages):
+        if _message_tool_name(message) != "validate_research_report_file":
+            continue
+        parsed = _json_from_message(message)
+        if not isinstance(parsed, dict) or parsed.get("passes_gate") is True:
+            continue
+        blockers = parsed.get("blockers")
+        if not isinstance(blockers, list):
+            continue
+        if "query requested charts but report.json contains zero chart definitions" in blockers:
+            return parsed
+    return None
+
+
 def _success_handoff_content(messages: list[Any]) -> str:
     validation = _latest_successful_validation(messages) or {}
     report_path = _latest_writer_report_path(messages)
@@ -97,11 +112,41 @@ def _success_handoff_content(messages: list[Any]) -> str:
     )
 
 
+def _zero_chart_failure_handoff_content(messages: list[Any]) -> str:
+    validation = _latest_zero_chart_validation(messages) or {}
+    blockers = (
+        validation.get("blockers")
+        if isinstance(validation.get("blockers"), list)
+        else []
+    )
+    reason = (
+        blockers[0]
+        if blockers
+        else "query requested charts but report.json contains zero chart definitions"
+    )
+    return json.dumps(
+        {
+            "status": "failed",
+            "report_json": _latest_writer_report_path(messages),
+            "chart_ids": [],
+            "required_upstream": "quant-developer",
+            "reason": reason,
+            "required_fixes": [
+                "Regenerate quant artifacts so charts.json contains renderable "
+                "chart definitions before rewriting report."
+            ],
+        }
+    )
+
+
 class TechnicalWriterToolBoundaryMiddleware(AgentMiddleware):
     """Expose only report-writing tools to prevent context-heavy file reads."""
 
     def _only_writer_tools(self, request: ModelRequest) -> ModelRequest:
-        if _latest_successful_validation(list(request.messages)):
+        messages = list(request.messages)
+        if _latest_successful_validation(messages) or _latest_zero_chart_validation(
+            messages
+        ):
             return request.override(tools=[])
         tools = [tool for tool in request.tools if _tool_name(tool) in _ALLOWED_TOOL_NAMES]
         if len(tools) == len(request.tools):
@@ -114,6 +159,10 @@ class TechnicalWriterToolBoundaryMiddleware(AgentMiddleware):
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse:
         messages = list(request.messages)
+        if _latest_zero_chart_validation(messages):
+            return ModelResponse(
+                result=[AIMessage(content=_zero_chart_failure_handoff_content(messages))]
+            )
         if _latest_successful_validation(messages):
             return ModelResponse(result=[AIMessage(content=_success_handoff_content(messages))])
         return handler(self._only_writer_tools(request))
@@ -124,6 +173,10 @@ class TechnicalWriterToolBoundaryMiddleware(AgentMiddleware):
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
         messages = list(request.messages)
+        if _latest_zero_chart_validation(messages):
+            return ModelResponse(
+                result=[AIMessage(content=_zero_chart_failure_handoff_content(messages))]
+            )
         if _latest_successful_validation(messages):
             return ModelResponse(result=[AIMessage(content=_success_handoff_content(messages))])
         return await handler(self._only_writer_tools(request))
@@ -185,54 +238,26 @@ TECHNICAL_WRITER_SUBAGENT = {
     The technical writer writes ALL prose itself. Do not expect the tool to generate content
     from execution_summary — the LLM writes every section with unique, cited analysis.""",
     "system_prompt": """# ROLE
-You are the Technical Writer. You synthesize research reports from the `plan_report_structure` result, then write a complete markdown narrative.
+You are the Technical Writer. Produce the final ResearchReport artifact by planning, drafting, saving, and validating `report.json`.
 
-# CORE TOOLS
-1. `plan_report_structure`: Discover chart IDs from `charts.json`. Call this FIRST.
-2. `write_research_report`: Save your finalized markdown to `report.json`.
-3. `validate_research_report_file`: Static gate (schema + chart markers). Use `warnings` for non-blocking hints. `auto_patch=True` (default) re-syncs the auto disclaimer footer and strips broken chart markers.
+# REQUIRED FLOW
+1. Call `plan_report_structure` before any other tool.
+2. After the plan returns, load/use the native technical-writer skills for all drafting, chart/source, save-shape, and repair detail:
+   - `report-writing-contract`: every report.
+   - `macro-report-writing`: macro, scenario, economic-cycle, rates, labor, credit, GDP, regional, or policy work.
+   - `equity-report-writing`: stock, company, sector, earnings, valuation, peer, catalyst, or thesis work.
+3. Draft privately and call `write_research_report` with the full markdown.
+4. Call `validate_research_report_file`.
 
-# WORKFLOW
-1. **Plan:** Call `plan_report_structure` before any other tool. Note the available `chart_ids` and the `general_rules`.
-2. **Draft:** Draft internally, then pass the full markdown narrative directly as the `markdown` argument to `write_research_report`. Do not stream the draft or chart list in assistant message content before tool calls. The `plan_report_structure` result contains
-   `execution_summary_for_draft`: dense computed numbers from the quant developer.
-   READ this carefully and weave every specific number into the relevant analysis sections —
-   exact slopes, r values, peak dates, deltas, p-values, etc. Do not paraphrase vaguely;
-   cite the actual computed values in parentheticals (e.g., "slope of -0.05 pp/month", "r = -0.44, p < 0.001").
-   Treat the "Exact headline metrics from execution_summary.json" block as controlling facts:
-   copy current values, signs, directions, regime labels, explicitly supplied scenario probabilities,
-   and company growth rates exactly. Do not substitute older public-memory values or infer an
-   inversion/decline when the exact metric says the sign is positive. Scenario helper rows usually
-   provide confidence labels, not probabilities; do not invent probability weights, Fed-cut paths,
-   product mix estimates, or policy assumptions unless they appear in `execution_summary_for_draft`.
-   - Do **not** write a disclaimer section: the pipeline appends a standard legal footer after save.
-   - End the body with `## Research Query` (original question) near the bottom; do not duplicate system footer text.
-   - `data_sources` must cite only providers evidenced by the handoff or `execution_summary_for_draft`.
-     For the current public-source feature set, use exact provider names such as FRED, BLS Public Data,
-     Census Data API, World Bank Indicators API, and SEC EDGAR. Do not cite OECD, BIS, IMF, generic
-     "Company Filings", or paid/keyed providers unless the handoff explicitly says that provider was used.
-3. **Save:** Call `write_research_report` exactly once with this shape:
-   - `markdown`
-   - `charts_json_path`
-   - `data_sources`
-   - `original_query`
-   - optional: `title`, `executive_summary`, `analysis_type`
-   - Do **not** pass `execution_summary` here (that argument belongs only to `plan_report_structure`).
-4. **Gate:** Call `validate_research_report_file` (empty `report_json_path` uses the job output dir, or pass the absolute `report_path` from step 3). Repeat: if `passes_gate` is false, revise markdown and call `write_research_report` again until the gate passes or you cannot fix blockers without changing data (then leave `blockers` for upstream).
+# TOOL CONTRACT
+- Only call `plan_report_structure`, `write_research_report`, and `validate_research_report_file`.
+- Deep Agents may expose filesystem or shell tools on this graph; do not use them for artifacts, data recovery, or drafting.
+- Assistant message content must be empty whenever you call tools. Do not announce plans, list chart IDs, or paste report prose into chat.
 
-# RULES
-- **YOU write the prose.** The tool only saves it.
-- **No assistant chatter:** Assistant message content must be empty whenever you call tools. Do not announce plans, list chart IDs, or paste report prose into the chat; use tool arguments for the report body and return compact JSON after validation.
-- **No data through context:** Read `charts.json` through the provided report tools only.
-- **Tool discipline:** Deep Agents may still expose standard filesystem or shell tools on this graph. You must not use them — only call `plan_report_structure`, `write_research_report`, and `validate_research_report_file`.
-- **No file recovery:** If `execution_summary_for_draft` looks truncated, continue with the compact fields returned by `plan_report_structure`. Do not call `read_file`, `ls`, `glob`, `grep`, `execute`, or `write_file` to recover more context.
-- **Echo fields:** After `plan_report_structure`, copy `charts_json_path` and `original_query` from that JSON into `write_research_report` unchanged.
-- **Inline Charts:** CRITICAL! Place `<!-- CHART:id -->` markers immediately after the referencing text. You MUST embed all provided `chart_ids`.
-- **No invented charts:** Use only IDs returned in `chart_ids`. If the query asks for more visuals than the quant output provides, cover the missing view with a markdown table or prose and state the data/artifact limitation; do not create chart markers for unavailable chart IDs.
-- **Scenario table format:** When `general_rules` requires `## Scenario Table`, render a markdown table with exactly these headers: `Scenario`, `Assumptions`, `Indicator Triggers`, `Confidence`, `Uncertainty Notes`. The first-column row keys must be lowercase `base`, `bull`, and `bear`; use semicolons or `<br>` inside cells for multiple items, not extra columns.
-- **Word Count:** Aim for 1000+ words of dense, analytical content in investment bank style.
-- **No fallback thrashing:** If `write_research_report` returns an argument error, call it again with the exact required fields above. Do not try `read_file` or `execute`.
-- **Stop condition:** After `validate_research_report_file` returns `passes_gate: true`, stop immediately and return JSON only: `{"status":"success","report_json":"outputs/<job_id>/report.json","chart_ids":[...]}`. Do not add a prose summary.
+# STOP CONDITION
+After `validate_research_report_file` returns `passes_gate: true`, stop immediately and return JSON only:
+`{"status":"success","report_json":"outputs/<job_id>/report.json","chart_ids":[...]}`
+Do not add a prose summary.
 """,
     "tools": [plan_report_structure, write_research_report, validate_research_report_file],
     "middleware": [_TOOL_BOUNDARY_MIDDLEWARE],

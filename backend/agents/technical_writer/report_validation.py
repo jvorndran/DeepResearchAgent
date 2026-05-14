@@ -2,8 +2,10 @@
 
 Blocking gate (``passes_gate``):
     - Valid JSON and ``ResearchReport`` schema (Pydantic).
-    - Chart markers ``<!-- CHART:id -->`` resolve to keys in ``report.charts`` after optional
-      auto-patch (strip unknown markers).
+    - Chart markers ``<!-- CHART:id -->`` resolve to keys in ``report.charts``.
+      For chart-requested reports, unknown markers are blockers rather than
+      being stripped by auto-patch.
+    - Axis charts satisfy deterministic render and data semantics checks.
     - Scenario/stress prompts include a valid base/bull/bear ``scenario_table``.
 
 Canonical disclaimer text is injected by ``inject_auto_report_footer`` on every
@@ -27,6 +29,7 @@ from pydantic import ValidationError
 from core.report_schema import ResearchReport
 
 from ..report_artifacts import chart_marker_ids, inject_auto_report_footer, load_report_json
+from .chart_audit import chart_render_dict, chart_semantics_dict, query_requests_charts
 
 _SCENARIO_QUERY_KEYWORDS = (
     "scenario",
@@ -52,97 +55,22 @@ def charts_dict(report: ResearchReport) -> dict:
     defined = list(report.charts.keys())
     broken = [mid for mid in marker_ids if mid not in report.charts]
     unreferenced = [chart_id for chart_id in defined if chart_id not in marker_ids]
+    seen: set[str] = set()
+    duplicate_markers = []
+    for marker_id in marker_ids:
+        if marker_id in seen and marker_id not in duplicate_markers:
+            duplicate_markers.append(marker_id)
+        seen.add(marker_id)
+    metadata_chart_count = report.metadata.chart_count
     return {
-        "valid": len(broken) == 0 and len(unreferenced) == 0,
+        "valid": len(broken) == 0 and len(unreferenced) == 0 and len(duplicate_markers) == 0,
         "broken_references": broken,
         "unreferenced_charts": unreferenced,
+        "duplicate_markers": duplicate_markers,
         "chart_count": len(marker_ids),
+        "metadata_chart_count": metadata_chart_count,
+        "chart_count_mismatch": metadata_chart_count != len(marker_ids),
         "defined_charts": defined,
-    }
-
-
-def _is_finite_number(value: object) -> bool:
-    try:
-        numeric = float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return False
-    return numeric == numeric and numeric not in {float("inf"), float("-inf")}
-
-
-def chart_render_dict(report: ResearchReport) -> dict:
-    """Validate the deterministic subset of the frontend Recharts render contract."""
-
-    issues: dict[str, list[str]] = {}
-    for chart_id, chart_model in report.charts.items():
-        chart = chart_model.model_dump()
-        chart_issues: list[str] = []
-        if chart.get("id") != chart_id:
-            chart_issues.append(f"chart id mismatch: expected {chart_id}, got {chart.get('id')}")
-        if not str(chart.get("title") or "").strip():
-            chart_issues.append("chart title is required")
-        data = chart.get("data")
-        if not isinstance(data, list) or not data:
-            chart_issues.append("chart data must include at least one row")
-            issues[chart_id] = chart_issues
-            continue
-
-        chart_type = chart.get("type")
-        if chart_type in {"line", "bar", "area", "composed"}:
-            x_axis_key = chart.get("xAxisKey")
-            series = chart.get("series")
-            if not isinstance(x_axis_key, str) or not x_axis_key.strip():
-                chart_issues.append("axis chart xAxisKey is required")
-            elif any(
-                not isinstance(row, dict) or row.get(x_axis_key) in {None, ""}
-                for row in data
-            ):
-                chart_issues.append(f"one or more rows are missing xAxisKey {x_axis_key}")
-            if not isinstance(series, list) or not series:
-                chart_issues.append("axis chart series must include at least one item")
-            else:
-                for item in series:
-                    data_key = item.get("dataKey") if isinstance(item, dict) else None
-                    if not isinstance(data_key, str) or not data_key.strip():
-                        chart_issues.append("series dataKey is required")
-                        continue
-                    if not any(
-                        isinstance(row, dict) and _is_finite_number(row.get(data_key))
-                        for row in data
-                    ):
-                        chart_issues.append(f"series {data_key} has no finite numeric values")
-            if chart_issues:
-                issues[chart_id] = chart_issues
-            continue
-
-        if chart_type == "scatter":
-            for key_name in ("xKey", "yKey"):
-                key = chart.get(key_name)
-                if not isinstance(key, str) or not key.strip():
-                    chart_issues.append(f"scatter chart {key_name} is required")
-                    continue
-                if not any(
-                    isinstance(row, dict) and _is_finite_number(row.get(key))
-                    for row in data
-                ):
-                    chart_issues.append(f"scatter key {key} has no finite numeric values")
-
-        if chart_type == "pie":
-            for index, row in enumerate(data):
-                if not isinstance(row, dict):
-                    chart_issues.append(f"pie slice {index} must be an object")
-                    continue
-                if not str(row.get("name") or "").strip():
-                    chart_issues.append(f"pie slice {index} name is required")
-                if not _is_finite_number(row.get("value")):
-                    chart_issues.append(f"pie slice {index} value must be finite")
-
-        if chart_issues:
-            issues[chart_id] = chart_issues
-
-    return {
-        "valid": not issues,
-        "issues": issues,
-        "checked_charts": list(report.charts.keys()),
     }
 
 
@@ -174,8 +102,19 @@ def structural_blockers(
     charts: dict,
     scenarios: dict | None = None,
     chart_render: dict | None = None,
+    chart_semantics: dict | None = None,
+    chart_required: bool = False,
 ) -> list[str]:
     blockers: list[str] = []
+    if scenarios is not None and not scenarios["valid"]:
+        blockers.append(
+            "missing required scenario_table rows for scenario/stress query: "
+            f"{scenarios['missing_required_rows']}"
+        )
+    if chart_required and not charts.get("defined_charts"):
+        blockers.append(
+            "query requested charts but report.json contains zero chart definitions"
+        )
     if not charts["valid"]:
         if charts["broken_references"]:
             blockers.append(f"broken chart references: {charts['broken_references']}")
@@ -184,20 +123,32 @@ def structural_blockers(
                 "charts defined in charts.json but not referenced in markdown: "
                 f"{charts['unreferenced_charts']}"
             )
-    if scenarios is not None and not scenarios["valid"]:
+        if charts.get("duplicate_markers"):
+            blockers.append(f"duplicate chart markers: {charts['duplicate_markers']}")
+    if charts.get("chart_count_mismatch"):
         blockers.append(
-            "missing required scenario_table rows for scenario/stress query: "
-            f"{scenarios['missing_required_rows']}"
+            "metadata chart_count does not match markdown chart markers: "
+            f"metadata={charts.get('metadata_chart_count')} markers={charts.get('chart_count')}"
         )
     if chart_render is not None and not chart_render["valid"]:
         blockers.append(
             "charts fail frontend Recharts render contract: "
             f"{chart_render['issues']}"
         )
+    if chart_semantics is not None and not chart_semantics["valid"]:
+        blockers.append(
+            "charts fail chart data semantics audit: "
+            f"{chart_semantics['blockers']}"
+        )
     return blockers
 
 
-def apply_safe_patches(data: dict, report: ResearchReport) -> tuple[dict, list[str]]:
+def apply_safe_patches(
+    data: dict,
+    report: ResearchReport,
+    *,
+    remove_broken_chart_markers: bool = True,
+) -> tuple[dict, list[str]]:
     """Apply idempotent auto footer + broken-chart-marker removal. Returns (updated_data, changes)."""
     markdown = report.markdown
     changes_made: list[str] = []
@@ -211,7 +162,7 @@ def apply_safe_patches(data: dict, report: ResearchReport) -> tuple[dict, list[s
 
     def _remove_if_broken(m: re.Match) -> str:
         chart_id = m.group(1)
-        if chart_id not in defined_charts:
+        if remove_broken_chart_markers and chart_id not in defined_charts:
             changes_made.append(f"Removed broken chart marker <!-- CHART:{chart_id} -->")
             return ""
         return m.group(0)
@@ -227,6 +178,7 @@ def apply_safe_patches(data: dict, report: ResearchReport) -> tuple[dict, list[s
     updated["markdown"] = markdown
     updated["metadata"] = dict(data.get("metadata", {}))
     updated["metadata"]["word_count"] = len(markdown.split())
+    updated["metadata"]["chart_count"] = len(chart_marker_ids(markdown))
     return updated, changes_made
 
 
@@ -237,6 +189,7 @@ def _gate_payload(
     charts: dict,
     scenarios: dict | None,
     chart_render: dict | None,
+    chart_semantics: dict | None,
     warnings: list[str],
     auto_patched: bool,
     patches_applied: list[str],
@@ -249,6 +202,7 @@ def _gate_payload(
         "charts": charts,
         "scenarios": scenarios or {},
         "chart_render": chart_render or {},
+        "chart_semantics": chart_semantics or {},
         "warnings": warnings,
         "auto_patched": auto_patched,
         "patches_applied": patches_applied,
@@ -271,8 +225,8 @@ def run_report_static_gate(report_json_path: str, auto_patch: bool = True) -> st
         auto_patch: If True, re-apply canonical footer (idempotent) / strip broken chart markers
 
     Returns:
-        JSON string with passes_gate, format, charts, scenarios, warnings,
-        auto_patched, patches_applied, and blockers.
+        JSON string with passes_gate, format, charts, scenarios, chart_render,
+        chart_semantics, warnings, auto_patched, patches_applied, and blockers.
     """
     path = Path(report_json_path)
     data, load_err = load_report_json(report_json_path)
@@ -283,6 +237,7 @@ def run_report_static_gate(report_json_path: str, auto_patch: bool = True) -> st
             charts={},
             scenarios={},
             chart_render={},
+            chart_semantics={},
             warnings=[],
             auto_patched=False,
             patches_applied=[],
@@ -299,6 +254,7 @@ def run_report_static_gate(report_json_path: str, auto_patch: bool = True) -> st
             charts={},
             scenarios={},
             chart_render={},
+            chart_semantics={},
             warnings=[],
             auto_patched=False,
             patches_applied=[],
@@ -308,11 +264,16 @@ def run_report_static_gate(report_json_path: str, auto_patch: bool = True) -> st
     fmt_ok = format_dict_schema_ok()
     charts = charts_dict(report)
     chart_render = chart_render_dict(report)
+    chart_semantics = chart_semantics_dict(report)
     scenarios = scenario_dict(report)
     warnings = content_warnings(report)
 
     if auto_patch:
-        updated_data, patches = apply_safe_patches(data, report)
+        updated_data, patches = apply_safe_patches(
+            data,
+            report,
+            remove_broken_chart_markers=not query_requests_charts(report.query),
+        )
         if patches:
             try:
                 patched_report = ResearchReport(**updated_data)
@@ -323,6 +284,7 @@ def run_report_static_gate(report_json_path: str, auto_patch: bool = True) -> st
                     charts=charts,
                     scenarios=scenarios,
                     chart_render=chart_render,
+                    chart_semantics=chart_semantics,
                     warnings=warnings,
                     auto_patched=False,
                     patches_applied=patches,
@@ -338,6 +300,7 @@ def run_report_static_gate(report_json_path: str, auto_patch: bool = True) -> st
                     charts=charts,
                     scenarios=scenarios,
                     chart_render=chart_render,
+                    chart_semantics=chart_semantics,
                     warnings=warnings,
                     auto_patched=False,
                     patches_applied=patches,
@@ -349,9 +312,16 @@ def run_report_static_gate(report_json_path: str, auto_patch: bool = True) -> st
             report = ResearchReport(**data)
             charts = charts_dict(report)
             chart_render = chart_render_dict(report)
+            chart_semantics = chart_semantics_dict(report)
             warnings = content_warnings(report)
             scenarios = scenario_dict(report)
-            blockers = structural_blockers(charts, scenarios, chart_render)
+            blockers = structural_blockers(
+                charts,
+                scenarios,
+                chart_render,
+                chart_semantics,
+                chart_required=query_requests_charts(report.query),
+            )
             passes = len(blockers) == 0
             return _gate_payload(
                 passes_gate=passes,
@@ -359,13 +329,20 @@ def run_report_static_gate(report_json_path: str, auto_patch: bool = True) -> st
                 charts=charts,
                 scenarios=scenarios,
                 chart_render=chart_render,
+                chart_semantics=chart_semantics,
                 warnings=warnings,
                 auto_patched=True,
                 patches_applied=patches,
                 blockers=blockers,
             )
 
-    blockers = structural_blockers(charts, scenarios, chart_render)
+    blockers = structural_blockers(
+        charts,
+        scenarios,
+        chart_render,
+        chart_semantics,
+        chart_required=query_requests_charts(report.query),
+    )
     passes = len(blockers) == 0
     return _gate_payload(
         passes_gate=passes,
@@ -373,6 +350,7 @@ def run_report_static_gate(report_json_path: str, auto_patch: bool = True) -> st
         charts=charts,
         scenarios=scenarios,
         chart_render=chart_render,
+        chart_semantics=chart_semantics,
         warnings=warnings,
         auto_patched=False,
         patches_applied=[],

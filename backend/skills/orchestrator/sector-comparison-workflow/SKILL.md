@@ -1,7 +1,6 @@
 ---
 name: sector-comparison-workflow
-description: Blueprint for comparing multiple tickers or sectors
-triggers: [compare, AAPL vs MSFT, vs, sector, peers]
+description: Use for compare, versus, multiple-ticker, AAPL vs MSFT, sector, and peer-comparison requests.
 ---
 
 # Sector Comparison Blueprint

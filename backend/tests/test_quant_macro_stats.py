@@ -1,11 +1,1118 @@
 import math
 import json
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
 from agents import quant_macro_stats as qms
+from agents.quantitative_developer import tools as quant_tools
+
+
+def _write_fred_csv(path, dates, values, *, title="Test series"):
+    pd.DataFrame(
+        {
+            "date": dates,
+            "value": values,
+            "series_id": path.stem,
+            "title": title,
+        }
+    ).to_csv(path, index=False)
+
+
+def test_build_recession_dashboard_outputs_creates_renderable_chart_pack(tmp_path):
+    dates = pd.date_range("1988-01-01", periods=72, freq="MS")
+    data_files = {}
+    series_values = {
+        "T10Y3M": [1.2] * 12 + [-0.4] * 10 + [0.8] * 20 + [-0.2] * 8 + [1.1] * 22,
+        "UNRATE": [5.0] * 18 + [5.7, 6.1, 6.5, 6.8] + [6.0] * 20 + [4.0] * 30,
+        "INDPRO": list(np.linspace(90, 102, 72)),
+        "USREC": [0] * 24 + [1] * 6 + [0] * 42,
+        "TOTCI": [1.0] * 20 + [1.4] * 8 + [1.1] * 44,
+    }
+    for key, values in series_values.items():
+        path = tmp_path / f"{key}.csv"
+        _write_fred_csv(path, dates, values)
+        data_files[key] = str(path)
+
+    handoff = qms.build_recession_dashboard_outputs(
+        data_files,
+        tmp_path / "out",
+        query="Create a recession-dashboard report with charts.",
+    )
+
+    assert set(handoff["chart_ids"]) >= {
+        "yield_curve_recession_lead",
+        "labor_output_confirmation",
+        "credit_conditions_trend",
+        "spread_unemployment_scatter",
+        "recession_signal_stack",
+        "current_recession_risk_profile",
+        "signal_incidence_treemap",
+        "signal_flow_decomposition",
+    }
+    assert 6 <= len(handoff["chart_ids"]) <= 8
+    charts = json.loads((tmp_path / "out" / "charts.json").read_text())
+    assert charts["yield_curve_recession_lead"]["referenceAreas"]
+    assert {charts[chart_id]["type"] for chart_id in handoff["chart_ids"]} >= {
+        "line",
+        "composed",
+        "area",
+        "scatter",
+        "radar",
+        "treemap",
+        "sankey",
+    }
+    assert "historical_signal_incidence" not in handoff["chart_ids"]
+    assert charts["credit_conditions_trend"]["series"][0]["dataKey"] == "TOTCI"
+    assert charts["credit_conditions_trend"]["series"][1]["dataKey"] == "credit_6m_change"
+    assert charts["spread_unemployment_scatter"]["xKey"] == "yield_spread"
+    assert charts["spread_unemployment_scatter"]["yKey"] == "unemployment_rate"
+    assert charts["spread_unemployment_scatter"]["sizeKey"] == "recession_size"
+    for chart_id in handoff["chart_ids"]:
+        chart = charts[chart_id]
+        assert chart["data"]
+        if chart["type"] in {"line", "bar", "area", "composed"}:
+            assert all(row.get(chart["xAxisKey"]) for row in chart["data"])
+            for series in chart["series"]:
+                assert any(row.get(series["dataKey"]) is not None for row in chart["data"])
+    summary = json.loads((tmp_path / "out" / "execution_summary.json").read_text())
+    assert summary["latest_snapshot"]["date"] == "1993-12"
+    assert summary["credit_proxy"] == "TOTCI"
+    assert "deterministic_recession_dashboard_charts" in summary["methods_used"]
+
+
+def test_recession_dashboard_prefers_consumer_credit_and_latest_finite_components(tmp_path):
+    monthly_dates = pd.date_range("2023-01-01", periods=36, freq="MS")
+    curve_dates = pd.date_range("2023-01-01", periods=38, freq="MS")
+    data_files = {}
+    series_values = {
+        "UNRATE": [4.0] * 24 + [4.7] * 12,
+        "INDPRO": [100.0] * 12 + list(np.linspace(101.0, 95.0, 24)),
+        "USREC": [0] * 10 + [1] * 4 + [0] * 22,
+        "TOTALSL": [100.0] * 24 + list(np.linspace(99.0, 90.0, 12)),
+    }
+    for key, values in series_values.items():
+        path = tmp_path / f"{key}.csv"
+        _write_fred_csv(path, monthly_dates, values)
+        data_files[key] = str(path)
+    curve_path = tmp_path / "T10Y3M.csv"
+    _write_fred_csv(curve_path, curve_dates, [-0.4] * 12 + [0.6] * 26)
+    data_files["T10Y3M"] = str(curve_path)
+    dollar_path = tmp_path / "DTWEXBGS.csv"
+    _write_fred_csv(dollar_path, curve_dates, [100.0] * 38)
+    data_files["DTWEXBGS"] = str(dollar_path)
+
+    handoff = qms.build_recession_dashboard_outputs(
+        data_files,
+        tmp_path / "out",
+        query="Create a recession-dashboard report with credit conditions charts.",
+    )
+
+    charts = json.loads((tmp_path / "out" / "charts.json").read_text())
+    summary = json.loads((tmp_path / "out" / "execution_summary.json").read_text())
+    radar = charts["current_recession_risk_profile"]
+
+    assert "current_recession_risk_profile" in handoff["chart_ids"]
+    assert summary["credit_proxy"] == "TOTALSL"
+    assert charts["credit_conditions_trend"]["series"][0]["dataKey"] == "TOTALSL"
+    assert "spread_unemployment_scatter" in handoff["chart_ids"]
+    assert summary["latest_snapshot"]["date"] == "2026-02"
+    assert summary["latest_snapshot"]["UNRATE"] == 4.7
+    assert summary["latest_snapshot"]["UNRATE_as_of"] == "2025-12"
+    assert summary["latest_snapshot"]["indpro_yoy"] is not None
+    assert any(
+        series["dataKey"] == "historical_signal_months_pct"
+        for series in radar["series"]
+    )
+    assert any(row["historical_signal_months_pct"] > 0 for row in radar["data"])
+    assert any(row["current_risk"] > 0 for row in radar["data"])
+
+
+def test_build_recession_dashboard_outputs_supports_gdp_cycle_chart_pack(tmp_path):
+    monthly_dates = pd.date_range("2012-01-01", periods=132, freq="MS")
+    quarterly_dates = pd.date_range("2012-01-01", periods=44, freq="QS")
+    data_files = {}
+    monthly_series = {
+        "UNRATE": [4.6] * 48 + [5.2, 5.8, 6.4, 6.8, 6.5, 6.1] + [5.2] * 30 + [4.1] * 48,
+        "INDPRO": list(np.linspace(96, 110, 60))
+        + list(np.linspace(109, 99, 18))
+        + list(np.linspace(100, 116, 54)),
+        "USREC": [0] * 52 + [1] * 8 + [0] * 72,
+    }
+    for key, values in monthly_series.items():
+        path = tmp_path / f"{key}.csv"
+        _write_fred_csv(path, monthly_dates, values)
+        data_files[key] = str(path)
+    gdp_values = (
+        list(np.linspace(100, 114, 18))
+        + [112, 109, 107, 108, 110, 112]
+        + list(np.linspace(113, 132, 20))
+    )
+    gdp_path = tmp_path / "GDPC1.csv"
+    _write_fred_csv(gdp_path, quarterly_dates, gdp_values)
+    data_files["GDPC1"] = str(gdp_path)
+
+    handoff = qms.build_recession_dashboard_outputs(
+        data_files,
+        tmp_path / "out",
+        query="Compare real GDP growth, unemployment, recession periods, and industrial production since 1980. Produce 6-8 governed renderable charts.",
+    )
+
+    assert set(handoff["chart_ids"]) == {
+        "labor_output_confirmation",
+        "recession_signal_stack",
+        "current_recession_risk_profile",
+        "real_gdp_growth_cycle",
+        "growth_unemployment_scatter",
+        "historical_signal_incidence",
+        "signal_incidence_treemap",
+        "signal_flow_decomposition",
+    }
+    charts = json.loads((tmp_path / "out" / "charts.json").read_text())
+    assert {charts[chart_id]["type"] for chart_id in handoff["chart_ids"]} >= {
+        "line",
+        "composed",
+        "area",
+        "scatter",
+        "radar",
+        "radialBar",
+        "treemap",
+        "sankey",
+    }
+    assert "yield_curve_recession_lead" not in charts
+    assert charts["real_gdp_growth_cycle"]["referenceAreas"]
+    assert charts["growth_unemployment_scatter"]["sizeKey"] == "recession_size"
+    for chart_id in handoff["chart_ids"]:
+        chart = charts[chart_id]
+        assert chart["data"]
+        if chart["type"] in {"line", "bar", "area", "composed"}:
+            assert all(row.get(chart["xAxisKey"]) for row in chart["data"])
+            for series in chart["series"]:
+                assert any(row.get(series["dataKey"]) is not None for row in chart["data"])
+
+    summary = json.loads((tmp_path / "out" / "execution_summary.json").read_text())
+    assert summary["credit_proxy"] is None
+    assert summary["latest_snapshot"]["gdpc1_yoy"] is not None
+    assert "deterministic_recession_dashboard_charts" in summary["methods_used"]
+
+
+def test_recession_dashboard_preserves_full_fetched_recession_history(tmp_path):
+    monthly_dates = pd.date_range("1980-01-01", "2025-12-01", freq="MS")
+    quarterly_dates = pd.date_range("1980-01-01", "2025-10-01", freq="QS")
+    recession_windows = [
+        ("1980-01-01", "1980-07-01"),
+        ("1981-07-01", "1982-11-01"),
+        ("1990-07-01", "1991-03-01"),
+        ("2001-03-01", "2001-11-01"),
+        ("2007-12-01", "2009-06-01"),
+        ("2020-02-01", "2020-04-01"),
+    ]
+    usrec = []
+    for date in monthly_dates:
+        in_recession = any(
+            pd.Timestamp(start) <= date <= pd.Timestamp(end)
+            for start, end in recession_windows
+        )
+        usrec.append(1 if in_recession else 0)
+
+    data_files = {}
+    unrate_values = []
+    indpro_values = []
+    for index, date in enumerate(monthly_dates):
+        in_recession = usrec[index] == 1
+        unrate_values.append(5.0 + 0.001 * index + (1.2 if in_recession else 0.0))
+        indpro_values.append(100.0 + 0.03 * index - (8.0 if in_recession else 0.0))
+    monthly_series = {
+        "UNRATE": unrate_values,
+        "INDPRO": indpro_values,
+        "USREC": usrec,
+    }
+    for key, values in monthly_series.items():
+        path = tmp_path / f"{key}.csv"
+        _write_fred_csv(path, monthly_dates, values)
+        data_files[key] = str(path)
+    gdp_path = tmp_path / "GDPC1.csv"
+    gdp_values = []
+    for index, date in enumerate(quarterly_dates):
+        in_recession = any(
+            pd.Timestamp(start) <= date <= pd.Timestamp(end)
+            for start, end in recession_windows
+        )
+        gdp_values.append(100.0 + 0.7 * index - (9.0 if in_recession else 0.0))
+    _write_fred_csv(
+        gdp_path,
+        quarterly_dates,
+        gdp_values,
+    )
+    data_files["GDPC1"] = str(gdp_path)
+
+    handoff = qms.build_recession_dashboard_outputs(
+        data_files,
+        tmp_path / "out",
+        query="",
+    )
+
+    charts = json.loads((tmp_path / "out" / "charts.json").read_text())
+    summary = json.loads((tmp_path / "out" / "execution_summary.json").read_text())
+    first_labor_row = charts["labor_output_confirmation"]["data"][0]
+    first_band = charts["labor_output_confirmation"]["referenceAreas"][0]
+
+    assert first_labor_row["date"] == "1980-01"
+    assert first_band["x1"] == "1980-01"
+    assert "historical_signal_incidence" in handoff["chart_ids"]
+    assert 6 <= len(handoff["chart_ids"]) <= 8
+    assert summary["coverage_start"] == "1980-01"
+    assert summary["recession_band_count"] == 6
+    assert summary["recession_start_count"] == 6
+    assert "Yield curve inversion lead window" not in summary["available_signal_components"]
+    assert "credit/risk context" not in summary["statistical_summary"].lower()
+    assert handoff["dropped_chart_ids"] == []
+
+
+def test_recession_dashboard_tool_writes_reproducible_analysis_script(tmp_path, monkeypatch):
+    dates = pd.date_range("2006-01-01", periods=36, freq="MS")
+    data_files = {}
+    for key, values in {
+        "T10Y3M": [1.0] * 12 + [-0.5] * 12 + [0.4] * 12,
+        "UNRATE": [4.0] * 18 + [4.8] * 18,
+        "INDPRO": list(np.linspace(95, 100, 36)),
+        "USREC": [0] * 20 + [1] * 4 + [0] * 12,
+        "DTWEXBGS": [100] * 18 + [108] * 18,
+    }.items():
+        path = tmp_path / f"{key}.csv"
+        _write_fred_csv(path, dates, values)
+        data_files[key] = str(path)
+
+    output_base = tmp_path / "outputs"
+    monkeypatch.setattr(quant_tools, "OUTPUT_BASE_DIR", str(output_base))
+
+    result = quant_tools.build_recession_dashboard_artifacts.invoke(
+        {
+            "job_id": "job-tool-check",
+            "data_files": data_files,
+            "query": "Create a recession dashboard with charts.",
+        }
+    )
+
+    handoff = json.loads(result)
+    output_dir = output_base / "job-tool-check"
+    assert (output_dir / "code" / "analysis.py").exists()
+    assert Path(handoff["charts_json"]).exists()
+    assert handoff["chart_ids"]
+
+
+def _cpi_index_from_annual_rates(rates):
+    value = 100.0
+    values = []
+    for annual_rate in rates:
+        value *= 1 + (annual_rate / 100.0) / 12.0
+        values.append(value)
+    return values
+
+
+def test_build_inflation_policy_chart_pack_outputs_creates_renderable_chart_pack(tmp_path):
+    dates = pd.date_range("1990-01-01", periods=204, freq="MS")
+    headline_rates = [4.8] * 36 + [2.4] * 72 + [2.0] * 36 + [6.5] * 36 + [3.4] * 24
+    core_rates = [4.0] * 36 + [2.2] * 72 + [1.8] * 36 + [5.2] * 36 + [3.1] * 24
+    fed_funds = [6.0] * 36 + [4.0] * 48 + [1.0] * 60 + [0.25] * 30 + [5.0] * 30
+    usrec = [0] * 72 + [1] * 8 + [0] * 82 + [1] * 6 + [0] * 36
+    data_files = {}
+    for key, values in {
+        "CPIAUCSL": _cpi_index_from_annual_rates(headline_rates),
+        "CPILFESL": _cpi_index_from_annual_rates(core_rates),
+        "FEDFUNDS": fed_funds,
+        "USREC": usrec,
+    }.items():
+        path = tmp_path / f"{key}.csv"
+        _write_fred_csv(path, dates, values)
+        data_files[key] = str(path)
+
+    handoff = qms.build_inflation_policy_chart_pack_outputs(
+        data_files,
+        tmp_path / "out",
+        query="Build a chart-heavy CPI/core CPI/Fed funds report.",
+    )
+
+    expected_chart_ids = {
+        "inflation_policy_overlay",
+        "real_policy_gap_cycle",
+        "policy_lag_scatter",
+        "regime_policy_profile",
+        "current_policy_component_scores",
+        "policy_lag_regime_contribution",
+        "policy_lag_filter_funnel",
+        "policy_lag_signal_flow",
+    }
+    assert set(handoff["chart_ids"]) == expected_chart_ids
+    charts = json.loads((tmp_path / "out" / "charts.json").read_text())
+    assert {charts[chart_id]["type"] for chart_id in handoff["chart_ids"]} >= {
+        "composed",
+        "area",
+        "scatter",
+        "radar",
+        "radialBar",
+        "treemap",
+        "funnel",
+        "sankey",
+    }
+    assert charts["inflation_policy_overlay"]["referenceAreas"]
+    assert charts["policy_lag_scatter"]["sizeKey"] == "policy_gap_abs"
+    for chart_id in handoff["chart_ids"]:
+        chart = charts[chart_id]
+        assert chart["data"]
+        if chart["type"] in {"line", "bar", "area", "composed"}:
+            assert all(row.get(chart["xAxisKey"]) for row in chart["data"])
+            for series in chart["series"]:
+                assert any(row.get(series["dataKey"]) is not None for row in chart["data"])
+
+    summary = json.loads((tmp_path / "out" / "execution_summary.json").read_text())
+    assert summary["policy_lag_summary"]["policy_lag_months"] > 0
+    assert summary["cpi_transforms"] == {
+        "headline_cpi_yoy": "index_pct_change_12m",
+        "core_cpi_yoy": "index_pct_change_12m",
+    }
+    assert "deterministic_inflation_policy_chart_pack" in summary["methods_used"]
+
+
+def test_build_inflation_policy_chart_pack_outputs_accepts_pretransformed_cpi_rates(
+    tmp_path,
+):
+    dates = pd.date_range("1990-01-01", periods=48, freq="MS")
+    data_files = {}
+    for key, values in {
+        "CPIAUCSL": [5.0] * 12 + [6.2] * 12 + [3.8] * 12 + [2.7] * 12,
+        "CPILFESL": [4.3] * 12 + [4.8] * 12 + [3.5] * 12 + [2.9] * 12,
+        "FEDFUNDS": [4.0] * 24 + [5.25] * 24,
+        "USREC": [0] * 6 + [1] * 6 + [0] * 36,
+    }.items():
+        path = tmp_path / f"{key}.csv"
+        _write_fred_csv(path, dates, values)
+        data_files[key] = str(path)
+
+    qms.build_inflation_policy_chart_pack_outputs(
+        data_files,
+        tmp_path / "out",
+        query="Build a chart-heavy CPI/core CPI/Fed funds report.",
+    )
+
+    charts = json.loads((tmp_path / "out" / "charts.json").read_text())
+    overlay_rows = charts["inflation_policy_overlay"]["data"]
+    gap_rows = charts["real_policy_gap_cycle"]["data"]
+    assert overlay_rows[0]["date"] == "1990-01"
+    assert overlay_rows[0]["headline_cpi_yoy"] == 5.0
+    assert overlay_rows[-1]["headline_cpi_yoy"] == 2.7
+    assert gap_rows[0]["headline_policy_gap"] == -1.0
+    assert max(abs(row["headline_cpi_yoy"]) for row in overlay_rows) < 10
+
+    summary = json.loads((tmp_path / "out" / "execution_summary.json").read_text())
+    assert summary["latest_snapshot"]["headline_cpi_yoy"] == 2.7
+    assert summary["latest_snapshot"]["core_cpi_yoy"] == 2.9
+    assert summary["cpi_transforms"] == {
+        "headline_cpi_yoy": "as_reported_percent_change",
+        "core_cpi_yoy": "as_reported_percent_change",
+    }
+
+
+def test_inflation_policy_chart_pack_tool_writes_reproducible_analysis_script(
+    tmp_path, monkeypatch
+):
+    dates = pd.date_range("2020-01-01", periods=48, freq="MS")
+    data_files = {}
+    for key, values in {
+        "CPIAUCSL": _cpi_index_from_annual_rates([6.0] * 48),
+        "CPILFESL": _cpi_index_from_annual_rates([5.0] * 48),
+        "FEDFUNDS": [0.25] * 24 + [5.0] * 24,
+        "USREC": [0] * 18 + [1] * 3 + [0] * 27,
+    }.items():
+        path = tmp_path / f"{key}.csv"
+        _write_fred_csv(path, dates, values)
+        data_files[key] = str(path)
+
+    output_base = tmp_path / "outputs"
+    monkeypatch.setattr(quant_tools, "OUTPUT_BASE_DIR", str(output_base))
+
+    result = quant_tools.build_inflation_policy_chart_pack_artifacts.invoke(
+        {
+            "job_id": "job-inflation-tool-check",
+            "data_files": data_files,
+            "query": "Create a chart-heavy CPI policy report.",
+        }
+    )
+
+    handoff = json.loads(result)
+    output_dir = output_base / "job-inflation-tool-check"
+    assert (output_dir / "code" / "analysis.py").exists()
+    assert Path(handoff["charts_json"]).exists()
+    assert len(handoff["chart_ids"]) >= 6
+
+
+def test_build_consumer_stress_dashboard_outputs_creates_renderable_chart_pack(tmp_path):
+    dates = pd.date_range("2018-01-01", periods=96, freq="MS")
+    cpi = _cpi_index_from_annual_rates([2.0] * 24 + [6.5] * 24 + [4.0] * 24 + [2.8] * 24)
+    core_pce = _cpi_index_from_annual_rates([1.8] * 24 + [5.0] * 24 + [3.5] * 24 + [2.7] * 24)
+    unrate = [3.8] * 24 + [13.0, 14.5, 11.0, 8.0] + [6.0] * 20 + [3.6] * 24 + [4.2] * 24
+    u6rate = [value + 3.2 for value in unrate]
+    data_files = {}
+    for key, values in {
+        "PSAVERT": [7.5] * 24 + [32.0, 24.0, 18.0, 14.0] + [8.0] * 20 + [4.2] * 48,
+        "UNRATE": unrate,
+        "U6RATE": u6rate,
+        "CPIAUCSL": cpi,
+        "PCEPILFE": core_pce,
+        "AHETPI": list(np.linspace(24.0, 32.0, 96)),
+        "UMCSENT": [98.0] * 24 + [75.0] * 12 + [55.0] * 24 + [68.0] * 36,
+        "DPCERA3M086SBEA": list(np.linspace(100.0, 121.0, 96)),
+        "PCE": list(np.linspace(15000.0, 21000.0, 96)),
+        "TOTALSL": list(np.linspace(3900.0, 5200.0, 96)),
+        "DTCOLNVHFNM": list(np.linspace(90000.0, 132000.0, 96)),
+        "DRALACBN": [2.1] * 24 + [1.5] * 24 + [2.0] * 24 + [2.8] * 24,
+        "USREC": [0] * 27 + [1] * 4 + [0] * 65,
+    }.items():
+        path = tmp_path / f"{key}.csv"
+        _write_fred_csv(path, dates, values)
+        data_files[key] = str(path)
+
+    handoff = qms.build_consumer_stress_dashboard_outputs(
+        data_files,
+        tmp_path / "out",
+        query="Analyze consumer stress with a 6-8 chart dashboard.",
+    )
+
+    expected_chart_ids = {
+        "consumer_stress_overlay",
+        "savings_vs_sentiment",
+        "unemployment_depth",
+        "consumer_profile_radar",
+        "consumption_savings_tradeoff",
+        "credit_stress",
+        "auto_loan_stress",
+        "consumption_sentiment_contributions",
+    }
+    assert set(handoff["chart_ids"]) == expected_chart_ids
+    charts = json.loads((tmp_path / "out" / "charts.json").read_text())
+    assert {charts[chart_id]["type"] for chart_id in handoff["chart_ids"]} >= {
+        "composed",
+        "scatter",
+        "area",
+        "radar",
+        "line",
+        "radialBar",
+        "treemap",
+    }
+    assert charts["consumer_stress_overlay"]["referenceAreas"]
+    assert charts["savings_vs_sentiment"]["sizeKey"] == "inflation_size"
+    for chart_id in handoff["chart_ids"]:
+        chart = charts[chart_id]
+        assert chart["data"]
+        if chart["type"] in {"line", "bar", "area", "composed"}:
+            assert all(row.get(chart["xAxisKey"]) for row in chart["data"])
+            for series in chart["series"]:
+                assert any(row.get(series["dataKey"]) is not None for row in chart["data"])
+    summary = json.loads((tmp_path / "out" / "execution_summary.json").read_text())
+    assert summary["analysis_type"] == "consumer_stress_dashboard"
+    assert summary["credit_proxy"] == "DRALACBN"
+    assert "deterministic_consumer_stress_dashboard" in summary["methods_used"]
+
+
+def test_consumer_stress_dashboard_accepts_income_and_credit_substitutes(tmp_path):
+    dates = pd.date_range("2018-01-01", periods=96, freq="MS")
+    data_files = {}
+    for key, values in {
+        "PSAVERT": [7.0] * 24 + [18.0] * 6 + [5.0] * 66,
+        "UNRATE": [3.8] * 24 + [12.0, 14.0, 10.0, 8.0] + [5.5] * 20 + [4.0] * 48,
+        "CPIAUCSL": _cpi_index_from_annual_rates([2.0] * 24 + [7.0] * 24 + [4.0] * 24 + [3.0] * 24),
+        "DSPIC96": list(np.linspace(15000.0, 17400.0, 96)),
+        "CES0500000003": list(np.linspace(27.0, 35.0, 96)),
+        "UMCSENT": [98.0] * 24 + [70.0] * 24 + [55.0] * 24 + [67.0] * 24,
+        "PCEC96": list(np.linspace(13000.0, 15400.0, 96)),
+        "DRCCLACBS": [2.4] * 24 + [1.6] * 24 + [2.2] * 24 + [3.1] * 24,
+        "USREC": [0] * 27 + [1] * 4 + [0] * 65,
+    }.items():
+        path = tmp_path / f"{key}.csv"
+        _write_fred_csv(path, dates, values)
+        data_files[key] = str(path)
+
+    handoff = qms.build_consumer_stress_dashboard_outputs(
+        data_files,
+        tmp_path / "out",
+        query="Analyze whether the US consumer is under stress with a 6-8 chart dashboard.",
+    )
+
+    assert len(handoff["chart_ids"]) == 8
+    charts = json.loads((tmp_path / "out" / "charts.json").read_text())
+    assert charts["credit_stress"]["data"]
+    assert any(
+        row.get("credit_stress_score") is not None for row in charts["credit_stress"]["data"]
+    )
+    summary = json.loads((tmp_path / "out" / "execution_summary.json").read_text())
+    assert summary["income_or_wage_proxy"] == "DSPIC96"
+    assert summary["consumption_proxy"] == "PCEC96"
+    assert summary["credit_proxy"] == "DRCCLACBS"
+    assert summary["latest_snapshot"]["total_credit_yoy"] is None
+    assert summary["latest_snapshot"]["delinquency_rate"] == 3.1
+
+
+def test_consumer_stress_dashboard_accepts_missing_consumption_when_sentiment_exists(
+    tmp_path,
+):
+    dates = pd.date_range("2018-01-01", periods=96, freq="MS")
+    data_files = {}
+    for key, values in {
+        "PSAVERT": [7.0] * 24 + [18.0] * 6 + [5.0] * 66,
+        "UNRATE": [3.8] * 24 + [12.0, 14.0, 10.0, 8.0] + [5.5] * 20 + [4.0] * 48,
+        "CPIAUCSL": _cpi_index_from_annual_rates([2.0] * 24 + [7.0] * 24 + [4.0] * 24 + [3.0] * 24),
+        "PCEPILFE": _cpi_index_from_annual_rates([1.8] * 24 + [5.0] * 24 + [3.4] * 24 + [2.7] * 24),
+        "DSPIC96": list(np.linspace(15000.0, 17400.0, 96)),
+        "UMCSENT": [98.0] * 24 + [70.0] * 24 + [55.0] * 24 + [67.0] * 24,
+        "TOTALSL": list(np.linspace(3900.0, 5200.0, 96)),
+        "USREC": [0] * 27 + [1] * 4 + [0] * 65,
+    }.items():
+        path = tmp_path / f"{key}.csv"
+        _write_fred_csv(path, dates, values)
+        data_files[key] = str(path)
+
+    handoff = qms.build_consumer_stress_dashboard_outputs(
+        data_files,
+        tmp_path / "out",
+        query="Analyze consumer stress with sentiment but no real consumption file.",
+    )
+
+    assert len(handoff["chart_ids"]) == 8
+    assert "income_savings_tradeoff" in handoff["chart_ids"]
+    assert "consumption_savings_tradeoff" not in handoff["chart_ids"]
+    charts = json.loads((tmp_path / "out" / "charts.json").read_text())
+    assert charts["income_savings_tradeoff"]["data"]
+    assert {series["dataKey"] for series in charts["income_savings_tradeoff"]["series"]} == {
+        "savings_stress",
+        "income_stress",
+    }
+    summary = json.loads((tmp_path / "out" / "execution_summary.json").read_text())
+    assert summary["consumption_proxy"] is None
+    assert summary["latest_snapshot"]["real_pce_yoy"] is None
+    assert any("No real consumption series" in item for item in summary["limitations"])
+
+
+def test_consumer_stress_dashboard_tool_writes_reproducible_analysis_script(tmp_path, monkeypatch):
+    dates = pd.date_range("2019-01-01", periods=60, freq="MS")
+    data_files = {}
+    for key, values in {
+        "PSAVERT": [7.0] * 12 + [20.0] * 6 + [5.0] * 42,
+        "UNRATE": [3.7] * 18 + [8.0] * 6 + [4.0] * 36,
+        "CPIAUCSL": _cpi_index_from_annual_rates([2.0] * 18 + [6.0] * 24 + [3.0] * 18),
+        "AHETPI": list(np.linspace(25.0, 31.0, 60)),
+        "UMCSENT": [95.0] * 18 + [60.0] * 24 + [70.0] * 18,
+        "DPCERA3M086SBEA": list(np.linspace(100.0, 112.0, 60)),
+        "TOTALSL": list(np.linspace(4000.0, 4700.0, 60)),
+    }.items():
+        path = tmp_path / f"{key}.csv"
+        _write_fred_csv(path, dates, values)
+        data_files[key] = str(path)
+
+    output_base = tmp_path / "outputs"
+    monkeypatch.setattr(quant_tools, "OUTPUT_BASE_DIR", str(output_base))
+
+    result = quant_tools.build_consumer_stress_dashboard_artifacts.invoke(
+        {
+            "job_id": "job-consumer-tool-check",
+            "data_files": data_files,
+            "query": "Create a consumer stress dashboard with charts.",
+        }
+    )
+
+    handoff = json.loads(result)
+    output_dir = output_base / "job-consumer-tool-check"
+    assert (output_dir / "code" / "analysis.py").exists()
+    assert Path(handoff["charts_json"]).exists()
+    assert len(handoff["chart_ids"]) == 8
+
+
+def test_build_historical_replay_chart_pack_outputs_creates_renderable_pack(tmp_path):
+    dates = pd.date_range("1999-01-01", "2025-12-01", freq="MS")
+
+    def values(default, *spans):
+        result = []
+        for date in dates:
+            value = default
+            for start, end, span_value in spans:
+                if pd.Timestamp(start) <= date <= pd.Timestamp(end):
+                    value = span_value(date) if callable(span_value) else span_value
+            result.append(value)
+        return result
+
+    cpi_rates = values(
+        2.3,
+        ("2000-07-01", "2002-12-01", 2.8),
+        ("2007-07-01", "2009-12-01", 1.8),
+        ("2019-08-01", "2021-12-01", 4.8),
+        ("2021-01-01", "2023-12-01", 6.2),
+        ("2023-07-01", "2025-12-01", 3.1),
+    )
+    data_files = {}
+    for key, series_values in {
+        "UNRATE": values(
+            4.2,
+            ("2000-07-01", "2002-12-01", 5.6),
+            ("2007-07-01", "2009-12-01", 7.8),
+            ("2019-08-01", "2021-12-01", 8.5),
+            ("2023-07-01", "2025-12-01", 4.1),
+        ),
+        "CPIAUCSL": _cpi_index_from_annual_rates(cpi_rates),
+        "FEDFUNDS": values(
+            3.5,
+            ("2000-07-01", "2002-12-01", 3.0),
+            ("2007-07-01", "2009-12-01", 1.7),
+            ("2019-08-01", "2021-12-01", 0.5),
+            ("2021-01-01", "2023-12-01", 3.6),
+            ("2023-07-01", "2025-12-01", 5.1),
+        ),
+        "INDPRO": values(
+            100.0,
+            ("2000-07-01", "2002-12-01", lambda date: 100.0 - (date.year - 2000) * 1.0),
+            ("2007-07-01", "2009-12-01", lambda date: 105.0 - (date.year - 2007) * 2.5),
+            ("2019-08-01", "2021-12-01", lambda date: 108.0 - (date.year - 2019) * 3.0),
+            ("2023-07-01", "2025-12-01", lambda date: 111.0 + (date.year - 2023) * 0.6),
+        ),
+        "USREC": values(
+            0,
+            ("2001-03-01", "2001-11-01", 1),
+            ("2007-12-01", "2009-06-01", 1),
+            ("2020-02-01", "2020-04-01", 1),
+        ),
+        "ICSA": values(
+            230000,
+            ("2007-07-01", "2009-12-01", 430000),
+            ("2019-08-01", "2021-12-01", 650000),
+            ("2023-07-01", "2025-12-01", 220000),
+        ),
+        "DSPIC96": list(np.linspace(10000.0, 13200.0, len(dates))),
+        "PCE": list(np.linspace(7000.0, 18000.0, len(dates))),
+    }.items():
+        path = tmp_path / f"{key}.csv"
+        _write_fred_csv(path, dates, series_values)
+        data_files[key] = str(path)
+
+    handoff = qms.build_historical_replay_chart_pack_outputs(
+        data_files,
+        tmp_path / "out",
+        query="Make a historical replay report with 6-8 charts.",
+    )
+
+    expected_chart_ids = {
+        "labor_replay_paths",
+        "inflation_policy_replay",
+        "production_consumer_replay",
+        "analog_distance_bubble",
+        "normalized_window_profiles",
+        "current_signal_scores",
+        "replay_difference_contributions",
+    }
+    assert set(handoff["chart_ids"]) == expected_chart_ids
+    charts = json.loads((tmp_path / "out" / "charts.json").read_text())
+    assert {charts[chart_id]["type"] for chart_id in handoff["chart_ids"]} >= {
+        "line",
+        "composed",
+        "scatter",
+        "radar",
+        "radialBar",
+        "treemap",
+    }
+    for chart_id in handoff["chart_ids"]:
+        chart = charts[chart_id]
+        assert chart["data"]
+        if chart["type"] in {"line", "bar", "area", "composed"}:
+            assert all(row.get(chart["xAxisKey"]) is not None for row in chart["data"])
+            for series in chart["series"]:
+                assert any(row.get(series["dataKey"]) is not None for row in chart["data"])
+    summary = json.loads((tmp_path / "out" / "execution_summary.json").read_text())
+    assert summary["analysis_type"] == "historical_replay_chart_pack"
+    assert summary["top_analog"]
+    assert len(summary["historical_simulations"]) == 4
+    assert "deterministic_historical_replay_chart_pack" in summary["methods_used"]
+
+
+def test_historical_replay_chart_pack_tool_writes_reproducible_analysis_script(
+    tmp_path, monkeypatch
+):
+    dates = pd.date_range("1999-01-01", "2025-12-01", freq="MS")
+    data_files = {}
+    for key, series_values in {
+        "UNRATE": [4.0] * len(dates),
+        "CPIAUCSL": _cpi_index_from_annual_rates([2.5] * len(dates)),
+        "FEDFUNDS": [3.0] * len(dates),
+        "INDPRO": list(np.linspace(90.0, 115.0, len(dates))),
+        "USREC": [0] * len(dates),
+        "DSPIC96": list(np.linspace(10000.0, 13000.0, len(dates))),
+    }.items():
+        path = tmp_path / f"{key}.csv"
+        _write_fred_csv(path, dates, series_values)
+        data_files[key] = str(path)
+
+    output_base = tmp_path / "outputs"
+    monkeypatch.setattr(quant_tools, "OUTPUT_BASE_DIR", str(output_base))
+
+    result = quant_tools.build_historical_replay_chart_pack_artifacts.invoke(
+        {
+            "job_id": "job-historical-replay-tool-check",
+            "data_files": data_files,
+            "query": "Create a chart-heavy historical replay report.",
+        }
+    )
+
+    handoff = json.loads(result)
+    output_dir = output_base / "job-historical-replay-tool-check"
+    assert (output_dir / "code" / "analysis.py").exists()
+    assert Path(handoff["charts_json"]).exists()
+    assert 6 <= len(handoff["chart_ids"]) <= 8
+
+
+def test_historical_replay_chart_pack_accepts_quarterly_real_consumption_substitute(
+    tmp_path,
+):
+    dates = pd.date_range("1999-01-01", "2025-12-01", freq="MS")
+    data_files = {}
+    for key, series_values in {
+        "UNRATE": [4.0] * len(dates),
+        "CPIAUCSL": _cpi_index_from_annual_rates([2.5] * len(dates)),
+        "FEDFUNDS": [3.0] * len(dates),
+        "INDPRO": list(np.linspace(90.0, 115.0, len(dates))),
+        "USREC": [0] * len(dates),
+        "DPCERA3Q086SBEA": list(np.linspace(100.0, 160.0, len(dates))),
+    }.items():
+        path = tmp_path / f"{key}.csv"
+        _write_fred_csv(path, dates, series_values)
+        data_files[key] = str(path)
+
+    handoff = qms.build_historical_replay_chart_pack_outputs(
+        data_files,
+        tmp_path / "out",
+        query="Make a historical replay report with consumer stress charts.",
+    )
+
+    summary = json.loads((tmp_path / "out" / "execution_summary.json").read_text())
+    assert 6 <= len(handoff["chart_ids"]) <= 8
+    assert summary["latest_snapshot"]["consumer_yoy"] > 0
+
+
+def test_build_unemployment_forecast_chart_pack_outputs_creates_renderable_pack(tmp_path):
+    dates = pd.date_range("2000-01-01", periods=180, freq="MS")
+    cycle = np.sin(np.linspace(0, 8 * np.pi, len(dates)))
+    unrate = 5.2 + 0.7 * cycle + np.linspace(0.0, -0.4, len(dates))
+    claims = 260000 + 45000 * cycle + np.linspace(0, 12000, len(dates))
+    payrolls = 130000 + np.cumsum(80 - 18 * cycle)
+    cpi = _cpi_index_from_annual_rates(2.4 + 0.8 * cycle)
+    gdpc1 = 15000 + np.cumsum(12 - 2 * cycle)
+    data_files = {}
+    for key, series_values in {
+        "UNRATE_FRED": unrate,
+        "PAYEMS_FRED": payrolls,
+        "ICSA_FRED": claims,
+        "CPIAUCSL_FRED": cpi,
+        "GDPC1_FRED": gdpc1,
+    }.items():
+        path = tmp_path / f"{key}.csv"
+        _write_fred_csv(path, dates, series_values)
+        data_files[key] = str(path)
+
+    handoff = qms.build_unemployment_forecast_chart_pack_outputs(
+        data_files,
+        tmp_path / "out",
+        query="Build an unemployment forecast-overlay report with 6-8 charts.",
+    )
+
+    expected_chart_ids = {
+        "unemployment_forecast_band",
+        "actual_vs_fitted_backtest",
+        "backtest_error_by_horizon",
+        "fitted_vs_actual_scatter",
+        "predictor_contribution_radar",
+        "current_signal_scores",
+        "uncertainty_signal_flow",
+        "forecast_uncertainty_hierarchy",
+    }
+    assert set(handoff["chart_ids"]) == expected_chart_ids
+    charts = json.loads((tmp_path / "out" / "charts.json").read_text())
+    assert {charts[chart_id]["type"] for chart_id in handoff["chart_ids"]} >= {
+        "composed",
+        "line",
+        "bar",
+        "scatter",
+        "radar",
+        "radialBar",
+        "sankey",
+        "sunburst",
+    }
+    assert charts["unemployment_forecast_band"]["referenceLines"]
+    assert charts["fitted_vs_actual_scatter"]["sizeKey"] == "abs_error"
+    for chart_id in handoff["chart_ids"]:
+        chart = charts[chart_id]
+        assert chart["data"]
+        if chart["type"] in {"line", "bar", "area", "composed"}:
+            assert all(row.get(chart["xAxisKey"]) for row in chart["data"])
+            for series in chart["series"]:
+                assert any(row.get(series["dataKey"]) is not None for row in chart["data"])
+    summary = json.loads((tmp_path / "out" / "execution_summary.json").read_text())
+    assert summary["analysis_type"] == "unemployment_forecast_chart_pack"
+    assert summary["forecast_result"]["forecast_table"]
+    assert summary["backtest_summary"]["six_month"]["status"] == "ok"
+    assert "deterministic_unemployment_forecast_chart_pack" in summary["methods_used"]
+
+
+def test_unemployment_forecast_chart_pack_uses_alternate_predictors_without_claims(
+    tmp_path,
+):
+    dates = pd.date_range("2005-01-01", periods=210, freq="MS")
+    cycle = np.sin(np.linspace(0, 7 * np.pi, len(dates)))
+    data_files = {}
+    for key, series_values in {
+        "UNRATE_FRED": 5.0 + 0.6 * cycle,
+        "PAYEMS_FRED": 132000 + np.cumsum(70 - 16 * cycle),
+        "U6RATE_FRED": 8.5 + 1.0 * cycle,
+        "DGS10_FRED": 3.2 + 0.8 * cycle,
+        "FEDFUNDS_FRED": 2.1 + 0.9 * np.roll(cycle, 3),
+        "NROU_FRED": 4.7 + 0.1 * np.cos(np.linspace(0, 2 * np.pi, len(dates))),
+    }.items():
+        path = tmp_path / f"{key}.csv"
+        _write_fred_csv(path, dates, series_values)
+        data_files[key] = str(path)
+
+    handoff = qms.build_unemployment_forecast_chart_pack_outputs(
+        data_files,
+        tmp_path / "out",
+        query="Build an unemployment forecast-overlay report with 6-8 charts.",
+    )
+
+    assert len(handoff["chart_ids"]) == 8
+    charts = json.loads((tmp_path / "out" / "charts.json").read_text())
+    radar_rows = charts["predictor_contribution_radar"]["data"]
+    assert {row["metric"] for row in radar_rows} >= {
+        "U-6 underemployment",
+        "Rate-spread pressure",
+        "Natural-rate gap",
+    }
+    assert all(row["model_importance"] > 0 for row in radar_rows)
+    summary = json.loads((tmp_path / "out" / "execution_summary.json").read_text())
+    assert summary["latest_snapshot"]["initial_claims"] is None
+    assert summary["forecast_result"]["forecast_table"]
+    assert "deterministic_unemployment_forecast_chart_pack" in summary["methods_used"]
+
+
+def test_unemployment_forecast_chart_pack_tool_writes_reproducible_analysis_script(
+    tmp_path, monkeypatch
+):
+    dates = pd.date_range("2010-01-01", periods=132, freq="MS")
+    cycle = np.cos(np.linspace(0, 6 * np.pi, len(dates)))
+    data_files = {}
+    for key, values in {
+        "UNRATE_FRED": 4.8 + 0.5 * cycle,
+        "PAYEMS_FRED": 135000 + np.cumsum(90 - 12 * cycle),
+        "ICSA_FRED": 240000 + 35000 * cycle,
+        "CPIAUCSL_FRED": _cpi_index_from_annual_rates(2.3 + 0.5 * cycle),
+        "GDPC1_FRED": 16000 + np.cumsum(10 - cycle),
+    }.items():
+        path = tmp_path / f"{key}.csv"
+        _write_fred_csv(path, dates, values)
+        data_files[key] = str(path)
+
+    output_base = tmp_path / "outputs"
+    monkeypatch.setattr(quant_tools, "OUTPUT_BASE_DIR", str(output_base))
+
+    result = quant_tools.build_unemployment_forecast_chart_pack_artifacts.invoke(
+        {
+            "job_id": "job-unemployment-forecast-tool-check",
+            "data_files": data_files,
+            "query": "Create a chart-heavy unemployment forecast report.",
+        }
+    )
+
+    handoff = json.loads(result)
+    output_dir = output_base / "job-unemployment-forecast-tool-check"
+    assert (output_dir / "code" / "analysis.py").exists()
+    assert Path(handoff["charts_json"]).exists()
+    assert len(handoff["chart_ids"]) == 8
+
+
+def _macro_cycle_fixture(tmp_path):
+    dates = pd.date_range("1998-01-01", periods=336, freq="MS")
+    qdates = pd.date_range("1998-01-01", periods=112, freq="QS")
+    cycle = np.sin(np.linspace(0, 10 * np.pi, len(dates)))
+    qcycle = np.sin(np.linspace(0, 10 * np.pi, len(qdates)))
+    recession = [
+        1
+        if (
+            pd.Timestamp("2001-03-01") <= date <= pd.Timestamp("2001-11-01")
+            or pd.Timestamp("2008-01-01") <= date <= pd.Timestamp("2009-06-01")
+            or pd.Timestamp("2020-03-01") <= date <= pd.Timestamp("2020-05-01")
+        )
+        else 0
+        for date in dates
+    ]
+    monthly = {
+        "FEDFUNDS": 2.8 + 1.6 * cycle + np.linspace(0.0, 0.7, len(dates)),
+        "CPIAUCSL": _cpi_index_from_annual_rates(2.5 + 1.1 * cycle),
+        "PCEPILFE": _cpi_index_from_annual_rates(2.2 + 0.7 * cycle),
+        "DGS10": 3.7 + 0.9 * cycle,
+        "T10Y2Y": 0.7 - 1.2 * cycle,
+        "UNRATE": 5.2 + 1.0 * cycle,
+        "PAYEMS": 125000 + np.cumsum(95 - 18 * cycle),
+        "INDPRO": 88 + np.cumsum(0.08 - 0.03 * cycle),
+        "PSAVERT": 7.2 - 1.4 * cycle,
+        "UMCSENT": 82 - 13 * cycle,
+        "USREC": recession,
+        "T10YIE": 2.1 + 0.35 * cycle,
+        "CIVPART": 62.5 + 0.4 * np.cos(np.linspace(0, 5 * np.pi, len(dates))),
+        "TCU": 76 + 3.5 * cycle,
+        "MORTGAGE30US": 5.0 + 1.2 * cycle,
+        "CSUSHPISA": 140 + np.cumsum(0.45 + 0.08 * cycle),
+        "STLFSI": -0.2 + 0.6 * cycle,
+    }
+    data_files = {}
+    for key, values in monthly.items():
+        path = tmp_path / f"{key}.csv"
+        _write_fred_csv(path, dates, values)
+        data_files[key] = str(path)
+    gdp_path = tmp_path / "GDPC1.csv"
+    _write_fred_csv(gdp_path, qdates, 14500 + np.cumsum(45 - 9 * qcycle))
+    data_files["GDPC1"] = str(gdp_path)
+    return data_files
+
+
+def test_build_macro_cycle_chart_pack_outputs_creates_renderable_pack(tmp_path):
+    data_files = _macro_cycle_fixture(tmp_path)
+
+    handoff = qms.build_macro_cycle_chart_pack_outputs(
+        data_files,
+        tmp_path / "out",
+        query="Create a macro cycle chart pack for an investment committee with 6-8 governed charts.",
+    )
+
+    expected_chart_ids = {
+        "rates_inflation_overlay",
+        "labor_cycle_breadth",
+        "output_production_momentum",
+        "consumer_stress_pressure",
+        "latest_year_change_bridge",
+        "historical_analog_distance",
+        "macro_cycle_profile",
+        "cycle_pressure_flow",
+    }
+    assert set(handoff["chart_ids"]) == expected_chart_ids
+    charts = json.loads((tmp_path / "out" / "charts.json").read_text())
+    assert {charts[chart_id]["type"] for chart_id in handoff["chart_ids"]} >= {
+        "composed",
+        "area",
+        "bar",
+        "scatter",
+        "radar",
+        "sankey",
+    }
+    rates_chart = charts["rates_inflation_overlay"]
+    rate_series = {series["dataKey"] for series in rates_chart["series"]}
+    assert {"FEDFUNDS", "DGS10", "CURVE_SPREAD", "cpi_yoy", "core_inflation_yoy"} <= rate_series
+    assert any(series["label"] == "10Y-2Y yield spread" for series in rates_chart["series"])
+    assert rates_chart["referenceAreas"]
+    assert charts["historical_analog_distance"]["sizeKey"] == "distance_score"
+    for chart_id in handoff["chart_ids"]:
+        chart = charts[chart_id]
+        if chart["type"] == "sankey":
+            assert chart["data"]["nodes"]
+            assert chart["data"]["links"]
+            assert all(link["value"] > 0 for link in chart["data"]["links"])
+            continue
+        assert chart["data"]
+        if chart["type"] in {"line", "bar", "area", "composed"}:
+            assert all(row.get(chart["xAxisKey"]) for row in chart["data"])
+            for series in chart["series"]:
+                assert any(row.get(series["dataKey"]) is not None for row in chart["data"])
+
+    summary = json.loads((tmp_path / "out" / "execution_summary.json").read_text())
+    assert summary["analysis_type"] == "macro_cycle_chart_pack"
+    assert summary["latest_year_changes"]
+    assert summary["latest_snapshot"]["curve_spread_label"] == "10Y-2Y yield spread"
+    assert summary["latest_snapshot"]["curve_spread"] is not None
+    assert summary["latest_snapshot"]["core_inflation_yoy"] is not None
+    assert summary["closest_historical_analog"]
+    assert "deterministic_macro_cycle_chart_pack" in summary["methods_used"]
+
+
+def test_build_macro_cycle_chart_pack_outputs_allows_missing_saving_rate(tmp_path):
+    data_files = _macro_cycle_fixture(tmp_path)
+    data_files.pop("PSAVERT")
+
+    handoff = qms.build_macro_cycle_chart_pack_outputs(
+        data_files,
+        tmp_path / "out",
+        query=(
+            "Test whether current macro conditions look like a soft landing, "
+            "delayed recession, or reacceleration with 6-8 governed charts."
+        ),
+    )
+
+    assert len(handoff["chart_ids"]) == 8
+    charts = json.loads((tmp_path / "out" / "charts.json").read_text())
+    consumer_chart = charts["consumer_stress_pressure"]
+    consumer_keys = {series["dataKey"] for series in consumer_chart["series"]}
+    assert "consumer_stress" in consumer_keys
+    assert "saving_stress" not in consumer_keys
+    assert consumer_chart["data"]
+
+    summary = json.loads((tmp_path / "out" / "execution_summary.json").read_text())
+    assert any("Personal saving rate" in item for item in summary["limitations"])
+
+
+def test_build_macro_cycle_chart_pack_outputs_accepts_curve_and_savings_proxies(tmp_path):
+    data_files = _macro_cycle_fixture(tmp_path)
+    data_files["T10Y2Y"] = data_files.pop("DGS10")
+    data_files.pop("UMCSENT")
+
+    handoff = qms.build_macro_cycle_chart_pack_outputs(
+        data_files,
+        tmp_path / "out",
+        query=(
+            "Create a macro cycle chart pack for an investment committee "
+            "covering rates, inflation, labor, output, consumer stress, "
+            "historical analogs, and synthesis."
+        ),
+    )
+
+    assert len(handoff["chart_ids"]) == 8
+    charts = json.loads((tmp_path / "out" / "charts.json").read_text())
+    rates_chart = charts["rates_inflation_overlay"]
+    assert any(
+        series["label"] == "10Y-2Y yield spread"
+        for series in rates_chart["series"]
+    )
+    consumer_chart = charts["consumer_stress_pressure"]
+    consumer_keys = {series["dataKey"] for series in consumer_chart["series"]}
+    assert {"consumer_stress", "saving_stress", "financing_stress"} <= consumer_keys
+    assert "sentiment_stress" not in consumer_keys
+
+    summary = json.loads((tmp_path / "out" / "execution_summary.json").read_text())
+    assert summary["analysis_type"] == "macro_cycle_chart_pack"
+    assert summary["latest_snapshot"]["rate_signal_label"] == "10Y-2Y yield spread"
+    assert any("yield spread" in item for item in summary["limitations"])
+    assert any("Consumer sentiment" in item for item in summary["limitations"])
+
+
+def test_macro_cycle_chart_pack_tool_writes_reproducible_analysis_script(tmp_path, monkeypatch):
+    data_files = _macro_cycle_fixture(tmp_path)
+    output_base = tmp_path / "outputs"
+    monkeypatch.setattr(quant_tools, "OUTPUT_BASE_DIR", str(output_base))
+
+    result = quant_tools.build_macro_cycle_chart_pack_artifacts.invoke(
+        {
+            "job_id": "job-macro-cycle-tool-check",
+            "data_files": data_files,
+            "query": "Create a macro cycle chart pack for an investment committee.",
+        }
+    )
+
+    handoff = json.loads(result)
+    output_dir = output_base / "job-macro-cycle-tool-check"
+    assert (output_dir / "code" / "analysis.py").exists()
+    assert Path(handoff["charts_json"]).exists()
+    assert len(handoff["chart_ids"]) == 8
 
 
 def test_known_input_rolling_correlation():
@@ -317,9 +1424,7 @@ def test_save_quant_outputs_sanitizes_json_and_derives_chart_ids(tmp_path):
 
     assert handoff["chart_ids"] == ["macro_signal"]
     saved_charts = json.loads((tmp_path / "charts.json").read_text(encoding="utf-8"))
-    saved_summary = json.loads(
-        (tmp_path / "execution_summary.json").read_text(encoding="utf-8")
-    )
+    saved_summary = json.loads((tmp_path / "execution_summary.json").read_text(encoding="utf-8"))
     assert saved_charts["macro_signal"]["id"] == "macro_signal"
     assert saved_charts["macro_signal"]["data"][0] == {
         "date": "2026-04-30T00:00:00",
@@ -331,6 +1436,82 @@ def test_save_quant_outputs_sanitizes_json_and_derives_chart_ids(tmp_path):
     assert saved_summary["chart_ids"] == ["macro_signal"]
     assert saved_summary["charts_json"] == str(tmp_path / "charts.json")
     assert saved_summary["execution_summary_json"] == str(tmp_path / "execution_summary.json")
+
+
+def test_save_quant_outputs_canonicalizes_dual_axis_config_chart(tmp_path):
+    charts = {
+        "labor_replay": {
+            "type": "dual_axis",
+            "title": "Labor Replay",
+            "data": [
+                {"date": "2026-01-01", "UNRATE": 4.0, "PAYEMS_mil": 158.0},
+                {"date": "2026-02-01", "UNRATE": 4.1, "PAYEMS_mil": 158.2},
+            ],
+            "config": {
+                "xAxis": {"dataKey": "date"},
+                "yAxis": [
+                    {"dataKey": "UNRATE", "label": "Unemployment (%)"},
+                    {"dataKey": "PAYEMS_mil", "label": "Payrolls (M)"},
+                ],
+                "colors": ["#2563eb", "#dc2626"],
+            },
+        }
+    }
+
+    handoff = qms.save_quant_outputs(
+        tmp_path,
+        charts,
+        {"statistical_summary": "Computed labor replay chart data."},
+    )
+
+    saved_charts = json.loads((tmp_path / "charts.json").read_text(encoding="utf-8"))
+    chart = saved_charts["labor_replay"]
+    assert handoff["chart_ids"] == ["labor_replay"]
+    assert chart["type"] == "composed"
+    assert chart["xAxisKey"] == "date"
+    assert [series["dataKey"] for series in chart["series"]] == ["UNRATE", "PAYEMS_mil"]
+    assert chart["series"][0]["yAxisId"] == "left"
+    assert chart["series"][1]["yAxisId"] == "right"
+
+
+def test_save_quant_outputs_collapses_same_scale_dual_axis_chart(tmp_path):
+    charts = {
+        "growth_composite": {
+            "type": "composed",
+            "title": "GDP and Industrial Production Growth",
+            "xAxisKey": "date",
+            "data": [
+                {"date": "2025-01-01", "GDP_YoY": 2.0, "INDPRO_YoY": 1.0},
+                {"date": "2025-04-01", "GDP_YoY": 4.0, "INDPRO_YoY": 4.0},
+            ],
+            "series": [
+                {
+                    "dataKey": "GDP_YoY",
+                    "label": "GDP YoY (%)",
+                    "color": "#2563eb",
+                    "type": "line",
+                    "yAxisId": "left",
+                },
+                {
+                    "dataKey": "INDPRO_YoY",
+                    "label": "INDPRO YoY (%)",
+                    "color": "#16a34a",
+                    "type": "line",
+                    "yAxisId": "right",
+                },
+            ],
+        }
+    }
+
+    qms.save_quant_outputs(
+        tmp_path,
+        charts,
+        {"statistical_summary": "Computed growth composite chart data."},
+    )
+
+    saved_charts = json.loads((tmp_path / "charts.json").read_text(encoding="utf-8"))
+    chart = saved_charts["growth_composite"]
+    assert [series["yAxisId"] for series in chart["series"]] == ["left", "left"]
 
 
 def test_save_quant_outputs_normalizes_legacy_scenarios(tmp_path):
@@ -373,9 +1554,7 @@ def test_save_quant_outputs_normalizes_legacy_scenarios(tmp_path):
 
     qms.save_quant_outputs(tmp_path, charts, summary)
 
-    saved_summary = json.loads(
-        (tmp_path / "execution_summary.json").read_text(encoding="utf-8")
-    )
+    saved_summary = json.loads((tmp_path / "execution_summary.json").read_text(encoding="utf-8"))
     assert [row["scenario"] for row in saved_summary["scenario_table"]] == [
         "base",
         "bull",
@@ -410,14 +1589,101 @@ def test_save_quant_outputs_drops_empty_chart_definitions(tmp_path):
     )
 
     saved_charts = json.loads((tmp_path / "charts.json").read_text(encoding="utf-8"))
-    saved_summary = json.loads(
-        (tmp_path / "execution_summary.json").read_text(encoding="utf-8")
-    )
+    saved_summary = json.loads((tmp_path / "execution_summary.json").read_text(encoding="utf-8"))
     assert handoff["chart_ids"] == ["valid_chart"]
     assert handoff["dropped_chart_ids"] == ["empty_chart"]
     assert list(saved_charts) == ["valid_chart"]
     assert saved_summary["chart_ids"] == ["valid_chart"]
     assert saved_summary["dropped_chart_ids"] == ["empty_chart"]
+
+
+def test_save_quant_outputs_preserves_new_governed_chart_families(tmp_path):
+    charts = {
+        "risk_profile": {
+            "type": "radar",
+            "title": "Risk Profile",
+            "angleKey": "metric",
+            "series": [{"dataKey": "score", "label": "Score", "color": "#3b82f6"}],
+            "data": [{"metric": "Labor", "score": 0.0}, {"metric": "Credit", "score": 70.0}],
+        },
+        "component_incidence": {
+            "type": "radial_bar",
+            "title": "Component Incidence",
+            "data": [{"name": "Labor", "value": 12.0}],
+        },
+        "signal_funnel": {
+            "type": "funnelchart",
+            "title": "Signal Funnel",
+            "data": [{"name": "All", "value": 120.0}, {"name": "Triggered", "value": 18.0}],
+        },
+        "contribution_tree": {
+            "type": "treemap",
+            "title": "Contribution Tree",
+            "data": [{"name": "Labor", "size": 40.0}],
+        },
+        "signal_flow": {
+            "type": "sankeychart",
+            "title": "Signal Flow",
+            "data": {
+                "nodes": [{"name": "Inputs"}, {"name": "Labor"}],
+                "links": [{"source": 0, "target": 1, "value": 12.0}],
+            },
+        },
+        "contribution_hierarchy": {
+            "type": "sunburstchart",
+            "title": "Contribution Hierarchy",
+            "data": {"name": "Total", "children": [{"name": "Labor", "value": 40.0}]},
+        },
+    }
+
+    handoff = qms.save_quant_outputs(
+        tmp_path,
+        charts,
+        {"statistical_summary": "Computed broad chart family payloads."},
+    )
+
+    saved_charts = json.loads((tmp_path / "charts.json").read_text(encoding="utf-8"))
+    assert handoff["dropped_chart_ids"] == []
+    assert set(handoff["chart_ids"]) == set(charts)
+    assert saved_charts["component_incidence"]["type"] == "radialBar"
+    assert saved_charts["signal_flow"]["type"] == "sankey"
+    assert saved_charts["contribution_hierarchy"]["type"] == "sunburst"
+
+
+def test_save_quant_outputs_drops_invalid_new_chart_family_values(tmp_path):
+    charts = {
+        "valid_chart": {
+            "type": "radar",
+            "title": "Valid Radar",
+            "angleKey": "metric",
+            "series": [{"dataKey": "score", "label": "Score", "color": "#3b82f6"}],
+            "data": [{"metric": "Labor", "score": 0.0}],
+        },
+        "broken_sankey": {
+            "type": "sankey",
+            "title": "Broken Sankey",
+            "data": {
+                "nodes": [{"name": "Inputs"}],
+                "links": [{"source": 0, "target": 2, "value": 12.0}],
+            },
+        },
+        "broken_sunburst": {
+            "type": "sunburst",
+            "title": "Broken Sunburst",
+            "data": {"name": "Total", "children": []},
+        },
+    }
+
+    handoff = qms.save_quant_outputs(
+        tmp_path,
+        charts,
+        {"statistical_summary": "Computed broad chart family payloads."},
+    )
+
+    saved_charts = json.loads((tmp_path / "charts.json").read_text(encoding="utf-8"))
+    assert handoff["chart_ids"] == ["valid_chart"]
+    assert handoff["dropped_chart_ids"] == ["broken_sankey", "broken_sunburst"]
+    assert list(saved_charts) == ["valid_chart"]
 
 
 def test_save_quant_outputs_preserves_legacy_layout_y_keys_chart(tmp_path):
@@ -444,9 +1710,7 @@ def test_save_quant_outputs_preserves_legacy_layout_y_keys_chart(tmp_path):
     )
 
     saved_charts = json.loads((tmp_path / "charts.json").read_text(encoding="utf-8"))
-    saved_summary = json.loads(
-        (tmp_path / "execution_summary.json").read_text(encoding="utf-8")
-    )
+    saved_summary = json.loads((tmp_path / "execution_summary.json").read_text(encoding="utf-8"))
     assert handoff["chart_ids"] == ["legacy_layout_chart"]
     assert handoff["dropped_chart_ids"] == []
     assert list(saved_charts) == ["legacy_layout_chart"]
@@ -480,9 +1744,7 @@ def test_save_quant_outputs_preserves_layout_x_key_y_keys_dict_chart(tmp_path):
     )
 
     saved_charts = json.loads((tmp_path / "charts.json").read_text(encoding="utf-8"))
-    saved_summary = json.loads(
-        (tmp_path / "execution_summary.json").read_text(encoding="utf-8")
-    )
+    saved_summary = json.loads((tmp_path / "execution_summary.json").read_text(encoding="utf-8"))
     assert handoff["chart_ids"] == ["signal_chart"]
     assert handoff["dropped_chart_ids"] == []
     assert list(saved_charts) == ["signal_chart"]
@@ -521,9 +1783,7 @@ def test_save_quant_outputs_drops_non_renderable_axis_chart(tmp_path):
     )
 
     saved_charts = json.loads((tmp_path / "charts.json").read_text(encoding="utf-8"))
-    saved_summary = json.loads(
-        (tmp_path / "execution_summary.json").read_text(encoding="utf-8")
-    )
+    saved_summary = json.loads((tmp_path / "execution_summary.json").read_text(encoding="utf-8"))
     assert handoff["chart_ids"] == ["valid_chart"]
     assert handoff["dropped_chart_ids"] == ["broken_chart"]
     assert list(saved_charts) == ["valid_chart"]
@@ -559,9 +1819,7 @@ def test_save_quant_outputs_drops_axis_chart_with_blank_x_axis_values(tmp_path):
     )
 
     saved_charts = json.loads((tmp_path / "charts.json").read_text(encoding="utf-8"))
-    saved_summary = json.loads(
-        (tmp_path / "execution_summary.json").read_text(encoding="utf-8")
-    )
+    saved_summary = json.loads((tmp_path / "execution_summary.json").read_text(encoding="utf-8"))
     assert handoff["chart_ids"] == ["valid_chart"]
     assert handoff["dropped_chart_ids"] == ["blank_axis_chart"]
     assert list(saved_charts) == ["valid_chart"]
@@ -633,9 +1891,7 @@ def test_save_quant_outputs_trims_empty_date_history_and_reference_areas(tmp_pat
     qms.save_quant_outputs(tmp_path, charts, summary)
 
     saved_charts = json.loads((tmp_path / "charts.json").read_text(encoding="utf-8"))
-    saved_summary = json.loads(
-        (tmp_path / "execution_summary.json").read_text(encoding="utf-8")
-    )
+    saved_summary = json.loads((tmp_path / "execution_summary.json").read_text(encoding="utf-8"))
     saved_chart = saved_charts["macro_vs_stress"]
     assert [row["date"] for row in saved_chart["data"]] == ["1947-01-01", "1947-02-01"]
     assert saved_chart["referenceAreas"] == []
@@ -729,9 +1985,7 @@ def test_save_quant_outputs_preserves_existing_charts_on_supplemental_empty_save
     )
 
     saved_charts = json.loads((tmp_path / "charts.json").read_text(encoding="utf-8"))
-    saved_summary = json.loads(
-        (tmp_path / "execution_summary.json").read_text(encoding="utf-8")
-    )
+    saved_summary = json.loads((tmp_path / "execution_summary.json").read_text(encoding="utf-8"))
     assert list(saved_charts) == ["macro_climate"]
     assert saved_charts["macro_climate"]["data"] == [{"date": "2026-04-01", "risk": 0.42}]
     assert handoff["chart_ids"] == ["macro_climate"]
@@ -779,9 +2033,7 @@ def test_save_quant_outputs_promotes_nested_validation_artifacts(tmp_path):
         },
     )
 
-    saved_summary = json.loads(
-        (tmp_path / "execution_summary.json").read_text(encoding="utf-8")
-    )
+    saved_summary = json.loads((tmp_path / "execution_summary.json").read_text(encoding="utf-8"))
     assert saved_summary["backtest_summary"] == backtest_summary
     assert saved_summary["model_comparison"] == model_comparison
     assert saved_summary["historical_simulations"] == historical_simulations
@@ -805,20 +2057,14 @@ def test_save_quant_outputs_promotes_common_nested_validation_artifacts(tmp_path
             "model_comparison": [{"model": "direct_ols", "rmse": 0.5}],
         },
         "regime_classification": {
-            "historical_analogs": [
-                {"date": "2008-02-01", "label": "recession", "distance": 0.06}
-            ]
+            "historical_analogs": [{"date": "2008-02-01", "label": "recession", "distance": 0.06}]
         },
-        "recession_risk": {
-            "backtest": {"status": "ok", "metrics": {"precision": 0.25}}
-        },
+        "recession_risk": {"backtest": {"status": "ok", "metrics": {"precision": 0.25}}},
     }
 
     qms.save_quant_outputs(tmp_path, charts, summary)
 
-    saved_summary = json.loads(
-        (tmp_path / "execution_summary.json").read_text(encoding="utf-8")
-    )
+    saved_summary = json.loads((tmp_path / "execution_summary.json").read_text(encoding="utf-8"))
     assert saved_summary["backtest_summary"] == {
         "status": "ok",
         "metrics": {"rmse": 0.5},
@@ -850,18 +2096,14 @@ def test_save_quant_outputs_promotes_composite_event_and_replay_validation(tmp_p
             "methods_used": [qms.METHOD_EVENT_SIGNAL_BACKTEST],
         },
         "historical_scenario_replay": {
-            "historical_simulations": [
-                {"label": "2001 downturn", "status": "ok", "max_signal": 4}
-            ],
+            "historical_simulations": [{"label": "2001 downturn", "status": "ok", "max_signal": 4}],
             "methods_used": [qms.METHOD_HISTORICAL_SCENARIO_REPLAY],
         },
     }
 
     qms.save_quant_outputs(tmp_path, charts, summary)
 
-    saved_summary = json.loads(
-        (tmp_path / "execution_summary.json").read_text(encoding="utf-8")
-    )
+    saved_summary = json.loads((tmp_path / "execution_summary.json").read_text(encoding="utf-8"))
     assert saved_summary["backtest_summary"] == {
         "status": "ok",
         "metrics": {"precision": 0.75},
@@ -938,9 +2180,7 @@ def test_save_quant_outputs_promotes_top_level_helper_aliases(tmp_path):
         },
     )
 
-    saved_summary = json.loads(
-        (tmp_path / "execution_summary.json").read_text(encoding="utf-8")
-    )
+    saved_summary = json.loads((tmp_path / "execution_summary.json").read_text(encoding="utf-8"))
     assert saved_summary["backtest_summary"] == backtest_summary
     assert saved_summary["historical_simulations"] == historical_simulations
     assert [row["scenario"] for row in saved_summary["scenario_table"]] == [
@@ -983,9 +2223,7 @@ def test_save_quant_outputs_promotes_signal_framework_summary_and_scenarios_alia
                             "components_triggered": ["sentiment"],
                             "date": "2026-04-01",
                         },
-                        "pre_recession_scores": {
-                            "2008_recession_12m_before": {"score": 2}
-                        },
+                        "pre_recession_scores": {"2008_recession_12m_before": {"score": 2}},
                         "false_alarm_episodes": [{"period": "2022-2023"}],
                     }
                 },
@@ -1019,9 +2257,7 @@ def test_save_quant_outputs_promotes_signal_framework_summary_and_scenarios_alia
         },
     )
 
-    saved_summary = json.loads(
-        (tmp_path / "execution_summary.json").read_text(encoding="utf-8")
-    )
+    saved_summary = json.loads((tmp_path / "execution_summary.json").read_text(encoding="utf-8"))
     assert saved_summary["backtest_summary"]["false_positive"] == 52
     assert saved_summary["signal_framework_summary"]["false_alarms"] == 9
     assert saved_summary["signal_framework_summary"]["precision"] == pytest.approx(0.25)
@@ -1058,9 +2294,7 @@ def test_save_quant_outputs_promotes_signal_framework_key_replay(tmp_path):
                             "components_triggered": ["curve", "payrolls"],
                             "date": "2026-04-30",
                         },
-                        "pre_recession_scores": {
-                            "2008_recession_12m_before": {"score": 2}
-                        },
+                        "pre_recession_scores": {"2008_recession_12m_before": {"score": 2}},
                         "false_alarm_episodes": [{"period": "1995"}],
                     }
                 },
@@ -1069,9 +2303,7 @@ def test_save_quant_outputs_promotes_signal_framework_key_replay(tmp_path):
         },
     )
 
-    saved_summary = json.loads(
-        (tmp_path / "execution_summary.json").read_text(encoding="utf-8")
-    )
+    saved_summary = json.loads((tmp_path / "execution_summary.json").read_text(encoding="utf-8"))
     assert saved_summary["historical_simulations"] == {
         "signal_framework_backtest": {
             "status": "ok",
@@ -1094,9 +2326,7 @@ def test_save_quant_outputs_promotes_signal_framework_key_replay(tmp_path):
         }
     }
     assert saved_summary["signal_framework_summary"]["false_alarms"] == 28
-    assert saved_summary["signal_framework_summary"]["precision"] == pytest.approx(
-        6 / 34
-    )
+    assert saved_summary["signal_framework_summary"]["precision"] == pytest.approx(6 / 34)
     assert qms.METHOD_SIGNAL_FRAMEWORK_BACKTEST in saved_summary["methods_used"]
 
 
@@ -1168,9 +2398,7 @@ def test_save_quant_outputs_promotes_deep_nested_scenario_and_score_replay(tmp_p
         },
     )
 
-    saved_summary = json.loads(
-        (tmp_path / "execution_summary.json").read_text(encoding="utf-8")
-    )
+    saved_summary = json.loads((tmp_path / "execution_summary.json").read_text(encoding="utf-8"))
     assert [row["scenario"] for row in saved_summary["scenario_table"]] == [
         "base",
         "bull",
@@ -1215,9 +2443,7 @@ def test_save_quant_outputs_does_not_fabricate_validation_artifacts(tmp_path):
         {"forecast_diagnostics": {"model_spec": "UNRATE(t+6) ~ predictors"}},
     )
 
-    saved_summary = json.loads(
-        (tmp_path / "execution_summary.json").read_text(encoding="utf-8")
-    )
+    saved_summary = json.loads((tmp_path / "execution_summary.json").read_text(encoding="utf-8"))
     assert "backtest_summary" not in saved_summary
     assert "model_comparison" not in saved_summary
     assert "historical_simulations" not in saved_summary
@@ -1253,9 +2479,7 @@ def test_save_quant_outputs_promotes_signal_stack_metrics_and_replay(tmp_path):
         },
     )
 
-    saved_summary = json.loads(
-        (tmp_path / "execution_summary.json").read_text(encoding="utf-8")
-    )
+    saved_summary = json.loads((tmp_path / "execution_summary.json").read_text(encoding="utf-8"))
     assert saved_summary["backtest_summary"]["method"] == qms.METHOD_EVENT_SIGNAL_BACKTEST
     assert saved_summary["backtest_summary"]["metrics"]["composite_precision"] == 0.617
     assert saved_summary["backtest_summary"]["metrics"]["false_positive_count"] == 18
@@ -1291,19 +2515,13 @@ def test_save_quant_outputs_promotes_macro_regime_comparison_validation(tmp_path
         },
     )
 
-    saved_summary = json.loads(
-        (tmp_path / "execution_summary.json").read_text(encoding="utf-8")
-    )
-    assert saved_summary["backtest_summary"]["method"] == (
-        "current_vs_historical_regime_replay"
-    )
+    saved_summary = json.loads((tmp_path / "execution_summary.json").read_text(encoding="utf-8"))
+    assert saved_summary["backtest_summary"]["method"] == ("current_vs_historical_regime_replay")
     assert saved_summary["backtest_summary"]["current_values"] == {
         "FEDFUNDS": 4.0,
         "UNRATE": 4.3,
     }
-    assert saved_summary["historical_simulations"]["comparison_period"] == (
-        "pre_recession_avg"
-    )
+    assert saved_summary["historical_simulations"]["comparison_period"] == ("pre_recession_avg")
 
 
 def test_save_quant_outputs_promotes_recession_window_replay_validation(tmp_path):
@@ -1332,12 +2550,8 @@ def test_save_quant_outputs_promotes_recession_window_replay_validation(tmp_path
         },
     )
 
-    saved_summary = json.loads(
-        (tmp_path / "execution_summary.json").read_text(encoding="utf-8")
-    )
-    assert saved_summary["backtest_summary"]["method"] == (
-        "historical_recession_window_replay"
-    )
+    saved_summary = json.loads((tmp_path / "execution_summary.json").read_text(encoding="utf-8"))
+    assert saved_summary["backtest_summary"]["method"] == ("historical_recession_window_replay")
     assert saved_summary["backtest_summary"]["status"] == "descriptive_replay"
     assert saved_summary["backtest_summary"]["window_count"] == 2
     assert saved_summary["historical_simulations"][0] == {
@@ -1647,7 +2861,26 @@ def test_event_signal_backtest_reports_false_positives_and_lead_times():
     frame = pd.DataFrame(
         {
             "date": pd.date_range("2020-01-31", periods=18, freq="ME"),
-            "signal": [0.1, 0.2, 0.8, 0.9, 0.2, 0.1, 0.7, 0.8, 0.1, 0.2, 0.1, 0.8, 0.1, 0.2, 0.1, 0.1, 0.1, 0.1],
+            "signal": [
+                0.1,
+                0.2,
+                0.8,
+                0.9,
+                0.2,
+                0.1,
+                0.7,
+                0.8,
+                0.1,
+                0.2,
+                0.1,
+                0.8,
+                0.1,
+                0.2,
+                0.1,
+                0.1,
+                0.1,
+                0.1,
+            ],
             "event": [0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0],
         }
     )
@@ -1703,7 +2936,10 @@ def test_signal_framework_backtest_reports_recession_scores_and_false_alarms():
     assert payload["false_alarms"] == 1
     assert payload["false_alarm_episodes"][0]["period"] == "1999"
     assert payload["pre_recession_scores"]["2000_recession_6m_before"]["score"] == 3.0
-    assert "yield_inversion" in payload["pre_recession_scores"]["2000_recession_6m_before"]["components_triggered"]
+    assert (
+        "yield_inversion"
+        in payload["pre_recession_scores"]["2000_recession_6m_before"]["components_triggered"]
+    )
     json.dumps(result)
 
 
@@ -1902,9 +3138,7 @@ def test_align_period_features_can_emit_period_end_dates():
 def test_align_period_features_can_forward_fill_quarterly_into_monthly_panel():
     monthly_inflation = pd.DataFrame(
         {
-            "date": pd.to_datetime(
-                ["2020-01-01", "2020-02-01", "2020-03-01", "2020-04-01"]
-            ),
+            "date": pd.to_datetime(["2020-01-01", "2020-02-01", "2020-03-01", "2020-04-01"]),
             "value": [100.0, 101.0, 102.0, 103.0],
         }
     )
@@ -2074,9 +3308,10 @@ def test_composite_indicator_preserves_history_with_late_starting_feature():
     assert result["backtest_summary"]["status"] == "ok"
     assert result["latest_feature_values"]["late_credit"] == 4.0
     assert result["score_history"]
-    assert result["latest_percentile_0_100"] == result["score_history"][-1][
-        "composite_percentile_0_100"
-    ]
+    assert (
+        result["latest_percentile_0_100"]
+        == result["score_history"][-1]["composite_percentile_0_100"]
+    )
     assert all(
         0 <= row["composite_percentile_0_100"] <= 100
         for row in result["score_history"]

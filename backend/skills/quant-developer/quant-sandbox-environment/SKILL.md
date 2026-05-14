@@ -1,5 +1,5 @@
 ---
-name: sandbox-environment
+name: quant-sandbox-environment
 description: Linux sandbox path system and CSV data format from the data-engineer
 triggers:
   - write_file
@@ -57,6 +57,10 @@ execute("/home/vorndranj/projects/DeepResearchAgent/backend/.venv/bin/python /ho
 read_file("/home/vorndranj/projects/DeepResearchAgent/backend/outputs/{job_id}/charts.json")
 ```
 
+Execute the script with the default sandbox timeout. Do not pass large timeout
+values such as 120000; the sandbox maximum is 3600 seconds and timeout
+negotiation is not part of the analysis.
+
 After `execute` succeeds and this single `charts.json` read confirms the expected
 chart IDs with non-empty data, stop and return the compact handoff. Do not run
 additional `execute`, `read_file`, `ls`, `glob`, or shell probes to inspect
@@ -86,10 +90,13 @@ df["date"] = pd.to_datetime(df["date"])   # YYYY-MM-DD string → datetime
 ```
 
 FRED `notes` fields can be long quoted text and may contain embedded newlines.
+Saved FRED CSVs may contain long quoted `notes` fields with embedded newlines.
 Do not use shell line-inspection commands such as `head`, `tail`, `cat`,
 `grep`, `awk`, `sed`, or `wc` to infer the CSV shape. Trust the schema handoff
 and use `pd.read_csv(..., usecols=["date", "value"])` inside the analysis
 script.
+Use `pd.read_csv(path, usecols=["date", "value"], parse_dates=["date"])` when
+the script already has a local `path` variable for a FRED series.
 
 Always align thresholds and display labels with the raw FRED units before
 scoring signals. Initial-claims series such as `ICSA` and `IC4WSA` use raw
@@ -175,16 +182,20 @@ This avoids repeated retries from `Timestamp`, `Period`, `NaN`, numpy scalar
 serialization failures, and stale `chart_ids` inside the final handoff. Never
 import `agents.quant_utils`; that module does not exist.
 
-**FMP financial statement data** (e.g. income statement):
+**SEC EDGAR company-facts data**:
 ```python
-df = pd.read_csv("/home/vorndranj/projects/DeepResearchAgent/backend/data/{job_id}/AAPL_income_statement_{job_id}.csv")
-# Columns vary: date, revenue, netIncome, operatingIncome, eps, ...
-# Numeric columns may contain strings like "1234567000" — cast with pd.to_numeric()
+df = pd.read_csv("/home/vorndranj/projects/DeepResearchAgent/backend/data/{job_id}/sec_edgar_company_facts_AAPL_{job_id}.csv")
+# Prefer summarize_sec_company_facts(path) from agents.quant_macro_stats.
+# If manually loading compact chart rows, sort by fiscal_year ascending first.
+df = df.sort_values("fiscal_year").reset_index(drop=True)
 ```
+
+FMP remains disabled and unavailable. Do not request paid/keyed provider data or
+invent FMP-backed quote, market-data, estimate, or financial-statement fields.
 
 ## Common Pitfall: NaN in Numeric Columns
 
-FMP data occasionally has empty cells. Cast safely:
+Provider CSVs may have empty numeric cells. Cast safely:
 ```python
 df["revenue"] = pd.to_numeric(df["revenue"], errors="coerce")
 df = df.dropna(subset=["revenue"])

@@ -43,7 +43,9 @@ export interface SeriesDef {
   color: string;
   type?: "line" | "bar" | "area";
   yAxisId?: "left" | "right";
+  stackId?: string;
   shape?: string;
+  strokeDasharray?: string;
 }
 
 export interface ReferenceLineDef {
@@ -71,7 +73,8 @@ export interface AxisChartDef {
   description: string;
   xAxisKey: string;
   series: SeriesDef[];
-  data: Array<Record<string, number | string>>;
+  data: Array<Record<string, number | string | null>>;
+  layout?: "horizontal" | "vertical";
   referenceLines?: ReferenceLineDef[];
   referenceAreas?: ReferenceAreaDef[];
 }
@@ -86,7 +89,10 @@ export interface ScatterChartDef {
   xLabel: string;
   yLabel: string;
   color: string;
-  data: Array<Record<string, number>>;
+  data: Array<Record<string, number | string | null>>;
+  sizeKey?: string;
+  colorKey?: string;
+  nameKey?: string;
 }
 
 export interface PieChartDef {
@@ -95,6 +101,55 @@ export interface PieChartDef {
   title: string;
   description: string;
   data: Array<{ name: string; value: number; color?: string }>;
+  innerRadius?: number | string;
+}
+
+export interface RadarChartDef {
+  id: string;
+  type: "radar";
+  title: string;
+  description: string;
+  angleKey: string;
+  series: SeriesDef[];
+  data: Array<Record<string, number | string | null>>;
+}
+
+export interface SegmentDatum {
+  name: string;
+  value: number;
+  color?: string;
+  fill?: string;
+}
+
+export interface RadialBarChartDef {
+  id: string;
+  type: "radialBar";
+  title: string;
+  description: string;
+  data: SegmentDatum[];
+  dataKey?: string;
+  innerRadius?: number | string;
+  outerRadius?: number | string;
+}
+
+export interface FunnelChartDef {
+  id: string;
+  type: "funnel";
+  title: string;
+  description: string;
+  data: SegmentDatum[];
+  dataKey?: string;
+  nameKey?: string;
+}
+
+export interface HierarchyDatum {
+  [key: string]: unknown;
+  name: string;
+  value?: number;
+  size?: number;
+  color?: string;
+  fill?: string;
+  children?: HierarchyDatum[];
 }
 
 export interface TreemapChartDef {
@@ -102,10 +157,40 @@ export interface TreemapChartDef {
   type: "treemap";
   title: string;
   description: string;
-  data: Array<{ name: string; size: number; color?: string }>;
+  data: HierarchyDatum[];
+  valueKey?: "size" | "value";
 }
 
-export type ChartDef = AxisChartDef | ScatterChartDef | PieChartDef | TreemapChartDef;
+export interface SankeyChartDef {
+  id: string;
+  type: "sankey";
+  title: string;
+  description: string;
+  data: {
+    nodes: Array<{ name: string; color?: string; fill?: string }>;
+    links: Array<{ source: number; target: number; value: number; color?: string; fill?: string }>;
+  };
+}
+
+export interface SunburstChartDef {
+  id: string;
+  type: "sunburst";
+  title: string;
+  description: string;
+  data: HierarchyDatum;
+  valueKey?: "value" | "size";
+}
+
+export type ChartDef =
+  | AxisChartDef
+  | ScatterChartDef
+  | PieChartDef
+  | RadarChartDef
+  | RadialBarChartDef
+  | FunnelChartDef
+  | TreemapChartDef
+  | SankeyChartDef
+  | SunburstChartDef;
 
 export interface ResearchReport {
   schema_version: 1;

@@ -1,4 +1,7 @@
 """Execution-agent and parent graph factories."""
+
+from pathlib import Path
+
 from .common import (
     ClientSession,
     END,
@@ -17,27 +20,72 @@ from .common import (
     intake_chat_node,
     GENERAL_PURPOSE_SUBAGENT,
     SPECIALIST_SUBAGENTS_STATIC,
+    ToolMessage,
 )
 from .middleware import (
     GuardedLocalShellBackend,
     _HIDE_TODO_TOOL_MIDDLEWARE,
-    _ORCHESTRATOR_TOOL_BOUNDARY_MIDDLEWARE,
     _STRIP_TOOL_CALL_CONTENT_MIDDLEWARE,
+    OrchestratorToolBoundaryMiddleware,
     _with_hidden_todo_tool,
 )
 from .nodes import (
-    _fred_setup_error_payload,
     approval_gate_node,
+    prepare_execution_node,
     route_after_approval,
     route_after_evaluate,
     route_by_phase,
 )
 from .prompts import EXECUTION_SYSTEM_PROMPT
 from .state import OrchestratorState
+from .toolbox_router import route_toolbox_node
 
 # =============================================================================
 # AGENT FACTORIES
 # =============================================================================
+
+_ORCHESTRATOR_SKILLS_DIR = (_BACKEND_DIR / "skills" / "orchestrator").resolve()
+
+
+def _is_orchestrator_skill_file(file_path: object) -> bool:
+    try:
+        path = Path(str(file_path)).resolve()
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return False
+    return path.name == "SKILL.md" and path.is_relative_to(_ORCHESTRATOR_SKILLS_DIR)
+
+
+class OrchestratorSkillBoundaryMiddleware(OrchestratorToolBoundaryMiddleware):
+    """Allow only native orchestrator skill reads plus status/delegation tools."""
+
+    _ALLOWED_TOOL_NAMES = {"emit_chat_message", "task", "read_file"}
+
+    def _enforce_tool_boundary(self, request):
+        tool_call = request.tool_call
+        tool_name = tool_call.get("name") if isinstance(tool_call, dict) else None
+        if tool_name != "read_file":
+            return super()._enforce_tool_boundary(request)
+
+        args = self._tool_call_args(request.tool_call)
+        file_path = args.get("file_path") if isinstance(args, dict) else None
+        if _is_orchestrator_skill_file(file_path):
+            return None
+
+        return ToolMessage(
+            content=(
+                "Blocked orchestrator tool `read_file`. The top-level execution "
+                "agent may read only orchestrator skill `SKILL.md` files for "
+                "progressive disclosure; it must not inspect artifacts, generated "
+                "code, data files, or repository files directly. Delegate artifact "
+                "work to the appropriate specialist."
+            ),
+            name="read_file",
+            tool_call_id=self._tool_call_id(request.tool_call),
+            status="error",
+        )
+
+
+_ORCHESTRATOR_SKILL_BOUNDARY_MIDDLEWARE = OrchestratorSkillBoundaryMiddleware()
 
 
 async def _create_execution_agent(fred_session: ClientSession | None = None):
@@ -62,7 +110,7 @@ async def _create_execution_agent(fred_session: ClientSession | None = None):
         tools=[emit_chat_message],
         middleware=[
             _HIDE_TODO_TOOL_MIDDLEWARE,
-            _ORCHESTRATOR_TOOL_BOUNDARY_MIDDLEWARE,
+            _ORCHESTRATOR_SKILL_BOUNDARY_MIDDLEWARE,
             _STRIP_TOOL_CALL_CONTENT_MIDDLEWARE,
         ],
         subagents=[
@@ -78,6 +126,7 @@ async def _create_execution_agent(fred_session: ClientSession | None = None):
         ),
         context_schema=ResearchContext,
         # No checkpointer — parent graph owns the checkpoint.
+        skills=[str(_ORCHESTRATOR_SKILLS_DIR)],
         memory=[str(_BACKEND_DIR / "AGENTS.md")],
         name="orchestrator",
     )
@@ -92,7 +141,8 @@ async def create_orchestrator(fred_session: ClientSession | None = None):
     """Build the deterministic orchestrator pipeline.
 
     Returns a compiled ``StateGraph`` with nodes:
-    evaluate_intake → emit_approval_message → approval_gate → execute
+    evaluate_intake → route_toolbox → emit_approval_message → approval_gate
+                    → prepare_execution → execute
                     ↘ intake_chat → END when clarification is needed
 
     Complete requests skip ``intake_chat`` so explicit prompts do not burn
@@ -110,25 +160,41 @@ async def create_orchestrator(fred_session: ClientSession | None = None):
     # --- nodes ---
     graph.add_node("intake_chat", intake_chat_node)
     graph.add_node("evaluate_intake", evaluate_intake_node)
+    graph.add_node("route_toolbox", route_toolbox_node)
     graph.add_node("emit_approval_message", emit_approval_message_node)
     graph.add_node("approval_gate", approval_gate_node)
+    graph.add_node("prepare_execution", prepare_execution_node)
     graph.add_node("execute", execution_agent)
 
     # --- edges ---
-    graph.add_conditional_edges(START, route_by_phase, {
-        "intake": "evaluate_intake",
-        "executing": "execute",
-    })
-    graph.add_conditional_edges("evaluate_intake", route_after_evaluate, {
-        "needs_more": "intake_chat",
-        "complete": "emit_approval_message",
-    })
+    graph.add_conditional_edges(
+        START,
+        route_by_phase,
+        {
+            "intake": "evaluate_intake",
+            "executing": "prepare_execution",
+        },
+    )
+    graph.add_conditional_edges(
+        "evaluate_intake",
+        route_after_evaluate,
+        {
+            "needs_more": "intake_chat",
+            "complete": "route_toolbox",
+        },
+    )
     graph.add_edge("intake_chat", END)
+    graph.add_edge("route_toolbox", "emit_approval_message")
     graph.add_edge("emit_approval_message", "approval_gate")
-    graph.add_conditional_edges("approval_gate", route_after_approval, {
-        "executing": "execute",
-        "intake": "evaluate_intake",
-    })
+    graph.add_conditional_edges(
+        "approval_gate",
+        route_after_approval,
+        {
+            "executing": "prepare_execution",
+            "intake": "evaluate_intake",
+        },
+    )
+    graph.add_edge("prepare_execution", "execute")
     graph.add_edge("execute", END)
 
     return graph.compile(

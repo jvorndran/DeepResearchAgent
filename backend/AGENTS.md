@@ -11,7 +11,7 @@ Approval before heavy research uses a deterministic `approval_gate` node that ca
 ## Paths and job outputs
 
 - **Path normalization:** Use absolute paths with forward slashes only. Do not use backslashes in paths.
-- **Job ID:** Copy the Job ID from the user message verbatim into every artifact path (for example `.../outputs/job_a61b3825/charts.json`). Never drop a `job_` prefix, never shorten to hex-only, and never invent a different folder name.
+- **Job ID:** Copy the Job ID from the user message verbatim into every artifact path. Never use sample job IDs in paths, never drop a `job_` prefix, never shorten to hex-only, and never invent a different folder name.
 - **Quant delegation:** When delegating to `quant-developer`, spell out absolute paths for all tools (`execute`, `pandas.read_csv`, and filesystem tools). If the analysis uses quarterly labels, require `YYYY Qn` formatting and tell the quant developer not to use unsupported `strftime` directives like `%Q`.
 
 ## Technical writer handoff

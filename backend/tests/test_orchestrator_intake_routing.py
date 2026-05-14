@@ -1,8 +1,21 @@
+from pathlib import Path
+from types import SimpleNamespace
+
 import pytest
 from langchain_core.messages import ToolMessage
 
 from agents import orchestrator
+from agents.graph_input import resolve_graph_input
+from core.context import ResearchContext
 from agents.orchestrator import EXECUTION_SYSTEM_PROMPT
+
+
+_BACKEND_ROOT = Path(__file__).resolve().parents[1]
+_ORCHESTRATOR_SKILL_DIR = _BACKEND_ROOT / "skills" / "orchestrator"
+
+
+def _orchestrator_skill(name: str) -> str:
+    return (_ORCHESTRATOR_SKILL_DIR / name / "SKILL.md").read_text(encoding="utf-8")
 
 
 def test_execution_prompt_forbids_startup_prose_and_filesystem_inspection():
@@ -10,51 +23,90 @@ def test_execution_prompt_forbids_startup_prose_and_filesystem_inspection():
     assert "NO ASSISTANT PROSE DURING EXECUTION" in EXECUTION_SYSTEM_PROMPT
     assert "assistant message content must be empty" in EXECUTION_SYSTEM_PROMPT
     assert "delivered-summary tables" in EXECUTION_SYSTEM_PROMPT
-    assert "make exactly two tool calls and no assistant text" in EXECUTION_SYSTEM_PROMPT
+    assert "If no workflow skill applies, make exactly two tool calls" in EXECUTION_SYSTEM_PROMPT
     assert "NO STARTUP FILESYSTEM INSPECTION" in EXECUTION_SYSTEM_PROMPT
+    assert "Skill `SKILL.md` reads are allowed only" in EXECUTION_SYSTEM_PROMPT
     assert "TERMINAL APPROVAL RESPONSE" in EXECUTION_SYSTEM_PROMPT
     assert "Report approved: outputs/{job_id}/report.json" in EXECUTION_SYSTEM_PROMPT
-    assert "Do not add any assistant content after that tool call" in EXECUTION_SYSTEM_PROMPT
-    assert "TECHNICAL-WRITER TOOL CONTRACT" in EXECUTION_SYSTEM_PROMPT
-    assert "call `plan_report_structure` first" in EXECUTION_SYSTEM_PROMPT
-    assert "If `plan_report_structure` returns truncated-looking text" in EXECUTION_SYSTEM_PROMPT
-    assert "Do not demand exact data filenames" in EXECUTION_SYSTEM_PROMPT
-    assert "backend/data/_auto/" in EXECUTION_SYSTEM_PROMPT
-    assert "DATA → QUANT HANDOFF" in EXECUTION_SYSTEM_PROMPT
-    assert "compact JSON `data_files` map" in EXECUTION_SYSTEM_PROMPT
-    assert "paste that `data_files` JSON object into `analysis.py` as a dictionary" in EXECUTION_SYSTEM_PROMPT
-    assert "not by retyping long auto-saved filenames" in EXECUTION_SYSTEM_PROMPT
-    assert "not call `glob`, `ls`, or `read_file`" in EXECUTION_SYSTEM_PROMPT
-    assert "six-month unemployment forecasts" in EXECUTION_SYSTEM_PROMPT
-    assert "call `direct_ols_forecast(...)` from `agents.quant_macro_stats`" in EXECUTION_SYSTEM_PROMPT
-    assert "do not import `statsmodels` directly or hand-roll OLS" in EXECUTION_SYSTEM_PROMPT
-    assert "REAL WAGE SOURCE FIDELITY" in EXECUTION_SYSTEM_PROMPT
-    assert "Never let a nominal average-hourly-earnings series stand in" in EXECUTION_SYSTEM_PROMPT
-    assert "QA REJECTION HANDOFF" in EXECUTION_SYSTEM_PROMPT
-    assert "do not re-run QA and do not inspect artifacts yourself" in EXECUTION_SYSTEM_PROMPT
-    assert "Do not use `general-purpose` to read `execution_summary.json`" in EXECUTION_SYSTEM_PROMPT
-    assert "Treat \"data fidelity failures\"" in EXECUTION_SYSTEM_PROMPT
-    assert "The writer already has tools that load the execution summary safely" in EXECUTION_SYSTEM_PROMPT
-    assert "sign/direction wording" in EXECUTION_SYSTEM_PROMPT
-    assert "report-vs-execution_summary contradiction fixes to `technical-writer`" in EXECUTION_SYSTEM_PROMPT
-    assert "only when QA explicitly says computed artifacts are missing" in EXECUTION_SYSTEM_PROMPT
-    assert "send the first recovery pass to `technical-writer`" in EXECUTION_SYSTEM_PROMPT
-    assert "Do not ask `quant-developer` to patch narrative wording" in EXECUTION_SYSTEM_PROMPT
-    assert "passing the exact `reason` and `required_fixes`" in EXECUTION_SYSTEM_PROMPT
-    assert "REGIONAL CONSUMER-STRESS BUDGET" in EXECUTION_SYSTEM_PROMPT
-    assert "exactly one batched `census_get_table` state table" in EXECUTION_SYSTEM_PROMPT
-    assert "small national FRED macro set (at most 6 series" in EXECUTION_SYSTEM_PROMPT
-    assert "forbid broad state-level FRED sweeps" in EXECUTION_SYSTEM_PROMPT
-    assert "RECESSION WINDOW SOURCE" in EXECUTION_SYSTEM_PROMPT
-    assert "FRED `USREC`" in EXECUTION_SYSTEM_PROMPT
-    assert "quant-developer must not fetch recession dates itself" in EXECUTION_SYSTEM_PROMPT
-    assert "FEATURE-AWARE DATA ROUTING" in EXECUTION_SYSTEM_PROMPT
-    assert "World Bank `worldbank_get_indicator`" in EXECUTION_SYSTEM_PROMPT
-    assert "SEC EDGAR `sec_fetch_company_facts` for AAPL and MSFT" in EXECUTION_SYSTEM_PROMPT
-    assert "not to replace it with broad guessed FRED sweeps" in EXECUTION_SYSTEM_PROMPT
+    assert "Do not add assistant content after that tool call" in EXECUTION_SYSTEM_PROMPT
+    assert "SKILL ROUTER" in EXECUTION_SYSTEM_PROMPT
+    assert "technical-writer-handoff" in EXECUTION_SYSTEM_PROMPT
+    assert "data-to-quant-handoff" in EXECUTION_SYSTEM_PROMPT
+    assert "quality-analyst-handoff" in EXECUTION_SYSTEM_PROMPT
+    assert "qa-rejection-recovery" in EXECUTION_SYSTEM_PROMPT
+    assert "FMP remains disabled and unavailable" in EXECUTION_SYSTEM_PROMPT
+    assert len(EXECUTION_SYSTEM_PROMPT) < 4_900
     assert "skills/orchestrator" not in EXECUTION_SYSTEM_PROMPT
     for tool_name in ("ls", "glob", "grep", "read_file", "execute", "write_todos"):
         assert f"`{tool_name}`" in EXECUTION_SYSTEM_PROMPT
+
+
+def test_migrated_orchestrator_details_live_in_skills_not_resident_prompt():
+    prompt = EXECUTION_SYSTEM_PROMPT
+    migrated = [
+        "call `plan_report_structure` first",
+        "If `plan_report_structure` returns truncated-looking text",
+        "Do not demand exact data filenames",
+        "backend/data/_auto/",
+        "compact JSON `data_files` map",
+        "paste the `data_files` JSON object into `analysis.py`",
+        "call `direct_ols_forecast(...)` from `agents.quant_macro_stats`",
+        "Never let a nominal average-hourly-earnings series stand in",
+        "Do not use `general-purpose` to read `execution_summary.json`",
+        "exactly one batched `census_get_table` state table",
+        "World Bank `worldbank_get_indicator`",
+        "SEC EDGAR `sec_fetch_company_facts` for AAPL and MSFT",
+        "`quality-analyst` must return compact JSON",
+        "when rejected, `reason` and `required_fixes`",
+        "If quant-developer returns `execution_summary_json`",
+        "recession-window, regime, correlation, scenario, or forecast requests",
+        "broad macro cycle briefs spanning macro, peers, regions, and company earnings risk",
+    ]
+    for detail in migrated:
+        assert detail not in prompt
+
+    assert "call `plan_report_structure` first" in _orchestrator_skill(
+        "technical-writer-handoff"
+    )
+    assert "If `plan_report_structure` returns truncated-looking text" in _orchestrator_skill(
+        "technical-writer-handoff"
+    )
+    assert "Do not demand exact data filenames" in _orchestrator_skill(
+        "paths-artifacts-and-sources"
+    )
+    assert "backend/data/_auto/" in _orchestrator_skill("paths-artifacts-and-sources")
+    assert "compact JSON `data_files` map" in _orchestrator_skill("data-to-quant-handoff")
+    assert (
+        "paste the `data_files` JSON object into `analysis.py`"
+        in _orchestrator_skill("data-to-quant-handoff")
+    )
+    assert (
+        "call `direct_ols_forecast(...)` from `agents.quant_macro_stats`"
+        in _orchestrator_skill("data-to-quant-handoff")
+    )
+    assert "Never let a nominal average-hourly-earnings series stand in" in _orchestrator_skill(
+        "labor-real-wage-workflow"
+    )
+    assert "Do not use `general-purpose` to read `execution_summary.json`" in _orchestrator_skill(
+        "qa-rejection-recovery"
+    )
+    assert "exactly one batched `census_get_table` state table" in _orchestrator_skill(
+        "regional-consumer-stress-workflow"
+    )
+    assert "World Bank `worldbank_get_indicator`" in _orchestrator_skill(
+        "broad-investment-committee-workflow"
+    )
+    assert "SEC EDGAR `sec_fetch_company_facts` for AAPL and MSFT" in _orchestrator_skill(
+        "broad-investment-committee-workflow"
+    )
+    assert "quality-analyst` delegation" in _orchestrator_skill("quality-analyst-handoff")
+    assert "compact JSON with" in _orchestrator_skill("quality-analyst-handoff")
+    assert "when rejected, `reason` and `required_fixes`" in _orchestrator_skill(
+        "quality-analyst-handoff"
+    )
+    assert "If quant-developer returns `execution_summary_json`" in _orchestrator_skill(
+        "technical-writer-handoff"
+    )
 
 
 @pytest.mark.asyncio
@@ -83,6 +135,7 @@ async def test_execution_agent_hides_todo_tool_from_pipeline_agents(monkeypatch)
 
     await orchestrator._create_execution_agent()
 
+    assert captured["skills"] == [str(_ORCHESTRATOR_SKILL_DIR)]
     assert any(
         isinstance(middleware, orchestrator.HideTodoToolMiddleware)
         for middleware in captured["middleware"]
@@ -92,6 +145,73 @@ async def test_execution_agent_hides_todo_tool_from_pipeline_agents(monkeypatch)
             isinstance(middleware, orchestrator.HideTodoToolMiddleware)
             for middleware in subagent["middleware"]
         ), subagent["name"]
+
+
+def test_execution_skill_boundary_allows_only_orchestrator_skill_reads():
+    import agents.orchestrator.factory as factory
+
+    class Request:
+        def __init__(self, tools):
+            self.tools = tools
+
+        def override(self, **kwargs):
+            return Request(kwargs.get("tools", self.tools))
+
+    middleware = factory.OrchestratorSkillBoundaryMiddleware()
+    model_request = Request(
+        [
+            SimpleNamespace(name="emit_chat_message"),
+            SimpleNamespace(name="task"),
+            SimpleNamespace(name="read_file"),
+            SimpleNamespace(name="execute"),
+            SimpleNamespace(name="glob"),
+        ]
+    )
+
+    filtered = middleware.wrap_model_call(model_request, lambda req: req)
+
+    assert [tool.name for tool in filtered.tools] == [
+        "emit_chat_message",
+        "task",
+        "read_file",
+    ]
+
+    allowed = SimpleNamespace(
+        tool_call={
+            "name": "read_file",
+            "id": "call-skill-read",
+            "args": {
+                "file_path": str(
+                    _ORCHESTRATOR_SKILL_DIR / "data-to-quant-handoff" / "SKILL.md"
+                )
+            },
+        }
+    )
+    allowed_response = middleware.wrap_tool_call(
+        allowed,
+        lambda _req: SimpleNamespace(content="skill loaded", status="success"),
+    )
+    assert allowed_response.content == "skill loaded"
+
+    blocked = SimpleNamespace(
+        tool_call={
+            "name": "read_file",
+            "id": "call-artifact-read",
+            "args": {
+                "file_path": (
+                    "/home/vorndranj/projects/DeepResearchAgent/backend/outputs/"
+                    "job-1/report.json"
+                )
+            },
+        }
+    )
+    blocked_response = middleware.wrap_tool_call(
+        blocked,
+        lambda _req: (_ for _ in ()).throw(AssertionError("handler should not run")),
+    )
+    assert blocked_response.tool_call_id == "call-artifact-read"
+    assert blocked_response.status == "error"
+    assert "may read only orchestrator skill `SKILL.md` files" in blocked_response.content
 
 
 def test_complete_intake_approval_message_is_frontend_visible():
@@ -106,7 +226,16 @@ def test_complete_intake_approval_message_is_frontend_visible():
 
 def test_execution_kickoff_message_forces_first_delegate_after_approval():
     message = orchestrator._build_execution_kickoff_message(
-        {"research_summary": "Build a recession-risk indicator."}
+        {
+            "research_summary": "Build a recession-risk indicator.",
+            "data_toolbox": {
+                "providers": ["fred"],
+                "confidence": 0.9,
+                "rationale": "macro route",
+                "unavailable_needs": [],
+                "fallback": False,
+            },
+        }
     )
 
     assert "Research is approved" in message.content
@@ -115,6 +244,7 @@ def test_execution_kickoff_message_forces_first_delegate_after_approval():
     assert "`task`" in message.content
     assert 'subagent_type="data-engineer"' in message.content
     assert "Build a recession-risk indicator." in message.content
+    assert "Selected data providers for `data-engineer`: FRED (`fred`)." in message.content
 
 
 def test_execution_kickoff_preserves_full_user_request_for_writer_original_query():
@@ -125,10 +255,15 @@ def test_execution_kickoff_preserves_full_user_request_for_writer_original_query
     message = orchestrator._build_execution_kickoff_message(
         {
             "research_summary": "Assess whether the US economy is entering recession.",
+            "data_toolbox": {
+                "providers": ["fred"],
+                "confidence": 0.9,
+                "rationale": "macro route",
+                "unavailable_needs": [],
+                "fallback": False,
+            },
             "messages": [
-                orchestrator.HumanMessage(
-                    content=f"Job ID: job-1\n\nResearch Query: {full_query}"
-                )
+                orchestrator.HumanMessage(content=f"Job ID: job-1\n\nResearch Query: {full_query}")
             ],
         }
     )
@@ -141,8 +276,92 @@ def test_execution_kickoff_preserves_full_user_request_for_writer_original_query
 def test_incomplete_intake_routes_to_intake_chat():
     assert orchestrator.route_after_evaluate({"research_summary": ""}) == "needs_more"
     assert (
-        orchestrator.route_after_evaluate(
-            {"research_summary": "Analyze inflation and rates."}
-        )
+        orchestrator.route_after_evaluate({"research_summary": "Analyze inflation and rates."})
         == "complete"
+    )
+
+
+def test_prepare_execution_copies_data_toolbox_to_runtime_preferences():
+    ctx = ResearchContext(job_id="job-prepare", preferences={})
+    runtime = type("Runtime", (), {"context": ctx})()
+
+    orchestrator.prepare_execution_node(
+        {
+            "data_toolbox": {
+                "providers": ["sec"],
+                "confidence": 0.94,
+                "rationale": "company fundamentals",
+                "unavailable_needs": [],
+                "fallback": False,
+            }
+        },
+        runtime=runtime,
+    )
+
+    assert ctx.preferences["data_toolbox"]["providers"] == ["sec"]
+    assert ctx.preferences["data_toolbox"]["fallback"] is False
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_graph_inserts_toolbox_and_prepare_nodes(monkeypatch):
+    import agents.orchestrator.factory as factory
+
+    async def fake_execution_agent(_state, *, runtime=None):
+        return {}
+
+    async def fake_create_execution_agent(**_kwargs):
+        return fake_execution_agent
+
+    monkeypatch.setattr(factory, "_create_execution_agent", fake_create_execution_agent)
+
+    graph = await factory.create_orchestrator()
+    graph_shape = graph.get_graph()
+    node_names = set(graph_shape.nodes)
+    edge_pairs = {(edge.source, edge.target) for edge in graph_shape.edges}
+
+    assert "route_toolbox" in node_names
+    assert "prepare_execution" in node_names
+    assert ("route_toolbox", "emit_approval_message") in edge_pairs
+    assert ("prepare_execution", "execute") in edge_pairs
+
+
+@pytest.mark.asyncio
+async def test_manual_approval_override_preserves_checkpointed_toolbox_line():
+    class FakeState:
+        next = ()
+        values = {
+            "messages": [
+                orchestrator.HumanMessage(
+                    content="Job ID: job-manual\n\nResearch Query: Analyze MSFT fundamentals"
+                )
+            ],
+            "research_summary": "Analyze Microsoft fundamentals.",
+            "data_toolbox": {
+                "providers": ["sec"],
+                "confidence": 0.9,
+                "rationale": "company fundamentals",
+                "unavailable_needs": [],
+                "fallback": False,
+            },
+        }
+
+    class FakeAgent:
+        async def aget_state(self, _config):
+            return FakeState()
+
+    graph_input = await resolve_graph_input(
+        FakeAgent(),
+        {"configurable": {"thread_id": "job-manual"}},
+        [
+            {
+                "role": "user",
+                "content": "Commence Deep Research",
+                "metadata": {"action": "commence_research"},
+            }
+        ],
+    )
+
+    assert graph_input["phase"] == "executing"
+    assert "Selected data providers for `data-engineer`: SEC EDGAR (`sec`)." in (
+        graph_input["messages"][0]["content"]
     )

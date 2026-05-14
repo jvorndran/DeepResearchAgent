@@ -1,163 +1,196 @@
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 from langchain.agents.middleware.types import ModelResponse
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 
 import agents.quantitative_developer as quant_dev
+import agents.quantitative_developer.middleware as quant_middleware
 from agents.quantitative_developer import (
     QUANT_DEVELOPER_SUBAGENT,
     QUANT_DEVELOPER_SYSTEM_PROMPT,
     QuantDeveloperToolBoundaryMiddleware,
 )
+from agents.quantitative_developer.handoff import _has_successful_quant_handoff
+
+_BACKEND_ROOT = Path(__file__).resolve().parents[1]
+_QUANT_SKILL_DIR = _BACKEND_ROOT / "skills" / "quant-developer"
+_QUANT_NATIVE_SKILLS = (
+    "quant-script-workflow",
+    "quant-sandbox-environment",
+    "quant-macro-helper-workflows",
+    "quant-chart-generation",
+    "quant-code-execution-errors",
+)
+
+
+def _quant_skill_text(*names: str) -> str:
+    files = names or tuple(f"{name}/SKILL.md" for name in _QUANT_NATIVE_SKILLS)
+    parts = []
+    for name in files:
+        path = _QUANT_SKILL_DIR / name
+        if path.is_dir():
+            path = path / "SKILL.md"
+        parts.append(path.read_text(encoding="utf-8"))
+    text = "\n".join(parts)
+    return " ".join(text.split())
+
+
+def _native_skill_text(name: str) -> str:
+    return (_QUANT_SKILL_DIR / name / "SKILL.md").read_text(encoding="utf-8")
 
 
 class _Request:
-    def __init__(self, tools, messages=None):
+    def __init__(self, tools, messages=None, runtime=None):
         self.tools = tools
         self.messages = messages or []
+        self.runtime = runtime
 
     def override(self, **kwargs):
         return _Request(
             kwargs.get("tools", self.tools),
             messages=kwargs.get("messages", self.messages),
+            runtime=kwargs.get("runtime", self.runtime),
         )
 
 
 class _DroppingOverrideRequest(_Request):
     def override(self, **kwargs):
-        return _Request(kwargs.get("tools", self.tools), messages=[])
+        return _Request(
+            kwargs.get("tools", self.tools),
+            messages=[],
+            runtime=kwargs.get("runtime", self.runtime),
+        )
 
 
-def test_quant_prompt_constrains_script_size_and_rewrite_recovery():
-    assert "SCRIPT BUDGET & RECOVERY" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert "target under 120 lines" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert "at most four computed charts" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert "do not try to chart every requested topic" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert "For broad macro + equity + regional + international prompts" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert "keep the first draft FRED/helper-centered" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert "international peer, regional consumer, BLS verification, or company earnings-risk comparisons" in (
+def test_quant_prompt_is_compact_skill_router():
+    assert len(QUANT_DEVELOPER_SYSTEM_PROMPT) < 3_200
+    assert "Native skill router" in QUANT_DEVELOPER_SYSTEM_PROMPT
+    assert "build_recession_dashboard_artifacts" in QUANT_DEVELOPER_SYSTEM_PROMPT
+    assert "build_consumer_stress_dashboard_artifacts" in QUANT_DEVELOPER_SYSTEM_PROMPT
+    assert "build_historical_replay_chart_pack_artifacts" in QUANT_DEVELOPER_SYSTEM_PROMPT
+    assert "build_unemployment_forecast_chart_pack_artifacts" in QUANT_DEVELOPER_SYSTEM_PROMPT
+    assert "build_macro_cycle_chart_pack_artifacts" in QUANT_DEVELOPER_SYSTEM_PROMPT
+    assert "quant-script-workflow" in QUANT_DEVELOPER_SYSTEM_PROMPT
+    assert "quant-sandbox-environment" in QUANT_DEVELOPER_SYSTEM_PROMPT
+    assert "quant-macro-helper-workflows" in QUANT_DEVELOPER_SYSTEM_PROMPT
+    assert "quant-chart-generation" in QUANT_DEVELOPER_SYSTEM_PROMPT
+    assert "quant-code-execution-errors" in QUANT_DEVELOPER_SYSTEM_PROMPT
+    assert "Always read `quant-chart-generation` when the task asks for charts" in (
         QUANT_DEVELOPER_SYSTEM_PROMPT
     )
-    assert "compact summary rows in `execution_summary`" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert "narrative-only placeholders for explicitly requested provider sections" in (
+    assert "Assistant message content must be empty whenever you call tools" in (
         QUANT_DEVELOPER_SYSTEM_PROMPT
     )
-    assert "do not defer those keys to a second enrichment script" in (
-        QUANT_DEVELOPER_SYSTEM_PROMPT
-    )
-    assert 'execution_summary["source_context_files"]' in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert "first script may use a subset" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert "omit SEC EDGAR, Census, BLS, and World Bank context files" in (
-        QUANT_DEVELOPER_SYSTEM_PROMPT
-    )
-    assert "one `load_series(key)` helper" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert "no deep joins" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert "no narrative-only placeholders" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert "summarize_sec_company_facts(path)" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert "Do not use `select_dtypes`, positional numeric columns" in (
-        QUANT_DEVELOPER_SYSTEM_PROMPT
-    )
-    assert 'frame = frame.sort_values("fiscal_year").reset_index(drop=True)' in (
-        QUANT_DEVELOPER_SYSTEM_PROMPT
-    )
-    assert "SEC handoffs may arrive latest-first" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert "impossible margins" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert "do not set the bear/downside case to a simple positive fraction" in (
-        QUANT_DEVELOPER_SYSTEM_PROMPT
-    )
-    assert "weakest observed revenue-growth/margin years" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert "rejects oversized Python writes above 360 lines or 28,000 characters" in (
-        QUANT_DEVELOPER_SYSTEM_PROMPT
-    )
-    assert "final compact rewrite opportunity" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert "no nested f-string dict literals" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert "do not delete/rewrite with shell" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert "analysis_v2.py" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert (
-        "Assistant message content must be empty whenever you call tools"
-        in QUANT_DEVELOPER_SYSTEM_PROMPT
-    )
-    assert (
-        "Once `execute` succeeds and one validation signal confirms"
-        in QUANT_DEVELOPER_SYSTEM_PROMPT
-    )
-    assert "read execution_summary.json" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert (
-        "stdout already reports valid `charts_json`, `execution_summary_json`, and `chart_ids`"
-        in QUANT_DEVELOPER_SYSTEM_PROMPT
-    )
-    assert (
-        "A successful script stdout that includes `charts_json`, `execution_summary_json`, and `chart_ids` is already a validation signal"
-        in QUANT_DEVELOPER_SYSTEM_PROMPT
-    )
-    assert "A surprising but valid-looking computed result" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert "do not launch post-success shell probes" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert "execution_summary.json" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert (
-        "Never copy the full `execute` stdout into your final response"
-        in QUANT_DEVELOPER_SYSTEM_PROMPT
-    )
+    assert "never emit literal DSML/XML tool tags" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "statistical_summary_excerpt" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert (
-        "Do not edit a successful script merely to make a conclusion field more positive"
-        in QUANT_DEVELOPER_SYSTEM_PROMPT
+
+    migrated_details = [
+        "SCRIPT BUDGET & RECOVERY",
+        "For broad macro + equity + regional + international prompts",
+        "direct_ols_forecast(data, target_col",
+        "Every pie chart MUST include",
+        "Pairwise correlation safety",
+        "supportive but not consistent/guaranteed",
+        "Only inspect `charts.json`",
+    ]
+    for detail in migrated_details:
+        assert detail not in QUANT_DEVELOPER_SYSTEM_PROMPT
+
+
+def test_quant_skills_are_native_deepagents_shape():
+    expected = set(_QUANT_NATIVE_SKILLS)
+    actual = {path.parent.name for path in _QUANT_SKILL_DIR.glob("*/SKILL.md")}
+
+    assert actual == expected
+    for name in expected:
+        skill = _native_skill_text(name)
+        assert f"name: {name}" in skill
+        assert "description:" in skill
+
+
+def test_quant_native_skill_metadata_stays_compact():
+    metadata_text = "\n".join(
+        _native_skill_text(name).split("---", 2)[1] for name in _QUANT_NATIVE_SKILLS
     )
-    assert "validate_scenario_table" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert "Do not pass `target_col`, `base_forecast`, or `scenario_vars`" in (
-        QUANT_DEVELOPER_SYSTEM_PROMPT
-    )
-    assert "`historical_scenario_replay(...)`" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert "signal_framework_backtest" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert (
-        "For historical-simulation, prior-cycle, prior-downturn/prior-recession comparison"
-        in QUANT_DEVELOPER_SYSTEM_PROMPT
-    )
-    assert (
-        "do not add `direct_ols_forecast(...)` unless the user explicitly asks for a point forecast"
-        in QUANT_DEVELOPER_SYSTEM_PROMPT
-    )
-    assert (
-        "For historical simulation style reports that compare today's macro mix to prior cycle windows"
-        in QUANT_DEVELOPER_SYSTEM_PROMPT
-    )
-    assert "do not defer those keys to a second enrichment script" in (
-        QUANT_DEVELOPER_SYSTEM_PROMPT
-    )
-    assert "Do not write a bespoke logistic-regression or sklearn/statsmodels diagnostics block" in (
-        QUANT_DEVELOPER_SYSTEM_PROMPT
-    )
-    assert "use the analog fast path rather than the full broad-prompt template" in (
-        QUANT_DEVELOPER_SYSTEM_PROMPT
-    )
-    assert "Do not add `direct_ols_forecast`, `build_scenario_stress_test`, or `classify_recession_regime`" in (
-        QUANT_DEVELOPER_SYSTEM_PROMPT
-    )
-    assert "supportive but not consistent/guaranteed" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert "Do not wrap it in markdown fences" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert "Do not append narrative findings after the JSON" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert "Supported report chart types" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert 'Do not create `"radar"`' in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert "Every pie chart MUST include" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert '"value": <number>' in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert "Do not use `size` for pie charts" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert (
-        "Do NOT emit legacy top-level fields such as `chartType`, `xKey`, `yKeys`"
-        in QUANT_DEVELOPER_SYSTEM_PROMPT
-    )
-    assert "save_quant_outputs" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert "handoff = save_quant_outputs" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert "Never rebuild `chart_ids` from the original `charts` dict" in (
-        QUANT_DEVELOPER_SYSTEM_PROMPT
-    )
-    assert "SEC company-facts metric extraction" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert "Never import `agents.quant_utils`" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert "Execute the script with the default sandbox timeout" in (
-        QUANT_DEVELOPER_SYSTEM_PROMPT
-    )
-    assert "Do not pass large timeout values such as 120000" in (
-        QUANT_DEVELOPER_SYSTEM_PROMPT
-    )
+
+    for detail in [
+        "direct_ols_forecast(data, target_col",
+        "Every pie chart MUST include",
+        "Pairwise correlation safety",
+        "SCRIPT BUDGET & RECOVERY",
+        "pd.read_csv(path, usecols",
+    ]:
+        assert detail not in metadata_text
+
+
+def test_quant_native_subskills_keep_details_focused():
+    script_skill = _native_skill_text("quant-script-workflow")
+    macro_skill = _native_skill_text("quant-macro-helper-workflows")
+    chart_skill = _native_skill_text("quant-chart-generation")
+    error_skill = _native_skill_text("quant-code-execution-errors")
+
+    assert "For broad macro + equity + regional + international prompts" in script_skill
+    assert 'execution_summary["source_context_files"]' in script_skill
+    assert "classify_recession_regime(scored_frame" in macro_skill
+    assert 'recession_col="USREC"' in macro_skill
+    assert "Pairwise correlation safety" in macro_skill
+    assert "Every pie chart MUST include" in chart_skill
+    assert "Pandas scalar date safety" in error_skill
+
+    assert "Every pie chart MUST include" not in macro_skill
+    assert "direct_ols_forecast(data, target_col" not in chart_skill
+    assert "target under 120 lines" not in error_skill
+
+
+def test_quant_chart_skill_requires_unique_axis_labels():
+    chart_skill = _native_skill_text("quant-chart-generation")
+
+    assert "Every axis chart must have at most one data row per" in chart_skill
+    assert "assert the final chart frame has no duplicate labels" in chart_skill
+    assert "Use a right axis only when series have materially different" in chart_skill
+    assert "share the left axis so the chart does not imply a false divergence" in chart_skill
+    assert "create a rich pack of 6-8" in chart_skill
+    assert "distinct renderable charts" in chart_skill
+    assert "ask whether each chart makes the report" in chart_skill
+    assert "more insightful than a table or sentence" in chart_skill
+    assert "Do not return an empty chart map for a chart" in chart_skill
+
+
+def test_quant_skill_contains_migrated_script_budget_and_workflows():
+    skill_text = _quant_skill_text()
+    for detail in [
+        "SCRIPT BUDGET & RECOVERY",
+        "target under 120 lines",
+        "For broad macro + equity + regional + international prompts",
+        "keep the first draft FRED/helper-centered",
+        "compact summary rows in",
+        'execution_summary["source_context_files"]',
+        "one `load_series(key)` helper",
+        "no deep joins",
+        "no narrative-only placeholders",
+        "summarize_sec_company_facts(path)",
+        "impossible margins",
+        "final compact rewrite opportunity",
+        "no nested f-string dict literals",
+        "do not delete/rewrite with shell",
+        "analysis_v2.py",
+        "A successful script stdout that includes",
+        "Do not edit a successful script merely to make a conclusion field more positive",
+        "supportive but not consistent/guaranteed",
+        "validate_scenario_table",
+        "Do not pass dataframe/forecast arguments",
+        "`historical_scenario_replay(...)`",
+        "signal_framework_backtest",
+        "do not defer those keys to a second enrichment script",
+        "analog fast path",
+        "save_quant_outputs",
+        "Never import `agents.quant_utils`",
+        "Execute the script with the default sandbox timeout",
+        "FMP remains disabled and unavailable",
+    ]:
+        assert detail in skill_text
 
 
 def test_quant_subagent_registers_tool_boundary_middleware():
@@ -165,12 +198,22 @@ def test_quant_subagent_registers_tool_boundary_middleware():
         isinstance(item, QuantDeveloperToolBoundaryMiddleware)
         for item in QUANT_DEVELOPER_SUBAGENT["middleware"]
     )
+    assert [tool.name for tool in QUANT_DEVELOPER_SUBAGENT["tools"]] == [
+        "build_recession_dashboard_artifacts",
+        "build_inflation_policy_chart_pack_artifacts",
+        "build_consumer_stress_dashboard_artifacts",
+        "build_historical_replay_chart_pack_artifacts",
+        "build_unemployment_forecast_chart_pack_artifacts",
+        "build_macro_cycle_chart_pack_artifacts",
+    ]
 
 
-def test_quant_middleware_exposes_only_write_file_before_script_write():
+def test_quant_middleware_exposes_skill_load_and_write_file_before_script_write():
     middleware = QuantDeveloperToolBoundaryMiddleware()
     request = _Request(
         [
+            SimpleNamespace(name="load_skill"),
+            SimpleNamespace(name="build_recession_dashboard_artifacts"),
             SimpleNamespace(name="write_file"),
             SimpleNamespace(name="execute"),
             SimpleNamespace(name="read_file"),
@@ -184,7 +227,965 @@ def test_quant_middleware_exposes_only_write_file_before_script_write():
 
     response = middleware.wrap_model_call(request, lambda req: req)
 
-    assert [tool.name for tool in response.tools] == ["write_file"]
+    assert [tool.name for tool in response.tools] == [
+        "load_skill",
+        "build_recession_dashboard_artifacts",
+        "write_file",
+        "read_file",
+    ]
+
+
+def test_quant_middleware_forces_matching_recession_dashboard_tool_before_write():
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    data_files = {
+        "T10Y3M": "/tmp/T10Y3M.csv",
+        "UNRATE": "/tmp/UNRATE.csv",
+        "INDPRO": "/tmp/INDPRO.csv",
+        "USREC": "/tmp/USREC.csv",
+        "DRALACBN": "/tmp/DRALACBN.csv",
+    }
+    request = _Request(
+        [
+            SimpleNamespace(name="load_skill"),
+            SimpleNamespace(name="build_recession_dashboard_artifacts"),
+            SimpleNamespace(name="write_file"),
+            SimpleNamespace(name="read_file"),
+            SimpleNamespace(name="execute"),
+        ],
+        messages=[
+            SystemMessage(content=QUANT_DEVELOPER_SYSTEM_PROMPT),
+            AIMessage(
+                content=(
+                    "Job ID: improver-loop\n"
+                    "Full approved user request for `original_query`: Create a "
+                    "recession-dashboard report with 6-8 charts.\n"
+                    f'"data_files": {json.dumps(data_files)}'
+                )
+            )
+        ],
+    )
+
+    response = middleware.wrap_model_call(request, lambda req: req)
+
+    assert [tool.name for tool in response.tools] == [
+        "load_skill",
+        "build_recession_dashboard_artifacts",
+        "read_file",
+    ]
+
+
+def test_quant_middleware_forces_matching_gdp_recession_cycle_tool_before_write():
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    data_files = {
+        "GDPC1": "/tmp/GDPC1.csv",
+        "UNRATE": "/tmp/UNRATE.csv",
+        "INDPRO": "/tmp/INDPRO.csv",
+        "USREC": "/tmp/USREC.csv",
+    }
+    request = _Request(
+        [
+            SimpleNamespace(name="load_skill"),
+            SimpleNamespace(name="build_recession_dashboard_artifacts"),
+            SimpleNamespace(name="write_file"),
+            SimpleNamespace(name="read_file"),
+            SimpleNamespace(name="execute"),
+        ],
+        messages=[
+            SystemMessage(content=QUANT_DEVELOPER_SYSTEM_PROMPT),
+            AIMessage(
+                content=(
+                    "Job ID: improver-loop\n"
+                    "Full approved user request for `original_query`: Compare real GDP "
+                    "growth, unemployment, recession periods, and industrial production. "
+                    "Produce 6-8 governed renderable charts.\n"
+                    f'"data_files": {json.dumps(data_files)}'
+                )
+            )
+        ],
+    )
+
+    response = middleware.wrap_model_call(request, lambda req: req)
+
+    assert [tool.name for tool in response.tools] == [
+        "load_skill",
+        "build_recession_dashboard_artifacts",
+        "read_file",
+    ]
+
+
+def test_quant_middleware_forces_matching_consumer_stress_tool_before_write():
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    data_files = {
+        "PSAVERT": "/tmp/PSAVERT.csv",
+        "UNRATE": "/tmp/UNRATE.csv",
+        "CPIAUCSL": "/tmp/CPIAUCSL.csv",
+        "AHETPI": "/tmp/AHETPI.csv",
+        "UMCSENT": "/tmp/UMCSENT.csv",
+        "DPCERA3M086SBEA": "/tmp/DPCERA3M086SBEA.csv",
+        "TOTALSL": "/tmp/TOTALSL.csv",
+    }
+    request = _Request(
+        [
+            SimpleNamespace(name="load_skill"),
+            SimpleNamespace(name="build_consumer_stress_dashboard_artifacts"),
+            SimpleNamespace(name="write_file"),
+            SimpleNamespace(name="read_file"),
+            SimpleNamespace(name="execute"),
+        ],
+        messages=[
+            AIMessage(
+                content=(
+                    "Job ID: improver-loop\n"
+                    "Full approved user request for `original_query`: Analyze "
+                    "consumer stress with a 6-8 chart dashboard.\n"
+                    f'"data_files": {json.dumps(data_files)}'
+                )
+            )
+        ],
+    )
+
+    response = middleware.wrap_model_call(request, lambda req: req)
+
+    assert [tool.name for tool in response.tools] == [
+        "load_skill",
+        "build_consumer_stress_dashboard_artifacts",
+        "read_file",
+    ]
+
+
+def test_quant_middleware_routes_consumer_stress_despite_recession_skill_text():
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    data_files = {
+        "PSAVERT": "/tmp/PSAVERT.csv",
+        "UNRATE": "/tmp/UNRATE.csv",
+        "CPIAUCSL": "/tmp/CPIAUCSL.csv",
+        "AHETPI": "/tmp/AHETPI.csv",
+        "UMCSENT": "/tmp/UMCSENT.csv",
+        "PCE": "/tmp/PCE.csv",
+        "TOTALSL": "/tmp/TOTALSL.csv",
+        "T10Y3M": "/tmp/stale_T10Y3M.csv",
+        "INDPRO": "/tmp/stale_INDPRO.csv",
+        "USREC": "/tmp/stale_USREC.csv",
+    }
+    query = (
+        "Analyze whether the US consumer is under stress using FRED macro data. "
+        "Build a 6-8 chart dashboard with savings, wages, unemployment, "
+        "inflation, sentiment, consumption, and credit stress."
+    )
+    request = _Request(
+        [
+            SimpleNamespace(name="build_recession_dashboard_artifacts"),
+            SimpleNamespace(name="build_consumer_stress_dashboard_artifacts"),
+            SimpleNamespace(name="read_file"),
+            SimpleNamespace(name="write_file"),
+        ],
+        messages=[
+            SystemMessage(content=QUANT_DEVELOPER_SYSTEM_PROMPT),
+            AIMessage(
+                content=(
+                    "Job ID: improver-loop\n"
+                    f"Full approved user request for `original_query`: {query}\n"
+                    f'"data_files": {json.dumps(data_files)}'
+                )
+            ),
+            ToolMessage(
+                content=(
+                    "---\nname: quant-macro-helper-workflows\n---\n"
+                    "Use build_recession_dashboard_artifacts for recession charts."
+                ),
+                tool_call_id="call-read-skill",
+            ),
+        ],
+        runtime=SimpleNamespace(context={"job_id": "improver-loop"}),
+    )
+    handler_called = False
+
+    def handler(req):
+        nonlocal handler_called
+        handler_called = True
+        return ModelResponse(result=[AIMessage(content="I will inspect files first.")])
+
+    response = middleware.wrap_model_call(request, handler)
+
+    assert handler_called is False
+    message = response.result[0]
+    assert message.content == ""
+    assert len(message.tool_calls) == 1
+    tool_call = message.tool_calls[0]
+    assert tool_call["name"] == "build_consumer_stress_dashboard_artifacts"
+    assert tool_call["args"]["job_id"] == "improver-loop"
+    assert tool_call["args"]["data_files"] == data_files
+    assert "consumer is under stress" in tool_call["args"]["query"]
+
+
+def test_quant_middleware_forces_consumer_stress_tool_with_fred_substitutes():
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    data_files = {
+        "PSAVERT": "/tmp/PSAVERT.csv",
+        "UNRATE": "/tmp/UNRATE.csv",
+        "CPIAUCSL": "/tmp/CPIAUCSL.csv",
+        "CES0500000003": "/tmp/CES0500000003.csv",
+        "DSPIC96": "/tmp/DSPIC96.csv",
+        "UMCSENT": "/tmp/UMCSENT.csv",
+        "PCEC96": "/tmp/PCEC96.csv",
+        "DRCCLACBS": "/tmp/DRCCLACBS.csv",
+    }
+    request = _Request(
+        [
+            SimpleNamespace(name="load_skill"),
+            SimpleNamespace(name="build_consumer_stress_dashboard_artifacts"),
+            SimpleNamespace(name="write_file"),
+            SimpleNamespace(name="read_file"),
+            SimpleNamespace(name="execute"),
+        ],
+        messages=[
+            AIMessage(
+                content=(
+                    "Job ID: improver-loop\n"
+                    "Full approved user request for `original_query`: Analyze "
+                    "whether the US consumer is under stress with a chart dashboard.\n"
+                    f'"data_files": {json.dumps(data_files)}'
+                )
+            )
+        ],
+    )
+
+    response = middleware.wrap_model_call(request, lambda req: req)
+
+    assert [tool.name for tool in response.tools] == [
+        "load_skill",
+        "build_consumer_stress_dashboard_artifacts",
+        "read_file",
+    ]
+
+
+def test_quant_middleware_forces_consumer_stress_tool_without_consumption_file():
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    data_files = {
+        "PSAVERT": "/tmp/PSAVERT.csv",
+        "UNRATE": "/tmp/UNRATE.csv",
+        "CPIAUCSL": "/tmp/CPIAUCSL.csv",
+        "DSPIC96": "/tmp/DSPIC96.csv",
+        "UMCSENT": "/tmp/UMCSENT.csv",
+        "TOTALSL": "/tmp/TOTALSL.csv",
+        "PCEPILFE": "/tmp/PCEPILFE.csv",
+    }
+    request = _Request(
+        [
+            SimpleNamespace(name="load_skill"),
+            SimpleNamespace(name="build_consumer_stress_dashboard_artifacts"),
+            SimpleNamespace(name="write_file"),
+            SimpleNamespace(name="read_file"),
+            SimpleNamespace(name="execute"),
+        ],
+        messages=[
+            AIMessage(
+                content=(
+                    "Job ID: improver-loop\n"
+                    "Full approved user request for `original_query`: Analyze "
+                    "whether the US consumer is under stress using FRED macro "
+                    "data. Build a 6-8 chart dashboard with sentiment or "
+                    "consumption where available.\n"
+                    f'"data_files": {json.dumps(data_files)}'
+                )
+            )
+        ],
+    )
+
+    response = middleware.wrap_model_call(request, lambda req: req)
+
+    assert [tool.name for tool in response.tools] == [
+        "load_skill",
+        "build_consumer_stress_dashboard_artifacts",
+        "read_file",
+    ]
+
+
+def test_quant_middleware_forces_matching_inflation_policy_tool_before_write():
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    data_files = {
+        "CPIAUCSL": "/tmp/CPIAUCSL.csv",
+        "CPILFESL": "/tmp/CPILFESL.csv",
+        "FEDFUNDS": "/tmp/FEDFUNDS.csv",
+        "USREC": "/tmp/USREC.csv",
+    }
+    request = _Request(
+        [
+            SimpleNamespace(name="load_skill"),
+            SimpleNamespace(name="build_inflation_policy_chart_pack_artifacts"),
+            SimpleNamespace(name="write_file"),
+            SimpleNamespace(name="read_file"),
+            SimpleNamespace(name="execute"),
+        ],
+        messages=[
+            AIMessage(
+                content=(
+                    "Job ID: improver-loop\n"
+                    "Full approved user request for `original_query`: Build a "
+                    "chart-heavy macro report comparing headline CPI inflation, "
+                    "core CPI inflation, and the effective federal funds rate.\n"
+                    f'"data_files": {json.dumps(data_files)}'
+                )
+            )
+        ],
+    )
+
+    response = middleware.wrap_model_call(request, lambda req: req)
+
+    assert [tool.name for tool in response.tools] == [
+        "load_skill",
+        "build_inflation_policy_chart_pack_artifacts",
+        "read_file",
+    ]
+
+
+def test_quant_middleware_recognizes_line_numbered_skill_reads_for_inflation_helper():
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    data_files = {
+        "CPIAUCSL": "/tmp/CPIAUCSL.csv",
+        "CPILFESL": "/tmp/CPILFESL.csv",
+        "FEDFUNDS": "/tmp/FEDFUNDS.csv",
+        "USREC": "/tmp/USREC.csv",
+    }
+    request = _Request(
+        [
+            SimpleNamespace(name="build_inflation_policy_chart_pack_artifacts"),
+            SimpleNamespace(name="write_file"),
+            SimpleNamespace(name="read_file"),
+        ],
+        messages=[
+            AIMessage(
+                content=(
+                    "Job ID: improver-loop\n"
+                    "Research Query: Build a chart-heavy macro report comparing "
+                    "headline CPI inflation, core CPI inflation, and the effective "
+                    "federal funds rate since 1990. Produce 6-8 governed charts.\n"
+                    f'"data_files": {json.dumps(data_files)}'
+                )
+            ),
+            ToolMessage(
+                content=(
+                    "1\t---\n"
+                    "2\tname: quant-macro-helper-workflows\n"
+                    "3\tdescription: Deterministic macro helper routes.\n"
+                    "4\t---\n"
+                ),
+                name="read_file",
+                tool_call_id="call-skill-read",
+            ),
+        ],
+    )
+
+    response = middleware.wrap_model_call(
+        request,
+        lambda req: (_ for _ in ()).throw(AssertionError("handler should not run")),
+    )
+
+    message = response.result[0]
+    assert message.content == ""
+    assert len(message.tool_calls) == 1
+    tool_call = message.tool_calls[0]
+    assert tool_call["name"] == "build_inflation_policy_chart_pack_artifacts"
+    assert tool_call["args"]["job_id"] == "improver-loop"
+    assert tool_call["args"]["data_files"] == data_files
+    assert "headline CPI inflation" in tool_call["args"]["query"]
+
+
+def test_quant_middleware_routes_research_summary_to_inflation_helper_without_stale_paths():
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    data_files = {
+        "CPIAUCSL": "/tmp/current/CPIAUCSL.csv",
+        "CPILFESL": "/tmp/current/CPILFESL.csv",
+        "FEDFUNDS": "/tmp/current/FEDFUNDS.csv",
+        "USREC": "/tmp/current/USREC.csv",
+    }
+    stale_path = "/tmp/stale/fred_get_series_CPIAUCSL_1111111111111111_abcdef.csv"
+    request = _Request(
+        [
+            SimpleNamespace(name="build_inflation_policy_chart_pack_artifacts"),
+            SimpleNamespace(name="build_macro_cycle_chart_pack_artifacts"),
+            SimpleNamespace(name="write_file"),
+            SimpleNamespace(name="read_file"),
+            SimpleNamespace(name="execute"),
+        ],
+        messages=[
+            AIMessage(
+                content=(
+                    "Job ID: improver-loop\n"
+                    "Research summary: Build a chart-heavy macro report comparing "
+                    "headline CPI inflation, core CPI inflation, and the effective "
+                    "federal funds rate since 1990. Produce 6-8 governed renderable "
+                    "charts.\n"
+                    f'"data_files": {json.dumps(data_files)}\n'
+                    f"Earlier context mentioned this stale path: {stale_path}"
+                )
+            ),
+            ToolMessage(
+                content=_native_skill_text("quant-macro-helper-workflows"),
+                name="read_file",
+                tool_call_id="call-read-quant-macro-skill",
+            ),
+        ],
+    )
+
+    response = middleware.wrap_model_call(
+        request,
+        lambda req: (_ for _ in ()).throw(AssertionError("handler should not run")),
+    )
+
+    message = response.result[0]
+    assert message.content == ""
+    assert len(message.tool_calls) == 1
+    tool_call = message.tool_calls[0]
+    assert tool_call["name"] == "build_inflation_policy_chart_pack_artifacts"
+    assert tool_call["args"]["data_files"] == data_files
+    assert stale_path not in tool_call["args"]["data_files"].values()
+    assert "effective federal funds rate" in tool_call["args"]["query"]
+
+
+def test_quant_middleware_forces_matching_historical_replay_tool_before_write():
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    data_files = {
+        "UNRATE": "/tmp/UNRATE.csv",
+        "CPIAUCSL": "/tmp/CPIAUCSL.csv",
+        "FEDFUNDS": "/tmp/FEDFUNDS.csv",
+        "INDPRO": "/tmp/INDPRO.csv",
+        "USREC": "/tmp/USREC.csv",
+        "ICSA": "/tmp/ICSA.csv",
+    }
+    request = _Request(
+        [
+            SimpleNamespace(name="load_skill"),
+            SimpleNamespace(name="build_historical_replay_chart_pack_artifacts"),
+            SimpleNamespace(name="write_file"),
+            SimpleNamespace(name="read_file"),
+            SimpleNamespace(name="execute"),
+        ],
+        messages=[
+            AIMessage(
+                content=(
+                    "Job ID: improver-loop\n"
+                    "Full approved user request for `original_query`: Make a "
+                    "historical replay report with 6-8 governed charts.\n"
+                    f'"data_files": {json.dumps(data_files)}'
+                )
+            )
+        ],
+    )
+
+    response = middleware.wrap_model_call(request, lambda req: req)
+
+    assert [tool.name for tool in response.tools] == [
+        "load_skill",
+        "build_historical_replay_chart_pack_artifacts",
+        "read_file",
+    ]
+
+
+def test_quant_middleware_recovers_named_historical_replay_helper_prose_with_autosaves():
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    fred_paths = {
+        key: f"/tmp/fred_get_series_{key}_1111111111111111_abcdef.csv"
+        for key in ("UNRATE", "CPIAUCSL", "FEDFUNDS", "INDPRO", "USREC")
+    }
+    autosaved_text = "\n".join(
+        json.dumps({"status": "auto_saved", "file_path": path}) for path in fred_paths.values()
+    )
+    request = _Request(
+        [
+            SimpleNamespace(name="build_historical_replay_chart_pack_artifacts"),
+            SimpleNamespace(name="write_file"),
+            SimpleNamespace(name="read_file"),
+        ],
+        messages=[
+            AIMessage(
+                content=(
+                    "Job ID: improver-loop\n"
+                    "Full approved user request for `original_query`: Make a "
+                    "historical replay report with 6-8 governed charts.\n"
+                    '"data_files": {"CES0000000001": '
+                    '"/tmp/CES0000000001_bls_public.csv"}\n'
+                    f"{autosaved_text}"
+                )
+            )
+        ],
+    )
+
+    response = middleware.wrap_model_call(
+        request,
+        lambda req: ModelResponse(
+            result=[
+                AIMessage(
+                    content=(
+                        "Since this is a historical replay chart pack, I should use "
+                        "`build_historical_replay_chart_pack_artifacts` now."
+                    )
+                )
+            ]
+        ),
+    )
+
+    message = response.result[0]
+    assert message.content == ""
+    assert len(message.tool_calls) == 1
+    tool_call = message.tool_calls[0]
+    assert tool_call["name"] == "build_historical_replay_chart_pack_artifacts"
+    assert tool_call["args"]["job_id"] == "improver-loop"
+    for key, path in fred_paths.items():
+        assert tool_call["args"]["data_files"][key] == path
+    assert tool_call["args"]["data_files"]["CES0000000001"] == "/tmp/CES0000000001_bls_public.csv"
+
+
+def test_quant_skill_read_is_not_successful_artifact_handoff():
+    message = ToolMessage(
+        content=_native_skill_text("quant-script-workflow"),
+        name="read_file",
+        tool_call_id="call-read-quant-script-skill",
+    )
+
+    assert not _has_successful_quant_handoff([message])
+
+
+def test_quant_middleware_forces_historical_replay_after_full_skill_read():
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    data_files = {
+        "UNRATE": "/tmp/UNRATE.csv",
+        "CPIAUCSL": "/tmp/CPIAUCSL.csv",
+        "FEDFUNDS": "/tmp/FEDFUNDS.csv",
+        "INDPRO": "/tmp/INDPRO.csv",
+        "USREC": "/tmp/USREC.csv",
+    }
+    request = _Request(
+        [
+            SimpleNamespace(name="build_historical_replay_chart_pack_artifacts"),
+            SimpleNamespace(name="write_file"),
+            SimpleNamespace(name="read_file"),
+        ],
+        messages=[
+            AIMessage(
+                content=(
+                    "Job ID: improver-loop\n"
+                    "Research Query: Make a historical replay report comparing "
+                    "current labor, inflation, rates, production, and consumer "
+                    "stress. Produce 6-8 governed renderable charts.\n"
+                    f'"data_files": {json.dumps(data_files)}'
+                )
+            ),
+            ToolMessage(
+                content=_native_skill_text("quant-script-workflow"),
+                name="read_file",
+                tool_call_id="call-read-quant-script-skill",
+            ),
+        ],
+    )
+
+    response = middleware.wrap_model_call(
+        request,
+        lambda req: (_ for _ in ()).throw(AssertionError("handler should not run")),
+    )
+
+    message = response.result[0]
+    assert message.content == ""
+    assert len(message.tool_calls) == 1
+    tool_call = message.tool_calls[0]
+    assert tool_call["name"] == "build_historical_replay_chart_pack_artifacts"
+    assert tool_call["args"]["job_id"] == "improver-loop"
+    assert tool_call["args"]["data_files"] == data_files
+
+
+def test_quant_middleware_prioritizes_historical_replay_over_generic_recession_dashboard():
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    data_files = {
+        "UNRATE": "/tmp/UNRATE.csv",
+        "CPIAUCSL": "/tmp/CPIAUCSL.csv",
+        "FEDFUNDS": "/tmp/FEDFUNDS.csv",
+        "INDPRO": "/tmp/INDPRO.csv",
+        "USREC": "/tmp/USREC.csv",
+        "GDPC1": "/tmp/GDPC1.csv",
+        "TOTALSL": "/tmp/TOTALSL.csv",
+        "PSAVERT": "/tmp/PSAVERT.csv",
+        "UMCSENT": "/tmp/UMCSENT.csv",
+        "AHETPI": "/tmp/AHETPI.csv",
+    }
+    query = (
+        "Make a historical replay report comparing current labor, inflation, "
+        "rates, production, and consumer-stress indicators with the 2001, "
+        "2008, 2020, and post-pandemic cycle windows. Produce 6-8 governed "
+        "renderable charts."
+    )
+    request = _Request(
+        [
+            SimpleNamespace(name="build_recession_dashboard_artifacts"),
+            SimpleNamespace(name="build_inflation_policy_chart_pack_artifacts"),
+            SimpleNamespace(name="build_consumer_stress_dashboard_artifacts"),
+            SimpleNamespace(name="build_historical_replay_chart_pack_artifacts"),
+            SimpleNamespace(name="build_macro_cycle_chart_pack_artifacts"),
+            SimpleNamespace(name="write_file"),
+            SimpleNamespace(name="read_file"),
+        ],
+        messages=[
+            AIMessage(
+                content=(
+                    "Job ID: improver-loop\n"
+                    f"Research Query: {query}\n\n"
+                    "The data includes USREC recession windows and consumer-stress "
+                    "series, but the requested chart pack is a historical replay.\n"
+                    f'"data_files": {json.dumps(data_files)}'
+                )
+            ),
+            ToolMessage(
+                content=_native_skill_text("quant-script-workflow"),
+                name="read_file",
+                tool_call_id="call-read-quant-script-skill",
+            ),
+        ],
+    )
+
+    response = middleware.wrap_model_call(
+        request,
+        lambda req: (_ for _ in ()).throw(AssertionError("handler should not run")),
+    )
+
+    message = response.result[0]
+    assert message.content == ""
+    assert len(message.tool_calls) == 1
+    tool_call = message.tool_calls[0]
+    assert tool_call["name"] == "build_historical_replay_chart_pack_artifacts"
+    assert tool_call["args"]["job_id"] == "improver-loop"
+    assert tool_call["args"]["data_files"] == data_files
+    assert tool_call["args"]["query"] == query
+
+
+def test_quant_middleware_forces_matching_macro_cycle_tool_before_write():
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    data_files = {
+        "FEDFUNDS": "/tmp/FEDFUNDS.csv",
+        "CPIAUCSL": "/tmp/CPIAUCSL.csv",
+        "DGS10": "/tmp/DGS10.csv",
+        "UNRATE": "/tmp/UNRATE.csv",
+        "PAYEMS": "/tmp/PAYEMS.csv",
+        "INDPRO": "/tmp/INDPRO.csv",
+        "GDPC1": "/tmp/GDPC1.csv",
+        "PSAVERT": "/tmp/PSAVERT.csv",
+        "UMCSENT": "/tmp/UMCSENT.csv",
+        "USREC": "/tmp/USREC.csv",
+    }
+    request = _Request(
+        [
+            SimpleNamespace(name="load_skill"),
+            SimpleNamespace(name="build_macro_cycle_chart_pack_artifacts"),
+            SimpleNamespace(name="write_file"),
+            SimpleNamespace(name="read_file"),
+            SimpleNamespace(name="execute"),
+        ],
+        messages=[
+            AIMessage(
+                content=(
+                    "Job ID: improver-loop\n"
+                    "Full approved user request for `original_query`: Create a "
+                    "macro cycle chart pack for an investment committee with "
+                    "6-8 governed charts.\n"
+                    f'"data_files": {json.dumps(data_files)}'
+                )
+            )
+        ],
+    )
+
+    response = middleware.wrap_model_call(request, lambda req: req)
+
+    assert [tool.name for tool in response.tools] == [
+        "load_skill",
+        "build_macro_cycle_chart_pack_artifacts",
+        "read_file",
+    ]
+
+
+def test_quant_middleware_routes_macro_cycle_with_curve_and_consumer_proxies():
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    data_files = {
+        "FEDFUNDS": "/tmp/FEDFUNDS.csv",
+        "CPIAUCSL": "/tmp/CPIAUCSL.csv",
+        "T10Y2Y": "/tmp/T10Y2Y.csv",
+        "UNRATE": "/tmp/UNRATE.csv",
+        "PAYEMS": "/tmp/PAYEMS.csv",
+        "INDPRO": "/tmp/INDPRO.csv",
+        "GDPC1": "/tmp/GDPC1.csv",
+        "PSAVERT": "/tmp/PSAVERT.csv",
+        "DSPIC96": "/tmp/DSPIC96.csv",
+        "USREC": "/tmp/USREC.csv",
+    }
+    request = _Request(
+        [
+            SimpleNamespace(name="load_skill"),
+            SimpleNamespace(name="build_recession_dashboard_artifacts"),
+            SimpleNamespace(name="build_macro_cycle_chart_pack_artifacts"),
+            SimpleNamespace(name="write_file"),
+            SimpleNamespace(name="read_file"),
+            SimpleNamespace(name="execute"),
+        ],
+        messages=[
+            AIMessage(
+                content=(
+                    "Job ID: improver-loop\n"
+                    "Full approved user request for `original_query`: Create a "
+                    "macro cycle chart pack for an investment committee covering "
+                    "rates/inflation, labor, output/production, consumer stress, "
+                    "historical analogs, and a synthesis view. Produce 6-8 "
+                    "governed renderable charts.\n"
+                    f'"data_files": {json.dumps(data_files)}'
+                )
+            )
+        ],
+    )
+
+    response = middleware.wrap_model_call(request, lambda req: req)
+
+    assert [tool.name for tool in response.tools] == [
+        "load_skill",
+        "build_macro_cycle_chart_pack_artifacts",
+        "read_file",
+    ]
+
+
+def test_quant_middleware_forces_macro_regime_tool_without_saving_rate():
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    data_files = {
+        "FEDFUNDS": "/tmp/FEDFUNDS.csv",
+        "CPIAUCSL": "/tmp/CPIAUCSL.csv",
+        "DGS10": "/tmp/DGS10.csv",
+        "UNRATE": "/tmp/UNRATE.csv",
+        "PAYEMS": "/tmp/PAYEMS.csv",
+        "INDPRO": "/tmp/INDPRO.csv",
+        "GDPC1": "/tmp/GDPC1.csv",
+        "UMCSENT": "/tmp/UMCSENT.csv",
+        "USREC": "/tmp/USREC.csv",
+    }
+    request = _Request(
+        [
+            SimpleNamespace(name="load_skill"),
+            SimpleNamespace(name="build_macro_cycle_chart_pack_artifacts"),
+            SimpleNamespace(name="write_file"),
+            SimpleNamespace(name="read_file"),
+            SimpleNamespace(name="execute"),
+        ],
+        messages=[
+            AIMessage(
+                content=(
+                    "Job ID: improver-loop\n"
+                    "Full approved user request for `original_query`: Test whether "
+                    "current macro conditions look like a soft landing, delayed "
+                    "recession, or reacceleration. Produce 6-8 governed charts.\n"
+                    f'"data_files": {json.dumps(data_files)}'
+                )
+            )
+        ],
+    )
+
+    response = middleware.wrap_model_call(request, lambda req: req)
+
+    assert [tool.name for tool in response.tools] == [
+        "load_skill",
+        "build_macro_cycle_chart_pack_artifacts",
+        "read_file",
+    ]
+
+
+def test_quant_middleware_keeps_macro_cycle_tool_available_before_match():
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    request = _Request(
+        [
+            SimpleNamespace(name="load_skill"),
+            SimpleNamespace(name="build_macro_cycle_chart_pack_artifacts"),
+            SimpleNamespace(name="write_file"),
+            SimpleNamespace(name="read_file"),
+            SimpleNamespace(name="execute"),
+        ],
+        messages=[
+            AIMessage(
+                content=(
+                    "Job ID: improver-loop\n"
+                    "Full approved user request for `original_query`: Test whether "
+                    "current macro conditions look like a soft landing, delayed "
+                    "recession, or reacceleration. Produce 6-8 governed charts.\n"
+                    '"data_files": {"FEDFUNDS": "/tmp/FEDFUNDS.csv"}'
+                )
+            )
+        ],
+    )
+
+    response = middleware.wrap_model_call(request, lambda req: req)
+
+    assert [tool.name for tool in response.tools] == [
+        "load_skill",
+        "build_macro_cycle_chart_pack_artifacts",
+        "write_file",
+        "read_file",
+    ]
+
+
+def test_quant_middleware_allows_macro_cycle_tool_before_script_write():
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    request = SimpleNamespace(
+        tool_call={
+            "name": "build_macro_cycle_chart_pack_artifacts",
+            "id": "call-macro-cycle",
+            "args": {
+                "job_id": "improver-loop",
+                "data_files": {"FEDFUNDS": "/tmp/FEDFUNDS.csv"},
+            },
+        },
+        state={"messages": [AIMessage(content="use deterministic macro helper")]},
+    )
+
+    response = middleware.wrap_tool_call(
+        request,
+        lambda req: ToolMessage(
+            content='{"chart_ids": ["macro_cycle_profile"]}',
+            name="build_macro_cycle_chart_pack_artifacts",
+            tool_call_id="call-macro-cycle",
+        ),
+    )
+
+    assert response.status != "error"
+    assert response.name == "build_macro_cycle_chart_pack_artifacts"
+
+
+def test_quant_middleware_forces_matching_unemployment_forecast_tool_before_write():
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    data_files = {
+        "UNRATE_FRED": "/tmp/UNRATE.csv",
+        "PAYEMS_FRED": "/tmp/PAYEMS.csv",
+        "ICSA_FRED": "/tmp/ICSA.csv",
+        "CPIAUCSL_FRED": "/tmp/CPIAUCSL.csv",
+        "GDPC1_FRED": "/tmp/GDPC1.csv",
+    }
+    request = _Request(
+        [
+            SimpleNamespace(name="load_skill"),
+            SimpleNamespace(name="build_unemployment_forecast_chart_pack_artifacts"),
+            SimpleNamespace(name="write_file"),
+            SimpleNamespace(name="read_file"),
+            SimpleNamespace(name="execute"),
+        ],
+        messages=[
+            AIMessage(
+                content=(
+                    "Job ID: improver-loop\n"
+                    "Full approved user request for `original_query`: Build an "
+                    "unemployment forecast-overlay report with 6-8 governed charts.\n"
+                    f'"data_files": {json.dumps(data_files)}'
+                )
+            )
+        ],
+    )
+
+    response = middleware.wrap_model_call(request, lambda req: req)
+
+    assert [tool.name for tool in response.tools] == [
+        "load_skill",
+        "build_unemployment_forecast_chart_pack_artifacts",
+        "read_file",
+    ]
+
+
+def test_quant_middleware_forces_unemployment_forecast_tool_without_claims():
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    data_files = {
+        "UNRATE_FRED": "/tmp/UNRATE.csv",
+        "PAYEMS_FRED": "/tmp/PAYEMS.csv",
+        "U6RATE_FRED": "/tmp/U6RATE.csv",
+        "DGS10_FRED": "/tmp/DGS10.csv",
+        "FEDFUNDS_FRED": "/tmp/FEDFUNDS.csv",
+    }
+    request = _Request(
+        [
+            SimpleNamespace(name="build_unemployment_forecast_chart_pack_artifacts"),
+            SimpleNamespace(name="write_file"),
+            SimpleNamespace(name="read_file"),
+        ],
+        messages=[
+            AIMessage(
+                content=(
+                    "Job ID: improver-loop\n"
+                    "Full approved user request for `original_query`: Build an "
+                    "unemployment forecast-overlay report with 6-8 governed charts.\n"
+                    f'"data_files": {json.dumps(data_files)}'
+                )
+            )
+        ],
+    )
+
+    response = middleware.wrap_model_call(request, lambda req: req)
+
+    assert [tool.name for tool in response.tools] == [
+        "build_unemployment_forecast_chart_pack_artifacts",
+        "read_file",
+    ]
+
+
+def test_quant_middleware_allows_skill_load_before_script_write():
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    request = SimpleNamespace(
+        tool_call={"name": "load_skill", "id": "call-skill", "args": {}},
+        state={"messages": [AIMessage(content="need quant instructions")]},
+    )
+
+    response = middleware.wrap_tool_call(
+        request,
+        lambda req: ToolMessage(
+            content="Loaded skill quant-developer",
+            name="load_skill",
+            tool_call_id="call-skill",
+        ),
+    )
+
+    assert response.status != "error"
+    assert response.content == "Loaded skill quant-developer"
+
+
+def test_quant_middleware_allows_native_skill_read_before_script_write():
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    skill_path = _QUANT_SKILL_DIR / "quant-script-workflow" / "SKILL.md"
+    request = SimpleNamespace(
+        tool_call={
+            "name": "read_file",
+            "id": "call-read-skill",
+            "args": {"file_path": str(skill_path)},
+        },
+        state={"messages": [AIMessage(content="need focused skill instructions")]},
+    )
+
+    response = middleware.wrap_tool_call(
+        request,
+        lambda req: ToolMessage(
+            content="Loaded quant-script-workflow",
+            name="read_file",
+            tool_call_id="call-read-skill",
+        ),
+    )
+
+    assert response.status != "error"
+    assert response.content == "Loaded quant-script-workflow"
+
+
+def test_quant_middleware_blocks_non_skill_read_before_script_write():
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    request = SimpleNamespace(
+        tool_call={
+            "name": "read_file",
+            "id": "call-read-data",
+            "args": {"file_path": "/tmp/data.csv"},
+        },
+        state={"messages": [AIMessage(content="try to inspect raw data")]},
+    )
+
+    response = middleware.wrap_tool_call(
+        request,
+        lambda req: (_ for _ in ()).throw(AssertionError("handler should not run")),
+    )
+
+    assert response.status == "error"
+    assert "Blocked tool `read_file` for quant-developer" in response.content
 
 
 def test_quant_middleware_allows_repair_tools_after_script_write():
@@ -271,12 +1272,10 @@ def test_quant_middleware_does_not_treat_blocked_write_as_script_written():
 
     response = middleware.wrap_model_call(request, lambda req: req)
 
-    assert [tool.name for tool in response.tools] == ["write_file"]
+    assert [tool.name for tool in response.tools] == ["write_file", "read_file"]
 
 
-def test_quant_middleware_allows_final_rewrite_after_three_prewrite_blocks(
-    tmp_path, monkeypatch
-):
+def test_quant_middleware_allows_final_rewrite_after_three_prewrite_blocks(tmp_path, monkeypatch):
     monkeypatch.setattr(quant_dev, "OUTPUT_BASE_DIR", str(tmp_path))
     middleware = QuantDeveloperToolBoundaryMiddleware()
     messages = [
@@ -389,11 +1388,45 @@ def test_quant_middleware_returns_failure_handoff_after_repeated_prewrite_blocks
     assert handoff["execution_summary_json"] == str(
         tmp_path / "improver-loop" / "execution_summary.json"
     )
-    summary = json.loads(
-        (tmp_path / "improver-loop" / "execution_summary.json").read_text()
-    )
+    summary = json.loads((tmp_path / "improver-loop" / "execution_summary.json").read_text())
     assert summary["blocked_attempt_count"] == 4
     assert summary["failure_stage"] == "quant_initial_script_write"
+
+
+def test_quant_middleware_failure_handoff_uses_runtime_job_id_over_prompt_examples(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(quant_dev, "OUTPUT_BASE_DIR", str(tmp_path))
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    messages = [
+        AIMessage(content="Example path only: /app/outputs/job_a61b3825/charts.json"),
+        *[
+            ToolMessage(
+                content=(
+                    "Blocked quant analysis script before writing because "
+                    "Python syntax validation failed."
+                ),
+                name="write_file",
+                tool_call_id=f"call-blocked-{idx}",
+                status="error",
+            )
+            for idx in range(4)
+        ],
+    ]
+    request = _Request([SimpleNamespace(name="write_file")], messages=messages)
+    request.runtime = SimpleNamespace(context=SimpleNamespace(job_id="job_6299bc0b"))
+
+    response = middleware.wrap_model_call(
+        request,
+        lambda req: ModelResponse(result=[AIMessage(content="still retrying")]),
+    )
+
+    handoff = json.loads(response.result[0].content)
+    output_dir = tmp_path / "job_6299bc0b"
+    assert handoff["charts_json"] == str(output_dir / "charts.json")
+    assert handoff["execution_summary_json"] == str(output_dir / "execution_summary.json")
+    assert (output_dir / "execution_summary.json").is_file()
+    assert not (tmp_path / "job_a61b3825").exists()
 
 
 def test_quant_middleware_preserves_prior_artifacts_after_repair_retry_budget(
@@ -446,12 +1479,14 @@ def test_quant_middleware_preserves_prior_artifacts_after_repair_retry_budget(
     assert handoff["charts_json"] == str(output_dir / "charts.json")
     assert handoff["execution_summary_json"] == str(output_dir / "execution_summary.json")
     assert handoff["failure_summary_json"] == str(output_dir / "quant_failure_summary.json")
-    assert json.loads((output_dir / "charts.json").read_text(encoding="utf-8"))[
-        "macro_signal"
-    ]["id"] == "macro_signal"
-    assert json.loads(
-        (output_dir / "execution_summary.json").read_text(encoding="utf-8")
-    ) == prior_summary
+    assert (
+        json.loads((output_dir / "charts.json").read_text(encoding="utf-8"))["macro_signal"]["id"]
+        == "macro_signal"
+    )
+    assert (
+        json.loads((output_dir / "execution_summary.json").read_text(encoding="utf-8"))
+        == prior_summary
+    )
     failure_summary = json.loads(
         (output_dir / "quant_failure_summary.json").read_text(encoding="utf-8")
     )
@@ -459,9 +1494,7 @@ def test_quant_middleware_preserves_prior_artifacts_after_repair_retry_budget(
     assert failure_summary["preserved_prior_artifacts"] is True
 
 
-def test_quant_middleware_does_not_fail_handoff_after_wrong_tool_blocks(
-    tmp_path, monkeypatch
-):
+def test_quant_middleware_does_not_fail_handoff_after_wrong_tool_blocks(tmp_path, monkeypatch):
     monkeypatch.setattr(quant_dev, "OUTPUT_BASE_DIR", str(tmp_path))
     middleware = QuantDeveloperToolBoundaryMiddleware()
     messages = [
@@ -511,7 +1544,7 @@ def test_quant_middleware_does_not_treat_root_analysis_as_script_written():
 
     response = middleware.wrap_model_call(request, lambda req: req)
 
-    assert [tool.name for tool in response.tools] == ["write_file"]
+    assert [tool.name for tool in response.tools] == ["write_file", "read_file"]
 
 
 def test_quant_middleware_blocks_execute_after_failed_initial_write():
@@ -521,9 +1554,7 @@ def test_quant_middleware_blocks_execute_after_failed_initial_write():
         state={
             "messages": [
                 ToolMessage(
-                    content=(
-                        "Error invoking tool 'write_file' with kwargs {'content': '...'}"
-                    ),
+                    content=("Error invoking tool 'write_file' with kwargs {'content': '...'}"),
                     name="write_file",
                     tool_call_id="call-failed-write",
                     status="error",
@@ -645,11 +1676,7 @@ def test_quant_middleware_blocks_quant_macro_stats_source_reads():
         tool_call={
             "name": "read_file",
             "id": "call-read-helper",
-            "args": {
-                "file_path": str(
-                    quant_dev._BACKEND_DIR / "agents" / "quant_macro_stats.py"
-                )
-            },
+            "args": {"file_path": str(quant_dev._BACKEND_DIR / "agents" / "quant_macro_stats.py")},
         },
         state={
             "messages": [
@@ -673,7 +1700,7 @@ def test_quant_middleware_blocks_quant_macro_stats_source_reads():
     assert "direct_ols_forecast(forecast_frame" in response.content
     assert "classify_recession_regime(scored_frame" in response.content
     assert "historical_scenario_replay(panel, signal_cols=signal_cols" in response.content
-    assert "event_signal_backtest(panel, signal_col=\"composite\"" in response.content
+    assert 'event_signal_backtest(panel, signal_col="composite"' in response.content
     assert "Use `read_file` only for the generated analysis script" in response.content
 
 
@@ -699,9 +1726,7 @@ def test_quant_middleware_blocks_execute_before_script_write():
     assert "Do not read `agents/quant_macro_stats.py`" in response.content
     assert "under 120 lines" in response.content
     assert "FRED/helper-centered" in response.content
-    assert "international peers, regional consumers, or company earnings risk" in (
-        response.content
-    )
+    assert "international peers, regional consumers, or company earnings risk" in (response.content)
     assert "compact table-style summaries" in response.content
     assert 'execution_summary["source_context_files"]' in response.content
     assert "direct_ols_forecast" in response.content
@@ -908,17 +1933,985 @@ def test_quant_middleware_uses_original_messages_after_tool_filtering():
         request,
         lambda req: ModelResponse(
             result=[
+                AIMessage(content=('<｜｜DSML｜｜tool_calls><｜｜DSML｜｜invoke name="read_file">'))
+            ]
+        ),
+    )
+
+    assert response.result[0].content == handoff
+
+
+def test_quant_middleware_returns_failure_handoff_after_pseudo_tool_call_markup(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(quant_dev, "OUTPUT_BASE_DIR", str(tmp_path))
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    messages = [
+        AIMessage(
+            content=(
+                "Write /home/vorndranj/projects/DeepResearchAgent/backend/outputs/"
+                "improver-loop/code/analysis.py"
+            )
+        )
+    ]
+    request = _Request([SimpleNamespace(name="write_file")], messages=messages)
+
+    response = middleware.wrap_model_call(
+        request,
+        lambda req: ModelResponse(
+            result=[
+                AIMessage(
+                    content=('<｜｜DSML｜｜tool_calls><｜｜DSML｜｜invoke name="write_file">')
+                )
+            ]
+        ),
+    )
+
+    handoff = json.loads(response.result[0].content)
+    output_dir = tmp_path / "improver-loop"
+    assert handoff["status"] == "failed"
+    assert handoff["failure_stage"] == "quant_malformed_tool_call"
+    assert handoff["chart_ids"] == []
+    assert handoff["methods_used"] == ["quant_malformed_tool_call_guard"]
+    assert handoff["charts_json"] == str(output_dir / "charts.json")
+    assert handoff["execution_summary_json"] == str(output_dir / "execution_summary.json")
+    assert json.loads((output_dir / "charts.json").read_text(encoding="utf-8")) == []
+    summary = json.loads((output_dir / "execution_summary.json").read_text(encoding="utf-8"))
+    assert summary["failure_stage"] == "quant_malformed_tool_call"
+    assert summary["methods_used"] == ["quant_malformed_tool_call_guard"]
+
+
+def test_quant_middleware_recovers_recession_dashboard_pseudo_write_as_tool_call():
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    data_files = {
+        "T10Y3M": "/tmp/T10Y3M.csv",
+        "UNRATE": "/tmp/UNRATE.csv",
+        "INDPRO": "/tmp/INDPRO.csv",
+        "USREC": "/tmp/USREC.csv",
+        "DRALACBN": "/tmp/DRALACBN.csv",
+    }
+    request = _Request(
+        [
+            SimpleNamespace(name="build_recession_dashboard_artifacts"),
+            SimpleNamespace(name="write_file"),
+        ],
+        messages=[
+            AIMessage(
+                content=(
+                    "Write /tmp/outputs/improver-loop/code/analysis.py\n"
+                    "Full approved user request for `original_query`: Create a "
+                    "recession-dashboard report with 6-8 charts.\n"
+                    f'"data_files": {json.dumps(data_files)}'
+                )
+            )
+        ],
+    )
+
+    response = middleware.wrap_model_call(
+        request,
+        lambda req: ModelResponse(
+            result=[
                 AIMessage(
                     content=(
-                        "<｜｜DSML｜｜tool_calls><｜｜DSML｜｜invoke "
-                        'name="read_file">'
+                        "The helper fits, but I will write a file. "
+                        '<｜｜DSML｜｜tool_calls><｜｜DSML｜｜invoke name="write_file">'
                     )
                 )
             ]
         ),
     )
 
-    assert response.result[0].content == handoff
+    message = response.result[0]
+    assert message.content == ""
+    assert len(message.tool_calls) == 1
+    tool_call = message.tool_calls[0]
+    assert tool_call["name"] == "build_recession_dashboard_artifacts"
+    assert tool_call["args"]["job_id"] == "improver-loop"
+    assert tool_call["args"]["data_files"] == data_files
+    assert "recession-dashboard report" in tool_call["args"]["query"]
+
+
+def test_quant_middleware_recovers_recession_dashboard_pseudo_call_with_runtime_job_id():
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    data_files = {
+        "T10Y3M": "/tmp/T10Y3M.csv",
+        "UNRATE": "/tmp/UNRATE.csv",
+        "INDPRO": "/tmp/INDPRO.csv",
+        "USREC": "/tmp/USREC.csv",
+        "BAA10YM": "/tmp/BAA10YM.csv",
+    }
+    request = _Request(
+        [
+            SimpleNamespace(name="build_recession_dashboard_artifacts"),
+            SimpleNamespace(name="read_file"),
+            SimpleNamespace(name="write_file"),
+        ],
+        messages=[
+            AIMessage(
+                content=(
+                    "Full approved user request for `original_query`: Create a "
+                    "recession-dashboard report over the last 40 years. Produce "
+                    "6-8 governed renderable charts.\n"
+                    f'"data_files": {json.dumps(data_files)}'
+                )
+            )
+        ],
+        runtime=SimpleNamespace(context={"job_id": "improver-loop"}),
+    )
+
+    response = middleware.wrap_model_call(
+        request,
+        lambda req: ModelResponse(
+            result=[
+                AIMessage(
+                    content=(
+                        "I should use `build_recession_dashboard_artifacts`, "
+                        "but I will emit markup. "
+                        "<｜｜DSML｜｜tool_calls> "
+                        '<｜｜DSML｜｜invoke name="build_recession_dashboard_artifacts">'
+                    )
+                )
+            ]
+        ),
+    )
+
+    message = response.result[0]
+    assert message.content == ""
+    assert len(message.tool_calls) == 1
+    tool_call = message.tool_calls[0]
+    assert tool_call["name"] == "build_recession_dashboard_artifacts"
+    assert tool_call["args"]["job_id"] == "improver-loop"
+    assert tool_call["args"]["data_files"] == data_files
+    assert "6-8 governed renderable charts" in tool_call["args"]["query"]
+
+
+def test_quant_middleware_forces_recession_helper_after_skill_reads():
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    data_files = {
+        "GDPC1": "/tmp/GDPC1.csv",
+        "A191RL1Q225SBEA": "/tmp/A191RL1Q225SBEA.csv",
+        "UNRATE": "/tmp/UNRATE.csv",
+        "INDPRO": "/tmp/INDPRO.csv",
+        "USREC": "/tmp/USREC.csv",
+    }
+    query = (
+        "Compare real GDP growth, unemployment, recession periods, and "
+        "industrial production since 1980. Produce 6-8 governed renderable "
+        "charts that preserve all chart IDs into the report."
+    )
+    request = _Request(
+        [
+            SimpleNamespace(name="build_recession_dashboard_artifacts"),
+            SimpleNamespace(name="read_file"),
+            SimpleNamespace(name="write_file"),
+        ],
+        messages=[
+            AIMessage(
+                content=(
+                    f"Full approved user request for `original_query`: {query}\n"
+                    f'"data_files": {json.dumps(data_files)}'
+                )
+            ),
+            ToolMessage(
+                content=(
+                    "---\nname: quant-macro-helper-workflows\n---\n"
+                    "Use build_recession_dashboard_artifacts for recession charts."
+                ),
+                name="read_file",
+                tool_call_id="call-read-skill",
+            ),
+        ],
+        runtime=SimpleNamespace(context={"job_id": "improver-78d48a20"}),
+    )
+    handler_called = False
+
+    def handler(req):
+        nonlocal handler_called
+        handler_called = True
+        return ModelResponse(result=[AIMessage(content="I will call it now.")])
+
+    response = middleware.wrap_model_call(request, handler)
+
+    assert handler_called is False
+    message = response.result[0]
+    assert message.content == ""
+    assert len(message.tool_calls) == 1
+    tool_call = message.tool_calls[0]
+    assert tool_call["name"] == "build_recession_dashboard_artifacts"
+    assert tool_call["args"]["job_id"] == "improver-78d48a20"
+    assert tool_call["args"]["data_files"] == data_files
+    assert "Compare real GDP growth" in tool_call["args"]["query"]
+
+
+def test_quant_middleware_forces_recession_helper_from_natural_fred_chart_prompt(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(quant_middleware, "_BACKEND_DIR", tmp_path)
+    auto_dir = tmp_path / "data" / "_auto"
+    auto_dir.mkdir(parents=True)
+    base_timestamp = quant_middleware.time.time_ns() - 5_000_000_000
+    required_series = ["T10Y3M", "UNRATE", "INDPRO", "USREC", "BAA10YM"]
+    expected_paths = {}
+    for index, series_id in enumerate(required_series):
+        path = auto_dir / f"fred_get_series_{series_id}_{base_timestamp + index}_abcdef.csv"
+        path.write_text("date,value\n2025-01-01,1\n", encoding="utf-8")
+        expected_paths[series_id] = str(path)
+
+    query = (
+        "Create a recession-dashboard report using FRED time series for the "
+        "10-year minus 3-month Treasury spread, unemployment, industrial "
+        "production, credit conditions, and recession indicators over the "
+        "last 40 years. Produce 6-8 governed renderable charts."
+    )
+    request = _Request(
+        [
+            SimpleNamespace(name="build_recession_dashboard_artifacts"),
+            SimpleNamespace(name="read_file"),
+            SimpleNamespace(name="write_file"),
+            SimpleNamespace(name="execute"),
+        ],
+        messages=[
+            AIMessage(
+                content=(
+                    "Job ID: improver-loop\n"
+                    f"Full approved user request for `original_query`: {query}\n"
+                    "The FRED fetch succeeded, but the handoff omitted exact paths."
+                )
+            ),
+            ToolMessage(
+                content=(
+                    "1\t---\n"
+                    "2\tname: quant-macro-helper-workflows\n"
+                    "3\tdescription: Deterministic macro helper routes.\n"
+                    "4\t---\n"
+                    "5\tUse build_recession_dashboard_artifacts for recession charts."
+                ),
+                tool_call_id="call-read-skill",
+            ),
+        ],
+    )
+    handler_called = False
+
+    def handler(req):
+        nonlocal handler_called
+        handler_called = True
+        return ModelResponse(result=[AIMessage(content="I will inspect files first.")])
+
+    response = QuantDeveloperToolBoundaryMiddleware().wrap_model_call(request, handler)
+
+    assert handler_called is False
+    message = response.result[0]
+    assert message.content == ""
+    assert len(message.tool_calls) == 1
+    tool_call = message.tool_calls[0]
+    assert tool_call["name"] == "build_recession_dashboard_artifacts"
+    assert tool_call["args"]["job_id"] == "improver-loop"
+    assert tool_call["args"]["data_files"] == expected_paths
+    assert "10-year minus 3-month Treasury spread" in tool_call["args"]["query"]
+
+
+def test_quant_middleware_recovers_consumer_stress_pseudo_write_as_tool_call():
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    data_files = {
+        "PSAVERT": "/tmp/PSAVERT.csv",
+        "UNRATE": "/tmp/UNRATE.csv",
+        "CPIAUCSL": "/tmp/CPIAUCSL.csv",
+        "AHETPI": "/tmp/AHETPI.csv",
+        "UMCSENT": "/tmp/UMCSENT.csv",
+        "DPCERA3M086SBEA": "/tmp/DPCERA3M086SBEA.csv",
+        "TOTALSL": "/tmp/TOTALSL.csv",
+    }
+    request = _Request(
+        [
+            SimpleNamespace(name="build_consumer_stress_dashboard_artifacts"),
+            SimpleNamespace(name="write_file"),
+        ],
+        messages=[
+            AIMessage(
+                content=(
+                    "Write /tmp/outputs/improver-loop/code/analysis.py\n"
+                    "Full approved user request for `original_query`: Analyze "
+                    "consumer stress with a chart dashboard.\n"
+                    f'"data_files": {json.dumps(data_files)}'
+                )
+            )
+        ],
+    )
+
+    response = middleware.wrap_model_call(
+        request,
+        lambda req: ModelResponse(
+            result=[
+                AIMessage(
+                    content=(
+                        "I will write a script. "
+                        '<｜｜DSML｜｜tool_calls><｜｜DSML｜｜invoke name="write_file">'
+                    )
+                )
+            ]
+        ),
+    )
+
+    message = response.result[0]
+    assert message.content == ""
+    assert len(message.tool_calls) == 1
+    tool_call = message.tool_calls[0]
+    assert tool_call["name"] == "build_consumer_stress_dashboard_artifacts"
+    assert tool_call["args"]["job_id"] == "improver-loop"
+    assert tool_call["args"]["data_files"] == data_files
+    assert "consumer stress" in tool_call["args"]["query"]
+
+
+def test_quant_middleware_recovers_consumer_stress_pseudo_helper_with_substitutes():
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    data_files = {
+        "PSAVERT": "/tmp/PSAVERT.csv",
+        "UNRATE": "/tmp/UNRATE.csv",
+        "CPIAUCSL": "/tmp/CPIAUCSL.csv",
+        "CES0500000003": "/tmp/CES0500000003.csv",
+        "DSPIC96": "/tmp/DSPIC96.csv",
+        "UMCSENT": "/tmp/UMCSENT.csv",
+        "DPCERA3M086SBEA": "/tmp/DPCERA3M086SBEA.csv",
+        "DRCCLACBS": "/tmp/DRCCLACBS.csv",
+    }
+    request = _Request(
+        [
+            SimpleNamespace(name="build_consumer_stress_dashboard_artifacts"),
+            SimpleNamespace(name="write_file"),
+        ],
+        messages=[
+            AIMessage(
+                content=(
+                    "Full approved user request for `original_query`: Analyze "
+                    "whether the US consumer is under stress. Build a 6-8 chart "
+                    "dashboard.\n"
+                    f'"data_files": {json.dumps(data_files)}'
+                )
+            )
+        ],
+        runtime=SimpleNamespace(context={"job_id": "improver-loop"}),
+    )
+
+    response = middleware.wrap_model_call(
+        request,
+        lambda req: ModelResponse(
+            result=[
+                AIMessage(
+                    content=(
+                        "This matches `build_consumer_stress_dashboard_artifacts`. "
+                        "<｜｜DSML｜｜tool_calls>"
+                        '<｜｜DSML｜｜invoke name="build_consumer_stress_dashboard_artifacts">'
+                    )
+                )
+            ]
+        ),
+    )
+
+    message = response.result[0]
+    assert message.content == ""
+    assert len(message.tool_calls) == 1
+    tool_call = message.tool_calls[0]
+    assert tool_call["name"] == "build_consumer_stress_dashboard_artifacts"
+    assert tool_call["args"]["job_id"] == "improver-loop"
+    assert tool_call["args"]["data_files"] == data_files
+    assert "consumer is under stress" in tool_call["args"]["query"]
+
+
+def test_quant_middleware_recovers_consumer_stress_pseudo_todos_without_consumption():
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    data_files = {
+        "PSAVERT": "/tmp/PSAVERT.csv",
+        "UNRATE": "/tmp/UNRATE.csv",
+        "CPIAUCSL": "/tmp/CPIAUCSL.csv",
+        "DSPIC96": "/tmp/DSPIC96.csv",
+        "UMCSENT": "/tmp/UMCSENT.csv",
+        "TOTALSL": "/tmp/TOTALSL.csv",
+        "PCEPILFE": "/tmp/PCEPILFE.csv",
+    }
+    request = _Request(
+        [
+            SimpleNamespace(name="build_consumer_stress_dashboard_artifacts"),
+            SimpleNamespace(name="write_file"),
+        ],
+        messages=[
+            AIMessage(
+                content=(
+                    "Full approved user request for `original_query`: Analyze "
+                    "whether the US consumer is under stress using FRED macro data. "
+                    "Build a 6-8 chart dashboard with sentiment or consumption "
+                    "where available.\n"
+                    f'"data_files": {json.dumps(data_files)}'
+                )
+            )
+        ],
+        runtime=SimpleNamespace(context={"job_id": "improver-loop"}),
+    )
+
+    response = middleware.wrap_model_call(
+        request,
+        lambda req: ModelResponse(
+            result=[
+                AIMessage(
+                    content=(
+                        "This is a consumer-stress dashboard task. I should use "
+                        "`build_consumer_stress_dashboard_artifacts`. "
+                        "<｜｜DSML｜｜tool_calls>"
+                        '<｜｜DSML｜｜invoke name="write_todos">'
+                    )
+                )
+            ]
+        ),
+    )
+
+    message = response.result[0]
+    assert message.content == ""
+    assert len(message.tool_calls) == 1
+    tool_call = message.tool_calls[0]
+    assert tool_call["name"] == "build_consumer_stress_dashboard_artifacts"
+    assert tool_call["args"]["job_id"] == "improver-loop"
+    assert tool_call["args"]["data_files"] == data_files
+    assert "consumer is under stress" in tool_call["args"]["query"]
+
+
+def test_quant_middleware_recovers_inflation_policy_pseudo_skill_read_as_tool_call():
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    data_files = {
+        "CPIAUCSL": "/tmp/CPIAUCSL.csv",
+        "CPILFESL": "/tmp/CPILFESL.csv",
+        "FEDFUNDS": "/tmp/FEDFUNDS.csv",
+        "USREC": "/tmp/USREC.csv",
+    }
+    data_file_lines = "\n".join(f"- {key}: {path}" for key, path in data_files.items())
+    request = _Request(
+        [
+            SimpleNamespace(name="build_inflation_policy_chart_pack_artifacts"),
+            SimpleNamespace(name="read_file"),
+            SimpleNamespace(name="write_file"),
+        ],
+        messages=[
+            AIMessage(
+                content=(
+                    "Job ID: improver-loop\n"
+                    "Full approved user request for `original_query`: Build a "
+                    "chart-heavy macro report comparing headline CPI inflation, "
+                    "core CPI inflation, and the effective federal funds rate.\n"
+                    f"data_files:\n{data_file_lines}\n"
+                )
+            )
+        ],
+    )
+
+    response = middleware.wrap_model_call(
+        request,
+        lambda req: ModelResponse(
+            result=[
+                AIMessage(
+                    content=(
+                        "This is a perfect match for "
+                        "`build_inflation_policy_chart_pack_artifacts`. "
+                        "<｜｜DSML｜｜tool_calls>"
+                        '<｜｜DSML｜｜invoke name="read_file">'
+                        '<｜｜DSML｜｜parameter name="file_path" string="true">'
+                        "/home/vorndranj/projects/DeepResearchAgent/backend/skills/"
+                        "quant-developer/quant-macro-helper-workflows/SKILL.md"
+                        "</｜｜DSML｜｜parameter>"
+                    )
+                )
+            ]
+        ),
+    )
+
+    message = response.result[0]
+    assert message.content == ""
+    assert len(message.tool_calls) == 1
+    tool_call = message.tool_calls[0]
+    assert tool_call["name"] == "build_inflation_policy_chart_pack_artifacts"
+    assert tool_call["args"]["job_id"] == "improver-loop"
+    assert tool_call["args"]["data_files"] == data_files
+    assert "headline CPI inflation" in tool_call["args"]["query"]
+
+
+def test_quant_middleware_recovers_pseudo_quant_skill_read_when_no_helper_matches():
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    skill_path = (
+        "/home/vorndranj/projects/DeepResearchAgent/backend/skills/"
+        "quant-developer/quant-macro-helper-workflows/SKILL.md"
+    )
+    request = _Request(
+        [
+            SimpleNamespace(name="read_file"),
+            SimpleNamespace(name="write_file"),
+        ],
+        messages=[AIMessage(content="Job ID: improver-loop\nNo chart helper fits yet.")],
+    )
+
+    response = middleware.wrap_model_call(
+        request,
+        lambda req: ModelResponse(
+            result=[
+                AIMessage(
+                    content=(
+                        "<｜｜DSML｜｜tool_calls>"
+                        '<｜｜DSML｜｜invoke name="read_file">'
+                        '<｜｜DSML｜｜parameter name="file_path" string="true">'
+                        f"{skill_path}</｜｜DSML｜｜parameter>"
+                    )
+                )
+            ]
+        ),
+    )
+
+    message = response.result[0]
+    assert message.content == ""
+    assert len(message.tool_calls) == 1
+    tool_call = message.tool_calls[0]
+    assert tool_call["name"] == "read_file"
+    assert tool_call["args"]["file_path"] == skill_path
+
+
+def test_quant_middleware_recovers_historical_replay_pseudo_write_as_tool_call():
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    data_files = {
+        "UNRATE": "/tmp/UNRATE.csv",
+        "CPIAUCSL": "/tmp/CPIAUCSL.csv",
+        "FEDFUNDS": "/tmp/FEDFUNDS.csv",
+        "INDPRO": "/tmp/INDPRO.csv",
+        "USREC": "/tmp/USREC.csv",
+        "DSPIC96": "/tmp/DSPIC96.csv",
+    }
+    request = _Request(
+        [
+            SimpleNamespace(name="build_historical_replay_chart_pack_artifacts"),
+            SimpleNamespace(name="write_file"),
+        ],
+        messages=[
+            AIMessage(
+                content=(
+                    "Write /tmp/outputs/improver-loop/code/analysis.py\n"
+                    "Full approved user request for `original_query`: Make a "
+                    "historical replay report with a chart pack.\n"
+                    f'"data_files": {json.dumps(data_files)}'
+                )
+            )
+        ],
+    )
+
+    response = middleware.wrap_model_call(
+        request,
+        lambda req: ModelResponse(
+            result=[
+                AIMessage(
+                    content=(
+                        "I will write a script. "
+                        '<｜｜DSML｜｜tool_calls><｜｜DSML｜｜invoke name="write_file">'
+                    )
+                )
+            ]
+        ),
+    )
+
+    message = response.result[0]
+    assert message.content == ""
+    assert len(message.tool_calls) == 1
+    tool_call = message.tool_calls[0]
+    assert tool_call["name"] == "build_historical_replay_chart_pack_artifacts"
+    assert tool_call["args"]["job_id"] == "improver-loop"
+    assert tool_call["args"]["data_files"] == data_files
+    assert "historical replay" in tool_call["args"]["query"]
+
+
+def test_quant_middleware_recovers_macro_cycle_pseudo_write_as_tool_call():
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    data_files = {
+        "FEDFUNDS": "/tmp/FEDFUNDS.csv",
+        "CPIAUCSL": "/tmp/CPIAUCSL.csv",
+        "DGS10": "/tmp/DGS10.csv",
+        "UNRATE": "/tmp/UNRATE.csv",
+        "PAYEMS": "/tmp/PAYEMS.csv",
+        "INDPRO": "/tmp/INDPRO.csv",
+        "GDP": "/tmp/GDP.csv",
+        "PSAVERT": "/tmp/PSAVERT.csv",
+        "UMCSENT": "/tmp/UMCSENT.csv",
+        "USREC": "/tmp/USREC.csv",
+    }
+    request = _Request(
+        [
+            SimpleNamespace(name="build_macro_cycle_chart_pack_artifacts"),
+            SimpleNamespace(name="write_file"),
+        ],
+        messages=[
+            AIMessage(
+                content=(
+                    "Write /tmp/outputs/improver-loop/code/analysis.py\n"
+                    "Full approved user request for `original_query`: Create a "
+                    "macro cycle chart pack for an investment committee.\n"
+                    f'"data_files": {json.dumps(data_files)}'
+                )
+            )
+        ],
+    )
+
+    response = middleware.wrap_model_call(
+        request,
+        lambda req: ModelResponse(
+            result=[
+                AIMessage(
+                    content=(
+                        "I will write a script. "
+                        '<｜｜DSML｜｜tool_calls><｜｜DSML｜｜invoke name="write_file">'
+                    )
+                )
+            ]
+        ),
+    )
+
+    message = response.result[0]
+    assert message.content == ""
+    assert len(message.tool_calls) == 1
+    tool_call = message.tool_calls[0]
+    assert tool_call["name"] == "build_macro_cycle_chart_pack_artifacts"
+    assert tool_call["args"]["job_id"] == "improver-loop"
+    assert tool_call["args"]["data_files"] == data_files
+    assert "macro cycle chart pack" in tool_call["args"]["query"]
+
+
+def test_quant_middleware_recovers_macro_regime_pseudo_write_without_saving_rate():
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    data_files = {
+        "FEDFUNDS": "/tmp/FEDFUNDS.csv",
+        "CPIAUCSL": "/tmp/CPIAUCSL.csv",
+        "DGS10": "/tmp/DGS10.csv",
+        "UNRATE": "/tmp/UNRATE.csv",
+        "PAYEMS": "/tmp/PAYEMS.csv",
+        "INDPRO": "/tmp/INDPRO.csv",
+        "GDP": "/tmp/GDP.csv",
+        "UMCSENT": "/tmp/UMCSENT.csv",
+        "USREC": "/tmp/USREC.csv",
+    }
+    request = _Request(
+        [
+            SimpleNamespace(name="build_macro_cycle_chart_pack_artifacts"),
+            SimpleNamespace(name="write_file"),
+        ],
+        messages=[
+            AIMessage(
+                content=(
+                    "Write /tmp/outputs/improver-loop/code/analysis.py\n"
+                    "Full approved user request for `original_query`: Test whether "
+                    "current macro conditions look like a soft landing, delayed "
+                    "recession, or reacceleration. Produce 6-8 governed charts.\n"
+                    f'"data_files": {json.dumps(data_files)}'
+                )
+            )
+        ],
+    )
+
+    response = middleware.wrap_model_call(
+        request,
+        lambda req: ModelResponse(
+            result=[
+                AIMessage(
+                    content=(
+                        "I will write a script. "
+                        '<｜｜DSML｜｜tool_calls><｜｜DSML｜｜invoke name="write_file">'
+                    )
+                )
+            ]
+        ),
+    )
+
+    message = response.result[0]
+    assert message.content == ""
+    assert len(message.tool_calls) == 1
+    tool_call = message.tool_calls[0]
+    assert tool_call["name"] == "build_macro_cycle_chart_pack_artifacts"
+    assert tool_call["args"]["job_id"] == "improver-loop"
+    assert tool_call["args"]["data_files"] == data_files
+    assert "soft landing" in tool_call["args"]["query"]
+
+
+def test_quant_middleware_recovers_macro_cycle_execute_markup_from_recent_autosaves(
+    tmp_path, monkeypatch
+):
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    monkeypatch.setattr(quant_middleware, "_BACKEND_DIR", tmp_path)
+    auto_dir = tmp_path / "data" / "_auto"
+    auto_dir.mkdir(parents=True)
+    base_timestamp = quant_middleware.time.time_ns() - 5_000_000_000
+    required_series = [
+        "FEDFUNDS",
+        "CPIAUCSL",
+        "DGS10",
+        "UNRATE",
+        "PAYEMS",
+        "INDPRO",
+        "GDPC1",
+        "UMCSENT",
+        "USREC",
+    ]
+    expected_paths = {}
+    for index, series_id in enumerate(required_series):
+        path = auto_dir / f"fred_get_series_{series_id}_{base_timestamp + index}_abcdef.csv"
+        path.write_text("date,value\n2025-01-01,1\n", encoding="utf-8")
+        expected_paths[series_id] = str(path)
+
+    request = _Request(
+        [
+            SimpleNamespace(name="build_macro_cycle_chart_pack_artifacts"),
+            SimpleNamespace(name="write_file"),
+            SimpleNamespace(name="execute"),
+        ],
+        messages=[
+            AIMessage(
+                content=(
+                    "Job ID: improver-loop\n"
+                    "Full approved user request for `original_query`: Create a "
+                    "macro cycle chart pack for an investment committee.\n"
+                    "Fetched required FRED series: "
+                    f"{', '.join(required_series)}."
+                )
+            )
+        ],
+    )
+
+    response = middleware.wrap_model_call(
+        request,
+        lambda req: ModelResponse(
+            result=[
+                AIMessage(
+                    content=(
+                        "According to the skill, I should use "
+                        "`build_macro_cycle_chart_pack_artifacts` first. "
+                        "<｜｜DSML｜｜tool_calls>"
+                        '<｜｜DSML｜｜invoke name="execute">'
+                        '<｜｜DSML｜｜parameter name="command" string="true">'
+                        "ls /tmp"
+                    )
+                )
+            ]
+        ),
+    )
+
+    message = response.result[0]
+    assert message.content == ""
+    assert len(message.tool_calls) == 1
+    tool_call = message.tool_calls[0]
+    assert tool_call["name"] == "build_macro_cycle_chart_pack_artifacts"
+    assert tool_call["args"]["job_id"] == "improver-loop"
+    assert tool_call["args"]["data_files"] == expected_paths
+    assert "macro cycle chart pack" in tool_call["args"]["query"]
+
+
+def test_quant_middleware_recovers_unemployment_forecast_pseudo_write_as_tool_call():
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    data_files = {
+        "UNRATE_FRED": "/tmp/UNRATE.csv",
+        "PAYEMS_FRED": "/tmp/PAYEMS.csv",
+        "ICSA_FRED": "/tmp/ICSA.csv",
+    }
+    request = _Request(
+        [
+            SimpleNamespace(name="build_unemployment_forecast_chart_pack_artifacts"),
+            SimpleNamespace(name="write_file"),
+        ],
+        messages=[
+            AIMessage(
+                content=(
+                    "Write /tmp/outputs/improver-loop/code/analysis.py\n"
+                    "Full approved user request for `original_query`: Build an "
+                    "unemployment forecast-overlay report with charts.\n"
+                    f'"data_files": {json.dumps(data_files)}'
+                )
+            )
+        ],
+    )
+
+    response = middleware.wrap_model_call(
+        request,
+        lambda req: ModelResponse(
+            result=[
+                AIMessage(
+                    content=(
+                        "I will write a script. "
+                        '<｜｜DSML｜｜tool_calls><｜｜DSML｜｜invoke name="write_file">'
+                    )
+                )
+            ]
+        ),
+    )
+
+    message = response.result[0]
+    assert message.content == ""
+    assert len(message.tool_calls) == 1
+    tool_call = message.tool_calls[0]
+    assert tool_call["name"] == "build_unemployment_forecast_chart_pack_artifacts"
+    assert tool_call["args"]["job_id"] == "improver-loop"
+    assert tool_call["args"]["data_files"] == data_files
+    assert "unemployment forecast-overlay" in tool_call["args"]["query"]
+
+
+def test_quant_middleware_recovers_unemployment_forecast_from_truncated_autosaves(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(quant_middleware, "_BACKEND_DIR", tmp_path)
+    auto_dir = tmp_path / "data" / "_auto"
+    auto_dir.mkdir(parents=True)
+    anchor = 1778643634249922198
+    paths = {
+        "UNRATE": auto_dir / f"fred_get_series_UNRATE_{anchor}_e7fa783c.csv",
+        "PAYEMS": auto_dir / f"fred_get_series_PAYEMS_{anchor - 451276854}_711111cf.csv",
+        "ICSA": auto_dir / f"fred_get_series_ICSA_{anchor + 342227150}_69137aee.csv",
+    }
+    for path in paths.values():
+        path.write_text("date,value\n2026-01-01,1\n", encoding="utf-8")
+
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    request = _Request(
+        [
+            SimpleNamespace(name="build_unemployment_forecast_chart_pack_artifacts"),
+            SimpleNamespace(name="write_file"),
+            SimpleNamespace(name="write_todos"),
+        ],
+        messages=[
+            AIMessage(
+                content=(
+                    "Job ID: improver-loop\n"
+                    "Full approved user request for `original_query`: Build a "
+                    "forecast-overlay report for US unemployment with charts.\n"
+                    f'"data_files": {{"UNRATE": "{paths["UNRATE"]}"}}\n'
+                    "The data-engineer result was truncated before PAYEMS and ICSA."
+                )
+            )
+        ],
+    )
+
+    response = middleware.wrap_model_call(
+        request,
+        lambda req: ModelResponse(
+            result=[
+                AIMessage(
+                    content=(
+                        "Now let me check if the "
+                        "`build_unemployment_forecast_chart_pack_artifacts` tool "
+                        "is available: "
+                        '<｜｜DSML｜｜tool_calls><｜｜DSML｜｜invoke name="write_todos">'
+                    )
+                )
+            ]
+        ),
+    )
+
+    message = response.result[0]
+    assert message.content == ""
+    tool_call = message.tool_calls[0]
+    assert tool_call["name"] == "build_unemployment_forecast_chart_pack_artifacts"
+    assert tool_call["args"]["data_files"]["UNRATE"] == str(paths["UNRATE"])
+    assert tool_call["args"]["data_files"]["PAYEMS"] == str(paths["PAYEMS"])
+    assert tool_call["args"]["data_files"]["ICSA"] == str(paths["ICSA"])
+
+
+def test_quant_middleware_recovers_complete_pseudo_write_file_markup():
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    request = _Request([SimpleNamespace(name="write_file")])
+
+    response = middleware.wrap_model_call(
+        request,
+        lambda req: ModelResponse(
+            result=[
+                AIMessage(
+                    content=(
+                        '<｜｜DSML｜｜tool_calls><｜｜DSML｜｜invoke name="write_file">'
+                        '<｜｜DSML｜｜parameter name="file_path" string="true">'
+                        "/tmp/outputs/improver-loop/code/analysis.py"
+                        "</｜｜DSML｜｜parameter>"
+                        '<｜｜DSML｜｜parameter name="content" string="true">'
+                        "print('saved')\n"
+                        "</｜｜DSML｜｜parameter>"
+                        "</｜｜DSML｜｜invoke></｜｜DSML｜｜tool_calls>"
+                    )
+                )
+            ]
+        ),
+    )
+
+    message = response.result[0]
+    assert message.content == ""
+    assert len(message.tool_calls) == 1
+    tool_call = message.tool_calls[0]
+    assert tool_call["name"] == "write_file"
+    assert tool_call["args"]["file_path"] == ("/tmp/outputs/improver-loop/code/analysis.py")
+    assert tool_call["args"]["content"] == "print('saved')"
+
+
+def test_quant_middleware_recovers_unterminated_pseudo_write_file_markup():
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    request = _Request([SimpleNamespace(name="write_file")])
+
+    response = middleware.wrap_model_call(
+        request,
+        lambda req: ModelResponse(
+            result=[
+                AIMessage(
+                    content=(
+                        "Now let me write the script: "
+                        '<｜｜DSML｜｜tool_calls><｜｜DSML｜｜invoke name="write_file">'
+                        '<｜｜DSML｜｜parameter name="file_path" string="true">'
+                        "/tmp/outputs/improver-loop/code/analysis.py"
+                        "</｜｜DSML｜｜parameter>"
+                        '<｜｜DSML｜｜parameter name="content" string="true">'
+                        "#!/usr/bin/env python\nprint('saved')\n"
+                    )
+                )
+            ]
+        ),
+    )
+
+    message = response.result[0]
+    assert message.content == ""
+    assert len(message.tool_calls) == 1
+    tool_call = message.tool_calls[0]
+    assert tool_call["name"] == "write_file"
+    assert tool_call["args"]["file_path"] == ("/tmp/outputs/improver-loop/code/analysis.py")
+    assert tool_call["args"]["content"] == "#!/usr/bin/env python\nprint('saved')"
+
+
+def test_quant_middleware_rejects_pseudo_tool_markup_even_with_real_tool_call(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(quant_dev, "OUTPUT_BASE_DIR", str(tmp_path))
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    messages = [
+        AIMessage(
+            content=(
+                "Write /home/vorndranj/projects/DeepResearchAgent/backend/outputs/"
+                "improver-loop/code/analysis.py"
+            )
+        )
+    ]
+    request = _Request([SimpleNamespace(name="write_file")], messages=messages)
+
+    response = middleware.wrap_model_call(
+        request,
+        lambda req: ModelResponse(
+            result=[
+                AIMessage(
+                    content=('I will call the tool now. <｜｜DSML｜｜invoke name="write_file">'),
+                    tool_calls=[
+                        {
+                            "name": "read_file",
+                            "args": {"file_path": "x"},
+                            "id": "call-read",
+                        }
+                    ],
+                )
+            ]
+        ),
+    )
+
+    handoff = json.loads(response.result[0].content)
+    assert handoff["status"] == "failed"
+    assert handoff["failure_stage"] == "quant_malformed_tool_call"
+    assert handoff["methods_used"] == ["quant_malformed_tool_call_guard"]
 
 
 def test_quant_middleware_detects_handoff_without_tool_name_metadata():
@@ -1003,12 +2996,11 @@ def test_quant_middleware_blocks_oversized_python_write_before_sandbox():
     assert "Blocked oversized quant analysis script" in response.content
     assert "limit is 360 lines" in response.content
     assert "Rewrite a compact analysis.py under 120 lines" in response.content
-    assert "Produce no more than four computed charts" in response.content
+    assert "Produce 3-4 computed charts for ordinary prompts" in response.content
+    assert "6-8 distinct renderable charts for explicit chart" in response.content
     assert "only exact paths you will load" in response.content
     assert "at most one compact non-FRED summary block" in response.content
-    assert "World Bank, Census, SEC EDGAR, or BLS CSVs were handed off" in (
-        response.content
-    )
+    assert "World Bank, Census, SEC EDGAR, or BLS CSVs were handed off" in (response.content)
     assert 'execution_summary["source_context_files"]' in response.content
     assert "minimum viable broad-macro shape" in response.content
     assert "`historical_scenario_replay(...)`" in response.content
@@ -1017,9 +3009,7 @@ def test_quant_middleware_blocks_oversized_python_write_before_sandbox():
         response.content
     )
     assert "analog fast path instead of the full broad macro template" in response.content
-    assert "Do not add unemployment forecast, scenario, or regime-classifier" in (
-        response.content
-    )
+    assert "Do not add unemployment forecast, scenario, or regime-classifier" in (response.content)
 
 
 def test_quant_middleware_allows_near_limit_python_write_before_sandbox():
@@ -1179,8 +3169,7 @@ def test_quant_middleware_allows_sec_helper_summary_with_latest_field_names(tmp_
     middleware = QuantDeveloperToolBoundaryMiddleware()
     sec_path = tmp_path / "AAPL_sec_edgar_company_facts_job.csv"
     sec_path.write_text(
-        "fiscal_year,revenue,net_income\n"
-        "2025,416161000000,112010000000\n",
+        "fiscal_year,revenue,net_income\n2025,416161000000,112010000000\n",
         encoding="utf-8",
     )
     script = f"""
@@ -1393,10 +3382,7 @@ def test_quant_middleware_blocks_bad_data_files_manifest_suffix(tmp_path):
             "args": {
                 "file_path": "/tmp/outputs/job/code/analysis.py",
                 "content": (
-                    "DATA_FILES = {\n"
-                    f"    'UMCSENT': {str(bad_path)!r},\n"
-                    "}\n"
-                    "print(DATA_FILES)\n"
+                    f"DATA_FILES = {{\n    'UMCSENT': {str(bad_path)!r},\n}}\nprint(DATA_FILES)\n"
                 ),
             },
         },
@@ -1426,10 +3412,7 @@ def test_quant_middleware_allows_existing_data_files_manifest(tmp_path):
             "args": {
                 "file_path": "/tmp/outputs/job/code/analysis.py",
                 "content": (
-                    "DATA_FILES = {\n"
-                    f"    'UMCSENT': {str(csv_path)!r},\n"
-                    "}\n"
-                    "print(DATA_FILES)\n"
+                    f"DATA_FILES = {{\n    'UMCSENT': {str(csv_path)!r},\n}}\nprint(DATA_FILES)\n"
                 ),
             },
         },
@@ -1450,13 +3433,9 @@ def test_quant_middleware_allows_existing_data_files_manifest(tmp_path):
 
 
 def test_quant_middleware_repairs_unique_auto_saved_manifest_suffix(tmp_path):
-    actual_path = (
-        tmp_path / "fred_get_series_UMCSENT_1777660567048294467_3d2d927b.csv"
-    )
+    actual_path = tmp_path / "fred_get_series_UMCSENT_1777660567048294467_3d2d927b.csv"
     actual_path.write_text("date,value\n2024-01-01,75\n", encoding="utf-8")
-    typo_path = (
-        tmp_path / "fred_get_series_UMCSENT_1777660567048294467_3d2d757b.csv"
-    )
+    typo_path = tmp_path / "fred_get_series_UMCSENT_1777660567048294467_3d2d757b.csv"
     middleware = QuantDeveloperToolBoundaryMiddleware()
     request = SimpleNamespace(
         tool_call={
@@ -1465,10 +3444,7 @@ def test_quant_middleware_repairs_unique_auto_saved_manifest_suffix(tmp_path):
             "args": {
                 "file_path": "/tmp/outputs/job/code/analysis.py",
                 "content": (
-                    "DATA_FILES = {\n"
-                    f"    'UMCSENT': {str(typo_path)!r},\n"
-                    "}\n"
-                    "print(DATA_FILES)\n"
+                    f"DATA_FILES = {{\n    'UMCSENT': {str(typo_path)!r},\n}}\nprint(DATA_FILES)\n"
                 ),
             },
         },
@@ -1493,13 +3469,9 @@ def test_quant_middleware_repairs_unique_auto_saved_manifest_suffix(tmp_path):
 
 
 def test_quant_middleware_repairs_nearby_auto_saved_manifest_timestamp(tmp_path):
-    actual_path = (
-        tmp_path / "fred_get_series_USREC_1777755598026543227_aae2f573.csv"
-    )
+    actual_path = tmp_path / "fred_get_series_USREC_1777755598026543227_aae2f573.csv"
     actual_path.write_text("date,value\n2024-01-01,0\n", encoding="utf-8")
-    typo_path = (
-        tmp_path / "fred_get_series_USREC_1777755598046162015_aae2f573.csv"
-    )
+    typo_path = tmp_path / "fred_get_series_USREC_1777755598046162015_aae2f573.csv"
     middleware = QuantDeveloperToolBoundaryMiddleware()
     request = SimpleNamespace(
         tool_call={
@@ -1508,10 +3480,7 @@ def test_quant_middleware_repairs_nearby_auto_saved_manifest_timestamp(tmp_path)
             "args": {
                 "file_path": "/tmp/outputs/job/code/analysis.py",
                 "content": (
-                    "DATA_FILES = {\n"
-                    f"    'USREC': {str(typo_path)!r},\n"
-                    "}\n"
-                    "print(DATA_FILES)\n"
+                    f"DATA_FILES = {{\n    'USREC': {str(typo_path)!r},\n}}\nprint(DATA_FILES)\n"
                 ),
             },
         },
@@ -1705,7 +3674,7 @@ def test_quant_middleware_allows_mixed_frequency_fred_with_alignment_helper(tmp_
                     f"    'T10Y2Y': {str(yield_path)!r},\n"
                     f"    'ICSA': {str(claims_path)!r},\n"
                     "}\n"
-                    "panel = align_period_features({}, frequency=\"M\", how=\"inner\", timestamp_position=\"start\")\n"
+                    'panel = align_period_features({}, frequency="M", how="inner", timestamp_position="start")\n'
                 ),
             },
         },
@@ -1976,7 +3945,7 @@ def test_quant_middleware_gives_targeted_unemployment_false_alarm_recipe(tmp_pat
     assert "`direct_ols_forecast(...)` and `signal_framework_backtest(...)` are complements" in (
         response.content
     )
-    assert 'threshold=2' in response.content
+    assert "threshold=2" in response.content
     assert "model-vs-baseline RMSE" in response.content
 
 
@@ -2077,6 +4046,39 @@ def test_quant_middleware_blocks_stale_chart_id_handoff_after_save():
     assert response.status == "error"
     assert "Blocked stale quant handoff" in response.content
     assert "writer receives only saved chart IDs" in response.content
+
+
+def test_quant_middleware_blocks_manual_chart_artifact_json_dump(tmp_path):
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    request = SimpleNamespace(
+        tool_call={
+            "name": "write_file",
+            "id": "call-manual-json-dump",
+            "args": {
+                "file_path": str(tmp_path / "outputs" / "job" / "code" / "analysis.py"),
+                "content": (
+                    "import json\n"
+                    "charts = {'labor_replay': {'type': 'dual_axis', 'data': []}}\n"
+                    "execution_summary = {'chart_ids': ['labor_replay']}\n"
+                    "with open('/tmp/outputs/job/charts.json', 'w') as f:\n"
+                    "    json.dump(charts, f, indent=2)\n"
+                    "with open('/tmp/outputs/job/execution_summary.json', 'w') as f:\n"
+                    "    json.dump(execution_summary, f, indent=2)\n"
+                ),
+            },
+        },
+        state={"messages": [AIMessage(content="starting")]},
+    )
+
+    response = middleware.wrap_tool_call(
+        request,
+        lambda req: (_ for _ in ()).throw(AssertionError("handler should not run")),
+    )
+
+    assert response.status == "error"
+    assert "Blocked manual quant artifact serialization" in response.content
+    assert "save_quant_outputs" in response.content
+    assert "non-finite values converted to null" in response.content
 
 
 def test_quant_middleware_blocks_handrolled_regression_forecast(tmp_path):
@@ -2584,15 +4586,13 @@ def test_quant_middleware_allows_period_alias_in_to_period():
 
 
 def test_quant_prompt_blocks_shell_csv_probe_loops():
-    assert "Your first tool call MUST be `write_file`" in QUANT_DEVELOPER_SYSTEM_PROMPT
+    QUANT_DEVELOPER_SYSTEM_PROMPT = _quant_skill_text()
+    assert "first tool call MUST be `write_file`" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert (
         "Do not call `ls`, `glob`, `read_file`, `execute`, or any other inspection tool before the initial script is written"
         in QUANT_DEVELOPER_SYSTEM_PROMPT
     )
-    assert (
-        "Write the first script only to"
-        in QUANT_DEVELOPER_SYSTEM_PROMPT
-    )
+    assert "Write the first script only to" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "code/analysis.py" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "regime_classification.py" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "Trust the data-engineer schema/file-path handoff" in QUANT_DEVELOPER_SYSTEM_PROMPT
@@ -2622,6 +4622,7 @@ def test_quant_prompt_blocks_shell_csv_probe_loops():
 
 
 def test_quant_prompt_aligns_fred_thresholds_to_raw_units():
+    QUANT_DEVELOPER_SYSTEM_PROMPT = _quant_skill_text()
     assert "FRED unit/threshold/display safety" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "`ICSA` and `IC4WSA`" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "raw `Number` counts" in QUANT_DEVELOPER_SYSTEM_PROMPT
@@ -2632,19 +4633,27 @@ def test_quant_prompt_aligns_fred_thresholds_to_raw_units():
 
 
 def test_quant_prompt_covers_pandas_scalar_date_safety():
+    QUANT_DEVELOPER_SYSTEM_PROMPT = _quant_skill_text()
     assert "Pandas scalar date safety" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "numpy.datetime64" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "pd.Timestamp(value).date()" in QUANT_DEVELOPER_SYSTEM_PROMPT
 
 
 def test_quant_prompt_requires_period_key_for_mixed_frequency_fred_merges():
+    QUANT_DEVELOPER_SYSTEM_PROMPT = _quant_skill_text()
     assert "FRED frequency alignment" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert "daily or weekly FRED series such as Treasury yields or initial claims" in QUANT_DEVELOPER_SYSTEM_PROMPT
+    assert (
+        "daily or weekly FRED series such as Treasury yields or initial claims"
+        in QUANT_DEVELOPER_SYSTEM_PROMPT
+    )
     assert 'date.dt.to_period("M")' in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert 'quarter = date.dt.to_period("Q")' in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "Pandas Resampling vs Period Keys" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert "Use `'QE'` for quarterly and `'ME'` for monthly only with `.resample(...)`" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert "Never call `.to_period(\"QE\")` or `.to_period(\"ME\")`" in QUANT_DEVELOPER_SYSTEM_PROMPT
+    assert (
+        "Use `'QE'` for quarterly and `'ME'` for monthly only with `.resample(...)`"
+        in QUANT_DEVELOPER_SYSTEM_PROMPT
+    )
+    assert 'Never call `.to_period("QE")` or `.to_period("ME")`' in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "merge on `quarter`" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert (
         "quarter-start GDP dates directly against quarter-end resample timestamps"
@@ -2671,6 +4680,7 @@ def test_quant_prompt_requires_period_key_for_mixed_frequency_fred_merges():
 
 
 def test_quant_prompt_covers_derived_column_subset_ordering():
+    QUANT_DEVELOPER_SYSTEM_PROMPT = _quant_skill_text()
     assert "Derived-column ordering" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "before taking filtered `.copy()` subsets" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "rebuild the subset or explicitly assign the column" in QUANT_DEVELOPER_SYSTEM_PROMPT
@@ -2678,9 +4688,11 @@ def test_quant_prompt_covers_derived_column_subset_ordering():
 
 
 def test_quant_prompt_covers_pairwise_correlation_self_pair_safety():
+    QUANT_DEVELOPER_SYSTEM_PROMPT = _quant_skill_text()
     assert "Pairwise correlation safety" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert "For simple cross-country or cross-series correlation matrices, prefer pandas directly" in (
-        QUANT_DEVELOPER_SYSTEM_PROMPT
+    assert (
+        "For simple cross-country or cross-series correlation matrices, prefer pandas directly"
+        in (QUANT_DEVELOPER_SYSTEM_PROMPT)
     )
     assert "corr = numeric_frame.corr(min_periods=3).round(3).fillna(0)" in (
         QUANT_DEVELOPER_SYSTEM_PROMPT
@@ -2696,6 +4708,7 @@ def test_quant_prompt_covers_pairwise_correlation_self_pair_safety():
 
 
 def test_quant_prompt_covers_fred_helper_and_json_serialization_safety():
+    QUANT_DEVELOPER_SYSTEM_PROMPT = _quant_skill_text()
     assert "FRED helper consistency" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert (
         'Do not write helpers that still reference `df["value"]`' in QUANT_DEVELOPER_SYSTEM_PROMPT
@@ -2708,6 +4721,7 @@ def test_quant_prompt_covers_fred_helper_and_json_serialization_safety():
 
 
 def test_quant_prompt_covers_pandas_chart_row_construction():
+    QUANT_DEVELOPER_SYSTEM_PROMPT = _quant_skill_text()
     assert "Pandas chart-row construction" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "make the object a named Series before iteration" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert 'df["metric"].resample("QE").mean()' in QUANT_DEVELOPER_SYSTEM_PROMPT
@@ -2723,6 +4737,7 @@ def test_quant_prompt_covers_pandas_chart_row_construction():
 
 
 def test_quant_prompt_points_macro_stats_to_deterministic_helper():
+    QUANT_DEVELOPER_SYSTEM_PROMPT = _quant_skill_text()
     assert "agents/quant_macro_stats.py" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "rolling_correlation" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "lead_lag_correlations" in QUANT_DEVELOPER_SYSTEM_PROMPT
@@ -2738,6 +4753,7 @@ def test_quant_prompt_points_macro_stats_to_deterministic_helper():
 
 
 def test_quant_prompt_requires_recession_window_helper_lookbacks():
+    QUANT_DEVELOPER_SYSTEM_PROMPT = _quant_skill_text()
     assert "For recession-window prompts" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "MUST call `recession_window_summary(...)`" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "`exact_lookbacks`" in QUANT_DEVELOPER_SYSTEM_PROMPT
@@ -2746,6 +4762,7 @@ def test_quant_prompt_requires_recession_window_helper_lookbacks():
 
 
 def test_quant_prompt_keeps_scenario_triggers_in_structured_summary():
+    QUANT_DEVELOPER_SYSTEM_PROMPT = _quant_skill_text()
     assert "If the user asks for scenario triggers" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert 'do not encode those as a chart with `type="table"`' in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "helper-backed `scenario_table` rows" in QUANT_DEVELOPER_SYSTEM_PROMPT
@@ -2753,11 +4770,12 @@ def test_quant_prompt_keeps_scenario_triggers_in_structured_summary():
 
 
 def test_quant_prompt_requires_composite_predictive_indicator_summary_keys():
+    QUANT_DEVELOPER_SYSTEM_PROMPT = _quant_skill_text()
     assert "composite predictive indicator" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "MUST call `build_composite_predictive_indicator(...)`" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "composite recession-risk indicator prompts" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert 'target_col="USREC"' in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert 'prediction_horizon=1' in QUANT_DEVELOPER_SYSTEM_PROMPT
+    assert "prediction_horizon=1" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "Do not compute a second F1 grid search" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "Do not hand-roll full-sample z-scores" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert 'score_history[*]["composite_percentile_0_100"]' in QUANT_DEVELOPER_SYSTEM_PROMPT
@@ -2789,21 +4807,36 @@ def test_quant_prompt_requires_composite_predictive_indicator_summary_keys():
 
 
 def test_quant_prompt_requires_recession_regime_helper_summary_keys():
+    QUANT_DEVELOPER_SYSTEM_PROMPT = _quant_skill_text()
     assert "recession/regime classification prompts" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert 'align_period_features(series_frames, frequency="M", how="outer", timestamp_position="start", fill_method="ffill", fill_limit=2)' in QUANT_DEVELOPER_SYSTEM_PROMPT
+    assert (
+        'align_period_features(series_frames, frequency="M", how="outer", timestamp_position="start", fill_method="ffill", fill_limit=2)'
+        in QUANT_DEVELOPER_SYSTEM_PROMPT
+    )
     assert "MUST call `classify_recession_regime(...)`" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert (
         'classify_recession_regime(scored_frame, date_col="date", indicator_specs=indicator_specs, recession_col="USREC", momentum_periods=3, min_categories=3, analog_count=3)'
         in QUANT_DEVELOPER_SYSTEM_PROMPT
     )
-    assert "Do not hand-roll monthly/quarterly/daily resampling loops" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert "select the latest row that satisfies the helper's minimum category coverage" in QUANT_DEVELOPER_SYSTEM_PROMPT
+    assert (
+        "Do not hand-roll monthly/quarterly/daily resampling loops" in QUANT_DEVELOPER_SYSTEM_PROMPT
+    )
+    assert (
+        "select the latest row that satisfies the helper's minimum category coverage"
+        in QUANT_DEVELOPER_SYSTEM_PROMPT
+    )
     assert "do not run post-success shell probes" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "Use this canonical call shape without reading" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "weak_threshold" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "favorable_when" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert "weak_threshold` must always be numerically less than `strong_threshold" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert 'use `favorable_when="low"` to make lower raw values score stronger' in QUANT_DEVELOPER_SYSTEM_PROMPT
+    assert (
+        "weak_threshold` must always be numerically less than `strong_threshold"
+        in QUANT_DEVELOPER_SYSTEM_PROMPT
+    )
+    assert (
+        'use `favorable_when="low"` to make lower raw values score stronger'
+        in QUANT_DEVELOPER_SYSTEM_PROMPT
+    )
     assert "Do not hand-roll the regime label" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "methods_used` includes `recession_regime_classifier`" in QUANT_DEVELOPER_SYSTEM_PROMPT
     for key in [
@@ -2819,6 +4852,7 @@ def test_quant_prompt_requires_recession_regime_helper_summary_keys():
 
 
 def test_quant_prompt_forbids_runtime_installs_for_optional_statsmodels():
+    QUANT_DEVELOPER_SYSTEM_PROMPT = _quant_skill_text()
     assert "No runtime package installation" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "Never run `pip`" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "`ensurepip`" in QUANT_DEVELOPER_SYSTEM_PROMPT
@@ -2829,6 +4863,7 @@ def test_quant_prompt_forbids_runtime_installs_for_optional_statsmodels():
 
 
 def test_quant_prompt_requires_canonical_econometrics_summary_keys():
+    QUANT_DEVELOPER_SYSTEM_PROMPT = _quant_skill_text()
     assert "do not import `statsmodels` directly" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "do not import `sklearn.linear_model`" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "hand-roll OLS/ARIMA forecast loops" in QUANT_DEVELOPER_SYSTEM_PROMPT
@@ -2865,6 +4900,7 @@ def test_quant_prompt_requires_canonical_econometrics_summary_keys():
 
 
 def test_quant_prompt_gives_unemployment_forecast_helper_recipe():
+    QUANT_DEVELOPER_SYSTEM_PROMPT = _quant_skill_text()
     assert "six-month unemployment forecast prompts" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "period-key alignment" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "dedicated `forecast_frame`" in QUANT_DEVELOPER_SYSTEM_PROMPT
@@ -2887,7 +4923,7 @@ def test_quant_prompt_gives_unemployment_forecast_helper_recipe():
     assert "where the model failed historically, prior false alarms, missed calls" in (
         QUANT_DEVELOPER_SYSTEM_PROMPT
     )
-    assert 'threshold=2, lookback_periods=12, false_alarm_lookahead_periods=12' in (
+    assert "threshold=2, lookback_periods=12, false_alarm_lookahead_periods=12" in (
         QUANT_DEVELOPER_SYSTEM_PROMPT
     )
     assert "do not treat `direct_ols_forecast` as a substitute for hit/miss analysis" in (

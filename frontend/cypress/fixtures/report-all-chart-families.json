@@ -1,0 +1,186 @@
+{
+  "schema_version": 1,
+  "job_id": "chart_family_audit",
+  "created_at": "2026-05-01T00:00:00+00:00",
+  "query": "Render every supported governed chart family.",
+  "title": "Chart Family Audit",
+  "executive_summary": "This fixture exercises each governed report chart family.",
+  "markdown": "## Executive Summary\nThis fixture exercises each governed report chart family.\n\n<!-- CHART:trend_line -->\n<!-- CHART:stacked_bar -->\n<!-- CHART:area_signal -->\n<!-- CHART:composed_overlay -->\n<!-- CHART:bubble_scatter -->\n<!-- CHART:donut_mix -->\n<!-- CHART:radar_profile -->\n<!-- CHART:radial_components -->\n<!-- CHART:filter_funnel -->\n<!-- CHART:contribution_treemap -->\n<!-- CHART:signal_flow -->\n<!-- CHART:contribution_sunburst -->\n\n## Research Query\nRender every supported governed chart family.",
+  "charts": {
+    "trend_line": {
+      "id": "trend_line",
+      "type": "line",
+      "title": "Trend Line",
+      "description": "Simple trend over time.",
+      "xAxisKey": "period",
+      "series": [{ "dataKey": "value", "label": "Value", "color": "#3b82f6" }],
+      "data": [
+        { "period": "2026 Q1", "value": 1.2 },
+        { "period": "2026 Q2", "value": 1.5 },
+        { "period": "2026 Q3", "value": 1.7 }
+      ]
+    },
+    "stacked_bar": {
+      "id": "stacked_bar",
+      "type": "bar",
+      "title": "Stacked Horizontal Bar",
+      "description": "Stacked horizontal bars by scenario.",
+      "xAxisKey": "scenario",
+      "layout": "vertical",
+      "series": [
+        { "dataKey": "base", "label": "Base", "color": "#3b82f6", "stackId": "risk" },
+        { "dataKey": "stress", "label": "Stress", "color": "#f59e0b", "stackId": "risk" }
+      ],
+      "data": [
+        { "scenario": "Soft landing", "base": 64, "stress": 18 },
+        { "scenario": "Hard landing", "base": 22, "stress": 54 }
+      ]
+    },
+    "area_signal": {
+      "id": "area_signal",
+      "type": "area",
+      "title": "Area Signal",
+      "description": "Signal level over time.",
+      "xAxisKey": "period",
+      "series": [{ "dataKey": "score", "label": "Score", "color": "#10b981" }],
+      "data": [
+        { "period": "Jan", "score": 20 },
+        { "period": "Feb", "score": 35 },
+        { "period": "Mar", "score": 30 }
+      ]
+    },
+    "composed_overlay": {
+      "id": "composed_overlay",
+      "type": "composed",
+      "title": "Composed Overlay",
+      "description": "Bars with a line overlay.",
+      "xAxisKey": "period",
+      "series": [
+        { "dataKey": "volume", "label": "Volume", "color": "#8b5cf6", "type": "bar", "yAxisId": "left" },
+        { "dataKey": "rate", "label": "Rate", "color": "#ef4444", "type": "line", "yAxisId": "right" }
+      ],
+      "data": [
+        { "period": "Jan", "volume": 120, "rate": 3.1 },
+        { "period": "Feb", "volume": 150, "rate": 3.3 },
+        { "period": "Mar", "volume": 135, "rate": 3.0 }
+      ]
+    },
+    "bubble_scatter": {
+      "id": "bubble_scatter",
+      "type": "scatter",
+      "title": "Bubble Scatter",
+      "description": "Relationship with bubble size.",
+      "xKey": "growth",
+      "yKey": "inflation",
+      "sizeKey": "weight",
+      "colorKey": "color",
+      "xLabel": "Growth",
+      "yLabel": "Inflation",
+      "color": "#3b82f6",
+      "data": [
+        { "growth": 1.2, "inflation": 2.7, "weight": 20, "color": "#3b82f6" },
+        { "growth": 2.4, "inflation": 3.1, "weight": 35, "color": "#f59e0b" },
+        { "growth": 3.0, "inflation": 2.2, "weight": 28, "color": "#10b981" }
+      ]
+    },
+    "donut_mix": {
+      "id": "donut_mix",
+      "type": "pie",
+      "title": "Donut Mix",
+      "description": "Share by component.",
+      "innerRadius": "45%",
+      "data": [
+        { "name": "Labor", "value": 40, "color": "#3b82f6" },
+        { "name": "Credit", "value": 30, "color": "#f59e0b" },
+        { "name": "Output", "value": 30, "color": "#10b981" }
+      ]
+    },
+    "radar_profile": {
+      "id": "radar_profile",
+      "type": "radar",
+      "title": "Radar Profile",
+      "description": "Normalized profile by dimension.",
+      "angleKey": "metric",
+      "series": [{ "dataKey": "score", "label": "Score", "color": "#3b82f6" }],
+      "data": [
+        { "metric": "Labor", "score": 70 },
+        { "metric": "Credit", "score": 55 },
+        { "metric": "Output", "score": 35 },
+        { "metric": "Prices", "score": 62 }
+      ]
+    },
+    "radial_components": {
+      "id": "radial_components",
+      "type": "radialBar",
+      "title": "Radial Components",
+      "description": "Positive component scores.",
+      "data": [
+        { "name": "Labor", "value": 70, "color": "#3b82f6" },
+        { "name": "Credit", "value": 55, "color": "#f59e0b" },
+        { "name": "Output", "value": 35, "color": "#10b981" }
+      ]
+    },
+    "filter_funnel": {
+      "id": "filter_funnel",
+      "type": "funnel",
+      "title": "Filter Funnel",
+      "description": "Staged observation filters.",
+      "data": [
+        { "name": "All observations", "value": 120, "color": "#3b82f6" },
+        { "name": "Complete macro panel", "value": 94, "color": "#f59e0b" },
+        { "name": "Signal active", "value": 28, "color": "#10b981" }
+      ]
+    },
+    "contribution_treemap": {
+      "id": "contribution_treemap",
+      "type": "treemap",
+      "title": "Contribution Treemap",
+      "description": "Contribution hierarchy by size.",
+      "data": [
+        { "name": "Labor", "size": 40, "color": "#3b82f6" },
+        { "name": "Credit", "size": 30, "color": "#f59e0b" },
+        { "name": "Output", "size": 30, "color": "#10b981" }
+      ]
+    },
+    "signal_flow": {
+      "id": "signal_flow",
+      "type": "sankey",
+      "title": "Signal Flow",
+      "description": "Flow decomposition across components.",
+      "data": {
+        "nodes": [
+          { "name": "Inputs" },
+          { "name": "Labor" },
+          { "name": "Credit" },
+          { "name": "Composite" }
+        ],
+        "links": [
+          { "source": 0, "target": 1, "value": 40 },
+          { "source": 0, "target": 2, "value": 30 },
+          { "source": 1, "target": 3, "value": 40 },
+          { "source": 2, "target": 3, "value": 30 }
+        ]
+      }
+    },
+    "contribution_sunburst": {
+      "id": "contribution_sunburst",
+      "type": "sunburst",
+      "title": "Contribution Sunburst",
+      "description": "Nested contribution shares.",
+      "data": {
+        "name": "Total",
+        "children": [
+          { "name": "Labor", "value": 40, "fill": "#3b82f6" },
+          { "name": "Credit", "value": 30, "fill": "#f59e0b" },
+          { "name": "Output", "value": 30, "fill": "#10b981" }
+        ]
+      }
+    }
+  },
+  "data_sources": [],
+  "metadata": {
+    "analysis_type": "chart_audit",
+    "chart_count": 12,
+    "word_count": 20
+  }
+}

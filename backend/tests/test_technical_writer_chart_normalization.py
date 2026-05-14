@@ -442,7 +442,7 @@ def test_normalizes_recharts_children_axis_shape_for_report_schema():
     )
 
 
-def test_normalizes_unsupported_radar_chart_to_bar_for_report_schema():
+def test_preserves_supported_radar_chart_for_report_schema():
     charts = {
         "period_comparison_radar": {
             "chart_type": "radar",
@@ -468,9 +468,8 @@ def test_normalizes_unsupported_radar_chart_to_bar_for_report_schema():
     normalized = _normalize_chart_definitions(charts)
     chart = normalized["period_comparison_radar"]
 
-    assert chart["type"] == "bar"
-    assert chart["chart_type"] == "bar"
-    assert chart["xAxisKey"] == "period"
+    assert chart["type"] == "radar"
+    assert chart["angleKey"] == "period"
     assert [series["dataKey"] for series in chart["series"]] == [
         "CPI_YoY",
         "Unemployment",
@@ -573,4 +572,56 @@ def test_normalizes_legacy_pie_size_to_value_for_report_schema():
         charts=normalized,
         data_sources=[],
         metadata={"analysis_type": "macro_indicator", "chart_count": 1, "word_count": 8},
+    )
+
+
+def test_normalizes_new_chart_type_aliases_for_report_schema():
+    charts = {
+        "radial_components": {
+            "chart_type": "radial_bar",
+            "title": "Radial Components",
+            "description": "Component counts.",
+            "data": [{"name": "Labor", "size": 12}],
+        },
+        "signal_flow": {
+            "chart_type": "sankeychart",
+            "title": "Signal Flow",
+            "description": "Flow decomposition.",
+            "data": {
+                "nodes": [{"name": "Inputs"}, {"name": "Labor"}],
+                "links": [{"source": 0, "target": 1, "value": 12}],
+            },
+        },
+        "hierarchy": {
+            "chart_type": "sunburstchart",
+            "title": "Hierarchy",
+            "description": "Nested contributions.",
+            "data": {"name": "Total", "children": [{"name": "Labor", "value": 40}]},
+        },
+    }
+
+    normalized = _normalize_chart_definitions(charts)
+
+    assert normalized["radial_components"]["type"] == "radialBar"
+    assert normalized["radial_components"]["data"][0]["value"] == 12
+    assert normalized["signal_flow"]["type"] == "sankey"
+    assert normalized["hierarchy"]["type"] == "sunburst"
+
+    ResearchReport(
+        schema_version=1,
+        job_id="job-test",
+        created_at="2026-04-28T00:00:00+00:00",
+        query="Show macro components.",
+        title="Macro Components",
+        executive_summary="Macro components were charted.",
+        markdown=(
+            "## Executive Summary\nSummary.\n\n"
+            "<!-- CHART:radial_components -->\n"
+            "<!-- CHART:signal_flow -->\n"
+            "<!-- CHART:hierarchy -->\n\n"
+            "## Research Query\nQuery."
+        ),
+        charts=normalized,
+        data_sources=[],
+        metadata={"analysis_type": "macro_indicator", "chart_count": 3, "word_count": 8},
     )

@@ -81,6 +81,59 @@ def test_plan_report_structure_reads_chart_id_list_shape(tmp_path):
     assert result["chart_ids"] == ["yield_curve_vs_recessions"]
 
 
+def test_plan_report_structure_surfaces_chart_facts_for_draft(tmp_path):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text(
+        json.dumps(
+            {
+                "rates_inflation_overlay": {
+                    "id": "rates_inflation_overlay",
+                    "type": "composed",
+                    "title": "Rates And Inflation",
+                    "description": "Policy rates and inflation.",
+                    "xAxisKey": "date",
+                    "series": [
+                        {"dataKey": "FEDFUNDS", "label": "Fed funds", "type": "line"},
+                        {"dataKey": "CURVE_SPREAD", "label": "10Y-2Y yield spread", "type": "line"},
+                        {"dataKey": "cpi_yoy", "label": "CPI YoY", "type": "bar"},
+                    ],
+                    "data": [
+                        {
+                            "date": "2026-01",
+                            "FEDFUNDS": 3.64,
+                            "CURVE_SPREAD": -0.35,
+                            "cpi_yoy": 2.4,
+                        }
+                    ],
+                    "referenceAreas": [{"label": "Latest year", "x1": "2025-01", "x2": "2026-01"}],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = json.loads(
+        plan_report_structure.func(
+            query_type="macro_indicator",
+            charts_json_path=str(charts_path),
+            execution_summary=json.dumps({"statistical_summary": "Computed macro facts."}),
+            original_query="Assess soft landing versus delayed recession with charts.",
+            runtime=_Runtime(),
+        )
+    )
+
+    chart_facts = result["chart_facts_for_draft"]
+    draft = result["execution_summary_for_draft"]
+    assert "Chart facts from charts.json" in chart_facts
+    assert "rates_inflation_overlay: type=composed" in chart_facts
+    assert "Fed funds (FEDFUNDS, line)" in chart_facts
+    assert "10Y-2Y yield spread (CURVE_SPREAD, line)" in chart_facts
+    assert "referenceAreas=Latest year" in chart_facts
+    assert draft.startswith("Chart facts from charts.json")
+    assert "Computed macro facts." in draft
+    assert "chart_facts_for_draft" in result["general_rules"]
+
+
 def test_plan_report_structure_treats_prose_artifact_paths_as_missing(tmp_path):
     long_prose = (
         "Quantitative model output artifacts charts.json and execution_summary.json "
@@ -1939,6 +1992,71 @@ def test_write_research_report_preserves_legacy_dual_axis_line_bar_charts(tmp_pa
     assert report["charts"]["chart_1"]["series"][-1]["yAxisId"] == "right"
 
 
+def test_write_research_report_normalizes_legacy_dual_axis_config_charts(tmp_path):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text(
+        json.dumps(
+            [
+                {
+                    "chart_id": "labor_replay",
+                    "title": "Labor Market",
+                    "type": "dual_axis",
+                    "data": [
+                        {"date": "2025-01-01", "UNRATE": 4.0, "PAYEMS_mil": 158.0},
+                        {"date": "2025-02-01", "UNRATE": 4.1, "PAYEMS_mil": 158.2},
+                    ],
+                    "config": {
+                        "xAxis": {"dataKey": "date"},
+                        "yAxis": [
+                            {"dataKey": "UNRATE", "label": "Unemployment (%)"},
+                            {"dataKey": "PAYEMS_mil", "label": "Payrolls (M)"},
+                        ],
+                        "colors": ["#2563eb", "#dc2626"],
+                    },
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    runtime = SimpleNamespace(context=SimpleNamespace(job_id="job-1", output_dir=str(tmp_path)))
+
+    result = json.loads(
+        write_research_report.func(
+            runtime=runtime,
+            markdown=(
+                "## Executive Summary\nLabor remains firm.\n\n"
+                "The labor replay compares unemployment against payroll levels.\n\n"
+                "<!-- CHART:labor_replay -->\n\n"
+                "## Research Query\nUse charts to compare current labor with prior cycles."
+            ),
+            charts_json_path=str(charts_path),
+            original_query="Use charts to compare current labor with prior cycles.",
+            title="Labor Replay",
+            executive_summary="Labor remains firm.",
+            analysis_type="macro_indicator",
+        )
+    )
+    gate = json.loads(
+        validate_research_report_file.func(
+            runtime=runtime,
+            report_json_path=result["report_path"],
+        )
+    )
+    report = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
+
+    assert result["validation_issues"] == []
+    assert gate["passes_gate"] is True
+    assert list(report["charts"].keys()) == ["labor_replay"]
+    assert report["charts"]["labor_replay"]["type"] == "composed"
+    assert report["charts"]["labor_replay"]["xAxisKey"] == "date"
+    assert [series["dataKey"] for series in report["charts"]["labor_replay"]["series"]] == [
+        "UNRATE",
+        "PAYEMS_mil",
+    ]
+    assert report["charts"]["labor_replay"]["series"][0]["yAxisId"] == "left"
+    assert report["charts"]["labor_replay"]["series"][1]["yAxisId"] == "right"
+
+
 def test_write_research_report_embeds_scenario_table_and_gate_passes(tmp_path):
     charts_path = tmp_path / "charts.json"
     charts_path.write_text("{}", encoding="utf-8")
@@ -2862,6 +2980,106 @@ def test_validate_research_report_file_rejects_missing_scenario_table_for_scenar
     assert gate["scenarios"]["missing_required_rows"] == ["base", "bull", "bear"]
 
 
+def test_validate_research_report_file_rejects_zero_charts_for_chart_query(tmp_path):
+    report_path = tmp_path / "report.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "job_id": "job-1",
+                "created_at": "2026-04-29T00:00:00+00:00",
+                "query": "Build a compact dashboard with charts showing consumer stress.",
+                "title": "Consumer Stress Dashboard",
+                "executive_summary": "No chart artifacts were produced.",
+                "markdown": (
+                    "## Executive Summary\nNo chart artifacts were produced.\n\n"
+                    "## Research Query\nBuild a compact dashboard with charts showing consumer stress."
+                ),
+                "charts": {},
+                "data_sources": [],
+                "metadata": {
+                    "analysis_type": "macro_indicator",
+                    "chart_count": 0,
+                    "word_count": 12,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    runtime = SimpleNamespace(context=SimpleNamespace(job_id="job-1", output_dir=str(tmp_path)))
+
+    gate = json.loads(
+        validate_research_report_file.func(
+            runtime=runtime,
+            report_json_path=str(report_path),
+            auto_patch=False,
+        )
+    )
+
+    assert gate["passes_gate"] is False
+    assert gate["blockers"] == [
+        "query requested charts but report.json contains zero chart definitions"
+    ]
+
+
+def test_validate_research_report_file_does_not_strip_broken_chart_markers_for_chart_query(
+    tmp_path,
+):
+    report_path = tmp_path / "report.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "job_id": "job-1",
+                "created_at": "2026-04-29T00:00:00+00:00",
+                "query": "Show charts for inflation and labor stress.",
+                "title": "Macro Chart Report",
+                "executive_summary": "Inflation and labor were reviewed.",
+                "markdown": (
+                    "## Executive Summary\nInflation and labor were reviewed.\n\n"
+                    "<!-- CHART:inflation_replay -->\n\n"
+                    "<!-- CHART:labor_replay -->\n\n"
+                    "## Research Query\nShow charts for inflation and labor stress."
+                ),
+                "charts": {
+                    "inflation_replay": {
+                        "id": "inflation_replay",
+                        "type": "line",
+                        "title": "Inflation",
+                        "description": "Inflation over time.",
+                        "xAxisKey": "date",
+                        "series": [
+                            {"dataKey": "cpi", "label": "CPI", "color": "#2563eb"}
+                        ],
+                        "data": [{"date": "2026-01-01", "cpi": 3.0}],
+                    }
+                },
+                "data_sources": [],
+                "metadata": {
+                    "analysis_type": "macro_indicator",
+                    "chart_count": 2,
+                    "word_count": 12,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    runtime = SimpleNamespace(context=SimpleNamespace(job_id="job-1", output_dir=str(tmp_path)))
+
+    gate = json.loads(
+        validate_research_report_file.func(
+            runtime=runtime,
+            report_json_path=str(report_path),
+        )
+    )
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+
+    assert gate["passes_gate"] is False
+    assert gate["charts"]["broken_references"] == ["labor_replay"]
+    assert "broken chart references" in gate["blockers"][0]
+    assert "<!-- CHART:labor_replay -->" in report["markdown"]
+
+
 def test_validate_research_report_file_rejects_unreferenced_chart_definitions(tmp_path):
     charts_path = tmp_path / "charts.json"
     charts_path.write_text(
@@ -2923,6 +3141,65 @@ def test_validate_research_report_file_rejects_unreferenced_chart_definitions(tm
     assert "charts defined in charts.json but not referenced" in gate["blockers"][0]
 
 
+def test_validate_research_report_file_rejects_duplicate_chart_markers(tmp_path):
+    report_path = tmp_path / "report.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "job_id": "job-1",
+                "created_at": "2026-04-28T00:00:00+00:00",
+                "query": "Build a chart report.",
+                "title": "Chart Report",
+                "executive_summary": "Forecast was charted.",
+                "markdown": (
+                    "## Executive Summary\nForecast was charted.\n\n"
+                    "<!-- CHART:forecast_band -->\n"
+                    "<!-- CHART:forecast_band -->\n\n"
+                    "## Research Query\nBuild a chart report."
+                ),
+                "charts": {
+                    "forecast_band": {
+                        "id": "forecast_band",
+                        "type": "line",
+                        "title": "Forecast Band",
+                        "description": "Forecast path.",
+                        "xAxisKey": "date",
+                        "series": [
+                            {
+                                "dataKey": "forecast",
+                                "label": "Forecast",
+                                "color": "#2563eb",
+                            }
+                        ],
+                        "data": [{"date": "2026-01", "forecast": 4.1}],
+                    }
+                },
+                "data_sources": [],
+                "metadata": {
+                    "analysis_type": "macro_indicator",
+                    "chart_count": 2,
+                    "word_count": 12,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    runtime = SimpleNamespace(context=SimpleNamespace(job_id="job-1", output_dir=str(tmp_path)))
+
+    gate = json.loads(
+        validate_research_report_file.func(
+            runtime=runtime,
+            report_json_path=str(report_path),
+            auto_patch=False,
+        )
+    )
+
+    assert gate["passes_gate"] is False
+    assert gate["charts"]["duplicate_markers"] == ["forecast_band"]
+    assert "duplicate chart markers" in gate["blockers"][0]
+
+
 def test_validate_research_report_file_rejects_frontend_non_renderable_chart(tmp_path):
     report_path = tmp_path / "report.json"
     report_path.write_text(
@@ -2978,6 +3255,66 @@ def test_validate_research_report_file_rejects_frontend_non_renderable_chart(tmp
         "series missing_score has no finite numeric values"
     ]
     assert "frontend Recharts render contract" in gate["blockers"][0]
+
+
+def test_validate_research_report_file_rejects_duplicate_chart_axis_rows(tmp_path):
+    report_path = tmp_path / "report.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "job_id": "job-1",
+                "created_at": "2026-04-28T00:00:00+00:00",
+                "query": "Show a chart of the yield spread.",
+                "title": "Yield Spread",
+                "executive_summary": "The curve remains inverted.",
+                "markdown": (
+                    "## Executive Summary\nThe curve remains inverted.\n\n"
+                    "<!-- CHART:yield_spread -->\n\n"
+                    "## Research Query\nShow a chart of the yield spread."
+                ),
+                "charts": {
+                    "yield_spread": {
+                        "id": "yield_spread",
+                        "type": "line",
+                        "title": "Yield Spread",
+                        "description": "Monthly yield spread.",
+                        "xAxisKey": "date",
+                        "series": [
+                            {
+                                "dataKey": "spread",
+                                "label": "10Y-3M",
+                                "color": "#3b82f6",
+                            }
+                        ],
+                        "data": [
+                            {"date": "2026-01-01", "spread": -1.1},
+                            {"date": "2026-01-01", "spread": -1.0},
+                            {"date": "2026-02-01", "spread": -0.9},
+                        ],
+                    }
+                },
+                "data_sources": [],
+                "metadata": {"analysis_type": "macro_indicator", "chart_count": 1, "word_count": 12},
+            }
+        ),
+        encoding="utf-8",
+    )
+    runtime = SimpleNamespace(context=SimpleNamespace(job_id="job-1", output_dir=str(tmp_path)))
+
+    gate = json.loads(
+        validate_research_report_file.func(
+            runtime=runtime,
+            report_json_path=str(report_path),
+            auto_patch=False,
+        )
+    )
+
+    assert gate["passes_gate"] is False
+    assert gate["chart_semantics"]["blockers"]["yield_spread"] == [
+        "1 duplicate x-axis rows may render ambiguously"
+    ]
+    assert "chart data semantics audit" in gate["blockers"][0]
 
 
 def test_write_research_report_embeds_charts_object_list_shape(tmp_path):
@@ -3304,6 +3641,58 @@ def test_technical_writer_middleware_stops_after_successful_validation():
         "report_json": "/tmp/outputs/job-1/report.json",
         "chart_ids": ["macro_signal"],
     }
+
+
+def test_technical_writer_middleware_returns_quant_failure_for_zero_chart_gate():
+    middleware = next(
+        item
+        for item in TECHNICAL_WRITER_SUBAGENT["middleware"]
+        if isinstance(item, TechnicalWriterToolBoundaryMiddleware)
+    )
+    request = _Request(
+        [
+            SimpleNamespace(name="write_research_report"),
+            SimpleNamespace(name="validate_research_report_file"),
+        ],
+        messages=[
+            ToolMessage(
+                content=json.dumps(
+                    {
+                        "report_path": "/tmp/outputs/job-1/report.json",
+                        "chart_count": 0,
+                        "validation_issues": [],
+                    }
+                ),
+                name="write_research_report",
+                tool_call_id="call-write",
+            ),
+            ToolMessage(
+                content=json.dumps(
+                    {
+                        "passes_gate": False,
+                        "charts": {"defined_charts": []},
+                        "blockers": [
+                            "query requested charts but report.json contains zero chart definitions"
+                        ],
+                    }
+                ),
+                name="validate_research_report_file",
+                tool_call_id="call-validate",
+            ),
+        ],
+    )
+
+    response = middleware.wrap_model_call(
+        request,
+        lambda req: ModelResponse(result=[AIMessage(content="should not run")]),
+    )
+
+    handoff = json.loads(response.result[0].content)
+    assert handoff["status"] == "failed"
+    assert handoff["report_json"] == "/tmp/outputs/job-1/report.json"
+    assert handoff["required_upstream"] == "quant-developer"
+    assert handoff["chart_ids"] == []
+    assert "zero chart definitions" in handoff["reason"]
 
 
 def test_technical_writer_middleware_blocks_inherited_filesystem_tool_calls():

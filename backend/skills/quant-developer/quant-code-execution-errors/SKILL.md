@@ -1,5 +1,5 @@
 ---
-name: code-execution-errors
+name: quant-code-execution-errors
 description: Concise rules for fixing common Python execution errors
 triggers: [error, fix, retry, pandas, KeyError, FileNotFoundError]
 ---
@@ -17,6 +17,10 @@ triggers: [error, fix, retry, pandas, KeyError, FileNotFoundError]
 ## Date Labels
 - **Error:** Unsupported `strftime` directives such as `%Q`
 - **Fix:** Build quarter labels with attributes, e.g. `f"{dt.year} Q{dt.quarter}"`. For month labels, use `f"{dt.year}-{dt.month:02d}"`.
+- **Pandas scalar date safety:** Values from `.values[0]` are often
+  `numpy.datetime64`; they do not have `.date()`. Convert with
+  `pd.Timestamp(value).date()` or select rows with `.iloc[0]` before formatting
+  dates.
 
 ## Data Merging
 - **Error:** `KeyError: 'date'`
@@ -36,6 +40,20 @@ triggers: [error, fix, retry, pandas, KeyError, FileNotFoundError]
 - **Error:** `KeyError` for a derived column such as `*_growth_*`, `*_forward_*`, `tight`, `period`, or a regime flag after filtering a dataframe.
 - **Fix:** Check which dataframe owns the column. Derived columns must be created before making filtered `.copy()` subsets that reference them; otherwise rebuild the subset after adding the column, or explicitly assign the derived column onto the subset.
 - **Anti-loop:** Do not keep moving unrelated code after the same missing-column traceback. Read the traceback, inspect the line that references the missing column, and patch the dataframe construction order once.
+
+## Statistical Dataframes
+- **Pairwise correlation safety:** For simple cross-country or cross-series
+  correlation matrices, prefer pandas directly: select numeric columns,
+  collapse duplicate labels first if needed, then use
+  `corr = numeric_frame.corr(min_periods=3).round(3).fillna(0)`.
+- Use `scipy.stats.pearsonr` only when p-values are explicitly needed. Do not
+  run `pearsonr` on self-pairs or duplicate column selections such as
+  `pivot[[c1, c1]]`; pandas returns duplicate column names and `valid[c1]`
+  becomes a DataFrame instead of a Series. Set self-correlations directly to
+  `1.0`/`0.0` or skip them, and for non-self pairs pass
+  `valid[c1].to_numpy(dtype=float)` and `valid[c2].to_numpy(dtype=float)`.
+  Collapse duplicate pivot columns first with
+  `pivot = pivot.groupby(level=0, axis=1).mean()`.
 
 ## Charts JSON
 - **Error:** `JSONDecodeError`

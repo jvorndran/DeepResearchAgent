@@ -1,7 +1,6 @@
 ---
 name: company-fundamental-research-workflow
-description: Deep public-company filed-fundamentals workflow using SEC EDGAR only
-triggers: [fundamental research, company analysis, business quality, financial health, balance sheet, cash flow, margins, SEC, 10-K, 10-Q]
+description: Use for public-company or ticker fundamental research, business quality, financial health, balance sheet, cash-flow, margin, SEC, 10-K, and 10-Q requests.
 ---
 
 # Company Fundamental Research Blueprint

@@ -1,7 +1,6 @@
 ---
 name: paths-artifacts-and-sources
-description: Job paths, %Q avoidance, and data_sources JSON for delegations
-triggers: [path, job_id, charts.json, report.json, data_sources, %Q, absolute path]
+description: Use for every delegation involving job_id paths, charts.json, report.json, FRED auto-saved paths, quarterly labels, absolute paths, or data_sources JSON.
 ---
 
 # Paths, job id, and delegation payloads
@@ -9,7 +8,9 @@ triggers: [path, job_id, charts.json, report.json, data_sources, %Q, absolute pa
 ## Paths
 
 - All paths must be **absolute** and use **forward slashes** only.
-- Copy the **Job ID** from the user message verbatim into every path under `outputs/{job_id}/` and `data/{job_id}/`. Never invent or shorten `job_...` folder names.
+- Copy the **Job ID** from the user message verbatim into every output path under `/home/vorndranj/projects/DeepResearchAgent/backend/outputs/{job_id}/`. Never invent, shorten, or rename `job_...` folder names.
+- Do not demand exact data filenames or job-folder copies from data-engineer. Use the saved paths it returns.
+- If FRED returns `status:auto_saved`, the returned `file_path` (often under `/home/vorndranj/projects/DeepResearchAgent/backend/data/_auto/`) is already the canonical data path; pass it unchanged to quant-developer and do not call `save_data`.
 
 ## Quant-developer
 

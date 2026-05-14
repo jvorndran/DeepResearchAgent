@@ -8,6 +8,8 @@ triggers: [SEC, EDGAR, company facts, revenue, net income, margin, cash flow, as
 
 Use `sec_fetch_company_facts` for issuer-level SEC facts only: revenue, net income, gross profit, operating income, operating cash flow, capital expenditures, R&D expense, SG&A expense, diluted EPS, cash, securities, debt, equity, assets, liabilities, shares, and recent 10-K/10-Q filing metadata.
 
+## SEC COMPANY FACTS
+
 1. **Fetch:** `sec_fetch_company_facts(identifier=<ticker_or_cik>, periods<=5)`.
 2. **Handoff:** The tool saves a parsed fiscal-year fundamentals CSV and returns `data_files`, `row_counts`, `schema_summary`, and SEC metadata. Use that path directly.
 3. **Citations:** Tell downstream agents to cite SEC `data.sec.gov` companyfacts/submissions endpoints from the tool metadata.

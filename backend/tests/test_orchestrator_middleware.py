@@ -1,8 +1,11 @@
+import json
 from types import SimpleNamespace
 
 from langchain.agents.middleware.types import ModelResponse
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, ToolMessage
+from langgraph.types import Command
 
+import agents.quantitative_developer as quant_dev
 from agents.orchestrator import (
     OrchestratorToolBoundaryMiddleware,
     StripToolCallContentMiddleware,
@@ -89,6 +92,40 @@ def test_orchestrator_tool_boundary_blocks_approval_emit_after_quality_rejection
     assert response.tool_call_id == "call-bad-approval"
     assert response.status == "error"
     assert "latest structured quality-analyst decision is rejected" in response.content
+    assert "Do not tell the user the report is approved" in response.content
+
+
+def test_orchestrator_tool_boundary_blocks_approval_emit_after_failed_report_gate():
+    middleware = OrchestratorToolBoundaryMiddleware()
+    request = SimpleNamespace(
+        tool_call={
+            "name": "emit_chat_message",
+            "id": "call-bad-approval",
+            "args": {"markdown": "Report approved: outputs/improver-123/report.json"},
+        },
+        state={
+            "messages": [
+                AIMessage(
+                    content=(
+                        '{"status":"failed",'
+                        '"report_json":"/tmp/outputs/improver-123/report.json",'
+                        '"required_upstream":"quant-developer",'
+                        '"reason":"query requested charts but report.json contains zero chart definitions",'
+                        '"required_fixes":["Regenerate quant artifacts."]}'
+                    )
+                )
+            ]
+        },
+    )
+
+    response = middleware.wrap_tool_call(
+        request,
+        lambda req: (_ for _ in ()).throw(AssertionError("handler should not run")),
+    )
+
+    assert response.tool_call_id == "call-bad-approval"
+    assert response.status == "error"
+    assert "report gate failed" in response.content
     assert "Do not tell the user the report is approved" in response.content
 
 
@@ -233,6 +270,188 @@ def test_orchestrator_tool_boundary_allows_qa_requested_quant_fix_after_failed_h
     )
 
     assert response.content == "delegated"
+
+
+def test_orchestrator_tool_boundary_normalizes_invalid_quant_task_result(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(quant_dev, "OUTPUT_BASE_DIR", str(tmp_path))
+    middleware = OrchestratorToolBoundaryMiddleware()
+    request = SimpleNamespace(
+        tool_call={
+            "name": "task",
+            "id": "call-invalid-quant-result",
+            "args": {
+                "subagent_type": "quant-developer",
+                "description": (
+                    "Write and run /home/vorndranj/projects/DeepResearchAgent/"
+                    "backend/outputs/improver-test/code/analysis.py, then return "
+                    "charts_json, execution_summary_json, and chart_ids."
+                ),
+            },
+        },
+        state={"messages": []},
+    )
+
+    response = middleware.wrap_tool_call(
+        request,
+        lambda req: ToolMessage(
+            content="1\t--- 2\tname: quant-script-workflow",
+            name="task",
+            tool_call_id=req.tool_call["id"],
+            status="success",
+        ),
+    )
+
+    handoff = json.loads(response.content)
+    output_dir = tmp_path / "improver-test"
+    assert response.tool_call_id == "call-invalid-quant-result"
+    assert response.status == "success"
+    assert handoff["status"] == "failed"
+    assert handoff["failure_stage"] == "quant_invalid_task_handoff"
+    assert handoff["methods_used"] == ["orchestrator_quant_task_result_guard"]
+    assert handoff["charts_json"] == str(output_dir / "charts.json")
+    assert handoff["execution_summary_json"] == str(output_dir / "execution_summary.json")
+    assert json.loads((output_dir / "charts.json").read_text(encoding="utf-8")) == []
+    summary = json.loads((output_dir / "execution_summary.json").read_text())
+    assert summary["failure_stage"] == "quant_invalid_task_handoff"
+
+
+def test_orchestrator_quant_failure_handoff_uses_runtime_job_id_over_prompt_examples(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(quant_dev, "OUTPUT_BASE_DIR", str(tmp_path))
+    middleware = OrchestratorToolBoundaryMiddleware()
+    request = SimpleNamespace(
+        tool_call={
+            "name": "task",
+            "id": "call-invalid-current-job",
+            "args": {
+                "subagent_type": "quant-developer",
+                "description": "Run the current job and return compact quant artifacts.",
+            },
+        },
+        state={
+            "messages": [
+                AIMessage(
+                    content=(
+                        "Instruction example: copy paths like "
+                        "/app/outputs/job_a61b3825/charts.json exactly."
+                    )
+                )
+            ]
+        },
+        runtime=SimpleNamespace(context=SimpleNamespace(job_id="job_6299bc0b")),
+    )
+
+    response = middleware.wrap_tool_call(
+        request,
+        lambda req: ToolMessage(
+            content="The quant task ended without a compact handoff.",
+            name="task",
+            tool_call_id=req.tool_call["id"],
+            status="success",
+        ),
+    )
+
+    handoff = json.loads(response.content)
+    output_dir = tmp_path / "job_6299bc0b"
+    assert handoff["charts_json"] == str(output_dir / "charts.json")
+    assert handoff["execution_summary_json"] == str(output_dir / "execution_summary.json")
+    assert (output_dir / "execution_summary.json").is_file()
+    assert not (tmp_path / "job_a61b3825").exists()
+
+
+def test_orchestrator_tool_boundary_normalizes_invalid_quant_command_result(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(quant_dev, "OUTPUT_BASE_DIR", str(tmp_path))
+    middleware = OrchestratorToolBoundaryMiddleware()
+    request = SimpleNamespace(
+        tool_call={
+            "name": "task",
+            "id": "call-invalid-quant-command",
+            "args": {
+                "subagent_type": "quant-developer",
+                "description": (
+                    "Write and run /home/vorndranj/projects/DeepResearchAgent/"
+                    "backend/outputs/improver-command/code/analysis.py, then return "
+                    "compact JSON with charts_json, execution_summary_json, and chart_ids."
+                ),
+            },
+        },
+        state={"messages": []},
+    )
+
+    response = middleware.wrap_tool_call(
+        request,
+        lambda req: Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=(
+                            "A successful script stdout that includes `charts_json`, "
+                            "`execution_summary_json`, and `chart_ids` is already a "
+                            "validation signal, but I did not create artifacts."
+                        ),
+                        name="task",
+                        tool_call_id=req.tool_call["id"],
+                        status="success",
+                    )
+                ]
+            }
+        ),
+    )
+
+    assert isinstance(response, Command)
+    normalized = response.update["messages"][0]
+    handoff = json.loads(normalized.content)
+    output_dir = tmp_path / "improver-command"
+    assert normalized.tool_call_id == "call-invalid-quant-command"
+    assert normalized.status == "success"
+    assert handoff["status"] == "failed"
+    assert handoff["failure_stage"] == "quant_invalid_task_handoff"
+    assert handoff["methods_used"] == ["orchestrator_quant_task_result_guard"]
+    assert handoff["charts_json"] == str(output_dir / "charts.json")
+    assert handoff["execution_summary_json"] == str(output_dir / "execution_summary.json")
+    assert json.loads((output_dir / "charts.json").read_text(encoding="utf-8")) == []
+
+
+def test_orchestrator_tool_boundary_blocks_repeat_quant_after_malformed_handoff():
+    middleware = OrchestratorToolBoundaryMiddleware()
+    request = SimpleNamespace(
+        tool_call={
+            "name": "task",
+            "id": "call-repeat-malformed-quant",
+            "args": {
+                "subagent_type": "quant-developer",
+                "description": "Try the same quantitative analysis again.",
+            },
+        },
+        state={
+            "messages": [
+                AIMessage(
+                    content=(
+                        '{"status":"failed",'
+                        '"failure_stage":"quant_malformed_tool_call",'
+                        '"methods_used":["quant_malformed_tool_call_guard"],'
+                        '"execution_summary_json":"/tmp/outputs/job/execution_summary.json",'
+                        '"charts_json":"/tmp/outputs/job/charts.json",'
+                        '"chart_ids":[]}'
+                    )
+                )
+            ]
+        },
+    )
+
+    response = middleware.wrap_tool_call(
+        request,
+        lambda req: (_ for _ in ()).throw(AssertionError("handler should not run")),
+    )
+
+    assert response.tool_call_id == "call-repeat-malformed-quant"
+    assert response.status == "error"
+    assert "Blocked repeat quant-developer delegation" in response.content
 
 
 def test_orchestrator_tool_boundary_blocks_repeat_quant_after_successful_handoff(tmp_path):
@@ -504,6 +723,46 @@ def test_orchestrator_tool_boundary_allows_qa_quant_fix_for_non_finite_chart_dat
                         f'{{"execution_summary_json":"{summary_path}",'
                         f'"charts_json":"{charts_path}",'
                         '"chart_ids":["unemployment_forecast","cycle_comparison"]}'
+                    )
+                )
+            ]
+        },
+    )
+
+    response = middleware.wrap_tool_call(
+        request,
+        lambda req: SimpleNamespace(content="delegated", status="success"),
+    )
+
+    assert response.content == "delegated"
+
+
+def test_orchestrator_tool_boundary_allows_qa_quant_fix_for_missing_chart_family(tmp_path):
+    middleware = OrchestratorToolBoundaryMiddleware()
+    summary_path = tmp_path / "execution_summary.json"
+    charts_path = tmp_path / "charts.json"
+    summary_path.write_text("{}", encoding="utf-8")
+    charts_path.write_text('{"yield_curve_recession_lead":{}}', encoding="utf-8")
+    request = SimpleNamespace(
+        tool_call={
+            "name": "task",
+            "id": "call-qa-missing-chart-family",
+            "args": {
+                "subagent_type": "quant-developer",
+                "description": (
+                    "QA rejected the report because the scatter/bubble chart family "
+                    "is missing. Add the missing chart definition to charts.json "
+                    "from the existing FRED data files."
+                ),
+            },
+        },
+        state={
+            "messages": [
+                AIMessage(
+                    content=(
+                        f'{{"execution_summary_json":"{summary_path}",'
+                        f'"charts_json":"{charts_path}",'
+                        '"chart_ids":["yield_curve_recession_lead"]}'
                     )
                 )
             ]

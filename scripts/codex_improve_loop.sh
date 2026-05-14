@@ -5,6 +5,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MAX_ITERS="${1:-5}"
 START_ITER="${START_ITER:-1}"
 CODEX_SANDBOX_MODE="${CODEX_SANDBOX_MODE:-danger-full-access}"
+CODEX_REASONING_EFFORT="${CODEX_REASONING_EFFORT:-xhigh}"
 LOOP_FOCUS="${LOOP_FOCUS:-combined}"
 REQUESTED_LOOP_FOCUS="$LOOP_FOCUS"
 LOG_ROOT="${LOG_ROOT:-$REPO_ROOT/logs/improve-loop}"
@@ -25,23 +26,52 @@ COMBINED_QUERIES=(
   "I want a historical simulation style report: take today's mix of labor, rates, inflation, credit, production, and consumer stress, compare it to prior cycle windows, and explain what happened next in those windows. Include model diagnostics, backtest evidence when available, charts that render correctly, and a plain-English conclusion that does not overstate causality."
 )
 
+CHART_QUERIES=(
+  "Build a chart-heavy macro report comparing headline CPI inflation, core CPI inflation, and the effective federal funds rate since 1990. Produce 6-8 governed renderable charts. Use time-series and composed charts for trends and overlays, but also use other governed chart families where they make the policy-lag interpretation easier: scatter or bubble for relationships, radar for normalized regime profiles, radialBar for current component scores, treemap or sunburst for contribution hierarchy, funnel for staged filters, and sankey for signal flow. Prefer at least three chart families when the data supports them, but do not add novelty charts when time series are clearly the most insightful view."
+  "Create a recession-dashboard report using FRED time series for the 10-year minus 3-month Treasury spread, unemployment, industrial production, credit conditions, and recession indicators over the last 40 years. Produce 6-8 governed renderable charts with recession bands, no stale empty tails, legible x-axis dates, and annotations that make historical leading-indicator patterns obvious. Include a defensible mix of chart families such as line/composed trend views, radar or radialBar signal profiles, treemap/sunburst contribution views, scatter/bubble relationships, and funnel or sankey-style signal-flow views when supported by the computed data."
+  "Analyze whether the US consumer is under stress using FRED macro data. Build a 6-8 chart dashboard with savings, real income or wages, unemployment, inflation, sentiment or consumption where available, and credit stress. The charts should expose conflicts between indicators, missing-data limits, and recent inflection points instead of only showing latest levels. Use the broad governed chart contract, including stacked or horizontal bars, donut pies, radar/radialBar component profiles, scatter/bubble relationships, and treemap/sunburst contribution views when they clarify the consumer-stress decision."
+  "Make a historical replay report comparing current labor, inflation, rates, production, and consumer-stress indicators with the 2001, 2008, 2020, and post-pandemic cycle windows. Produce 6-8 governed renderable charts that clearly separate current-window overlays from historical analogs and avoid reference bands outside the plotted data range. Prefer multiple chart families where useful: line/composed overlays for replay paths, scatter/bubble for analog distance or relationships, radar for normalized window profiles, radialBar for current signal scores, and treemap/sunburst/funnel/sankey views only when they make the replay evidence easier to understand."
+  "Build a forecast-overlay report for US unemployment over the next six months using simple baselines and at least one local statistical model. Produce 6-8 governed renderable charts, including actual-vs-fitted and forecast-band charts, backtest errors or false alarms, predictor evidence, and uncertainty views without clipping the y-axis. Use non-time-series governed families where they add insight: scatter/bubble for fitted-vs-actual or residual relationships, radar/radialBar for predictor contribution profiles, treemap/sunburst for contribution hierarchy, and funnel/sankey for model selection or signal-flow explanations."
+  "Compare real GDP growth, unemployment, recession periods, and industrial production since 1980. Produce 6-8 governed renderable charts that preserve all chart IDs into the report, use consistent date keys, avoid empty series values, and make the recession-cycle interpretation more insightful than a basic line chart. Mostly time-series charts are acceptable if they are most informative, but the chart pack should consider scatter/bubble relationships, radar/radialBar signal profiles, and hierarchy or flow charts when the computed data supports them."
+  "Create a macro cycle chart pack for an investment committee: produce 6-8 governed renderable charts covering rates/inflation, labor, output/production, consumer stress, historical analogs, and a synthesis view. Use FRED data, highlight what changed in the latest year, and make each chart answer a distinct analytical question. Prefer at least three chart families when defensible, using the governed contract rather than arbitrary Recharts passthrough: line, bar, area, composed, scatter, pie, treemap, radar, radialBar, funnel, sankey, and sunburst."
+  "Test whether current macro conditions look like a soft landing, delayed recession, or reacceleration. Produce 6-8 governed renderable charts with clear axis ranges, readable legends, and historical comparisons that reveal why the classification could be wrong. Include caveats for missing values and mixed-frequency alignment. Use varied chart families when useful for the classification decision: composed trends, scatter/bubble relationships, radar/radialBar normalized profiles, treemap/sunburst contribution hierarchy, funnel staged filters, and sankey decomposition flows."
+)
+
 case "$LOOP_FOCUS" in
   combined)
     ;;
   flow|content)
     LOOP_FOCUS="combined"
     ;;
+  charts|chart|charting|chart-validation)
+    LOOP_FOCUS="charts"
+    ;;
   *)
-    printf 'Unsupported LOOP_FOCUS=%s. Use combined.\n' "$LOOP_FOCUS" >&2
+    printf 'Unsupported LOOP_FOCUS=%s. Use combined or charts.\n' "$LOOP_FOCUS" >&2
     exit 2
     ;;
 esac
 
+if [[ -z "${CHART_AUDIT_RENDER:-}" ]]; then
+  if [[ "$LOOP_FOCUS" == "charts" ]]; then
+    CHART_AUDIT_RENDER="required"
+  else
+    CHART_AUDIT_RENDER="auto"
+  fi
+fi
+export CHART_AUDIT_RENDER
+export ELECTRON_EXTRA_LAUNCH_ARGS="${ELECTRON_EXTRA_LAUNCH_ARGS:---no-sandbox --disable-dev-shm-usage}"
+
 select_query() {
   local pass_num="$1"
   local index
-  index=$(( (pass_num - 1) % ${#COMBINED_QUERIES[@]} ))
-  printf '%s' "${COMBINED_QUERIES[$index]}"
+  if [[ "$LOOP_FOCUS" == "charts" ]]; then
+    index=$(( (pass_num - 1) % ${#CHART_QUERIES[@]} ))
+    printf '%s' "${CHART_QUERIES[$index]}"
+  else
+    index=$(( (pass_num - 1) % ${#COMBINED_QUERIES[@]} ))
+    printf '%s' "${COMBINED_QUERIES[$index]}"
+  fi
 }
 
 cd "$REPO_ROOT"
@@ -75,6 +105,54 @@ write_prompt_file() {
   local prompt_file="$1"
   local recent_context="$2"
   local goal="improve both the research agent's token/tool efficiency and the final report's analytical substance in one two-stage pass."
+  local chart_focus_block
+  local playwright_cli_path
+  local playwright_diag_block
+  playwright_cli_path="$(command -v playwright-cli 2>/dev/null || true)"
+  playwright_diag_block=$(cat <<'PROMPT_BLOCK'
+Playwright CLI diagnostic guidance:
+- Keep Cypress and scripts/audit_report_charts.sh as the deterministic pass/fail gate. Playwright CLI is an investigation tool for explaining browser/DOM failures; do not add automatic Playwright invocation to the outer shell loop.
+- Use the `playwright-cli` skill when it is listed in your available skills. If that skill is not loaded in this Codex session, do not stop there: first run `command -v playwright-cli` and use the local `playwright-cli` binary directly when it is available.
+- Use Playwright CLI diagnosis when scripts/audit_report_charts.sh or Cypress fails, when charts are visible but blank, when chart wrappers/SVGs have positive dimensions but no Recharts marks, when Recharts sizing warnings appear, or when the report page renders differently from the static chart contract.
+- If `playwright-cli` itself is unavailable or blocked by the sandbox/browser install, record the exact command and error in the pass summary, mark Playwright diagnosis as blocked, and continue with Cypress/audit artifacts and static DOM/chart-contract inspection. Do not repeatedly retry a missing skill or unavailable command.
+- Start or reuse a frontend dev server before browser diagnosis. Route the failing report.json into `/chart-render-audit/chart_family_audit` so the rendered page uses the exact artifact that failed audit.
+- Use `playwright-cli --raw run-code` to inspect the rendered page and collect per-chart wrapper dimensions, SVG count, mark count, Recharts class names, text snippets, and console warnings/errors.
+- Compare the rendered DOM against the report JSON to identify the smallest responsible frontend or writer-normalization issue, including prop-shape problems such as `layout: null`, dropped data keys, stale route payloads, or static-contract fields that the frontend normalizes differently.
+- In the pass summary, record whether Playwright CLI was used, the inspected URL and report path, the key DOM findings, and the smallest responsible layer patched.
+PROMPT_BLOCK
+)
+  if [[ -n "$playwright_cli_path" ]]; then
+    playwright_diag_block+="
+- The outer loop shell resolved playwright-cli at \`$playwright_cli_path\`. If \`command -v playwright-cli\` fails inside the Codex session but this absolute path still exists, use \`$playwright_cli_path\` directly."
+  else
+    playwright_diag_block+="
+- The outer loop shell did not find playwright-cli on PATH when this prompt was generated; treat that as a likely environment issue if browser diagnosis is needed."
+  fi
+  if [[ "$LOOP_FOCUS" == "charts" ]]; then
+    goal="improve chart generation, chart artifact fidelity, static chart auditing, and frontend chart rendering in one chart-first pass."
+    chart_focus_block=$(cat <<'PROMPT_BLOCK'
+Chart-mode priority:
+- Make chart generation and validation the primary improvement signal for this pass. Efficiency still matters, but chart artifact correctness, renderability, and analytical usefulness come first unless the run fails before artifacts exist.
+- For explicit chart-heavy, chart-pack, dashboard, or chart-validation prompts, push the agent toward 6-8 governed renderable charts. Empty chart output is not an acceptable fallback for these prompts.
+- The governed report chart contract now covers `line`, `bar`, `area`, `composed`, `scatter`, `pie`, `treemap`, `radar`, `radialBar`, `funnel`, `sankey`, and `sunburst`. Useful variants are supported without new chart types: stacked bars/areas via `stackId`, horizontal bars via `layout`, donut pies via `innerRadius`, and bubble scatter via `sizeKey`/`colorKey`. Do not ask for arbitrary Recharts passthrough.
+- For chart-heavy 6-8 chart packs, prefer at least three chart families when the data supports them: trends and overlays with Cartesian charts, relationships with scatter/bubble, normalized profiles with radar, component scores with radialBar, contribution hierarchy with treemap/sunburst, staged filters with funnel, and flows/decomposition with sankey. This is a preference, not a blocker; a mostly time-series pack is acceptable when it is the most honest analytical view.
+- Treat these chart failures as first-priority evidence: missing chart artifacts when the query asks for charts; chart IDs dropped between quant output and report.json; report markers not matching chart definitions; empty data; blank x-axis keys; missing series values; arbitrary or unsupported chart types; bad dual-axis choices; clipped domains; stale empty tails; reference bands outside plotted data; non-finite numeric values; non-positive segment/hierarchy/flow values; empty hierarchy children; invalid Sankey node/link indexes; frontend render failures; invisible chart marks; NaN/Infinity SVG attributes; or contract error panels.
+- After reading the generated report and charts, explicitly ask yourself: "How could each chart be more insightful for the user's decision?" Use the answer to choose a patch when the charts are technically valid but analytically shallow, redundant, poorly annotated, missing useful overlays, missing historical context, or not tied to the report conclusion.
+- Patch the smallest responsible layer: quant chart generation, save_quant_outputs, technical-writer normalization, report static gate, quality analyst blockers, frontend chart contract/rendering, or focused tests.
+- Run scripts/audit_report_charts.sh <path-to-report.json> after every generated report. The outer loop exports CHART_AUDIT_RENDER=required by default in chart mode and WSL-safe Electron flags; the audit script will use a reachable frontend dev server or start a temporary one on localhost.
+- The pass summary must include report path, chart audit result, browser render result or skip reason, whether Playwright CLI was used, inspected URL/report path, key DOM findings, smallest responsible layer patched, changed files, tests, and the next chart signal to watch.
+PROMPT_BLOCK
+)
+  else
+    chart_focus_block=$(cat <<'PROMPT_BLOCK'
+Chart-aware combined-mode check:
+- If the report contains charts, run scripts/audit_report_charts.sh <path-to-report.json>. Treat failures as deterministic evidence that chart schema, data keys, numeric values, writer normalization, static validation, or frontend rendering needs improvement.
+- The outer loop exports WSL-safe Electron flags for Cypress. In combined mode, CHART_AUDIT_RENDER defaults to auto, so browser rendering runs when a frontend dev server is reachable.
+- The governed chart contract includes Cartesian, polar, hierarchy, funnel, and flow families: `line`, `bar`, `area`, `composed`, `scatter`, `pie`, `treemap`, `radar`, `radialBar`, `funnel`, `sankey`, and `sunburst`. Prefer varied chart families when they clarify the analysis, but do not treat time-series-heavy reports as failures when time series are the most insightful evidence.
+- After reading generated charts, explicitly ask yourself: "How could each chart be more insightful for the user's decision?" Patch chart insight quality when the charts are technically valid but analytically shallow, redundant, poorly annotated, missing useful overlays, missing historical context, or not tied to the report conclusion.
+PROMPT_BLOCK
+)
+  fi
   cat > "$prompt_file" <<PROMPT
 Use the repo-local agent-improver skill.
 
@@ -83,6 +161,10 @@ Requested loop focus: $REQUESTED_LOOP_FOCUS
 Goal: $goal
 
 $recent_context
+
+$chart_focus_block
+
+$playwright_diag_block
 
 Run exactly one execute-analyze-patch cycle with two analysis stages:
 1. From backend/, run:
@@ -95,7 +177,8 @@ Run exactly one execute-analyze-patch cycle with two analysis stages:
 4. Stage 2, report substance review:
    - Once the report exists, inspect the final report text and artifacts, not only the trace. Treat a successful but shallow report as a failure.
    - Look for weak or missing econometrics, backtesting, historical replay/simulation, baseline comparisons, false-positive or miss analysis, forecast diagnostics, uncertainty, citations, source coverage, scenario support, report-vs-execution_summary fidelity, chart quality, frontend chart render-contract failures, and writer/QA preservation.
-   - If the trace produces charts, run scripts/validate_report_charts.sh <path-to-report.json> on the generated report. Treat failures as deterministic evidence that chart schema, data keys, numeric values, writer normalization, or frontend rendering needs improvement.
+   - If the trace produces charts, run scripts/audit_report_charts.sh <path-to-report.json> on the generated report. Treat failures as deterministic evidence that chart schema, data keys, numeric values, writer normalization, static validation, chart semantics, or frontend rendering needs improvement.
+   - Evaluate chart family choice under the broad governed contract: Cartesian charts for trends/overlays, scatter/bubble for relationships, radar/radialBar for normalized profiles and component scores, treemap/sunburst for hierarchy, funnel for staged filters, and sankey for flows. Prefer variety when it improves the user's decision, but do not penalize a report solely because the strongest chart set is mostly time-series.
    - If no report is generated, explain which Stage 1 issue prevented Stage 2 and patch that blocker first.
 5. Patch only the smallest necessary files. If Stage 1 and Stage 2 reveal small, related fixes, patch both in the same pass. If they conflict or the Stage 1 issue prevents report generation, patch the blocker and summarize the Stage 2 signal to watch next.
 6. FMP MCP is intentionally disabled because no paid FMP plan is available. Do not re-enable FMP or add integrations that require API keys, signup, OAuth, paid plans, or provisioned cloud resources.
@@ -113,9 +196,9 @@ Run exactly one execute-analyze-patch cycle with two analysis stages:
    - Always run tests relevant to changed behavior.
    - For public no-key HTTP integrations, run mocked unit/contract tests and, when a live smoke test exists, run the relevant RUN_LIVE_INTEGRATION_TESTS=1 test or explain provider/network failure separately.
    - For local analysis features, run fixture-driven integration tests under backend/tests/integration when relevant.
-   - For chart/report changes, run scripts/validate_report_charts.sh <path-to-report.json> when a report exists, plus focused backend technical-writer chart tests and frontend chart-contract tests.
+   - For chart/report changes, run scripts/audit_report_charts.sh <path-to-report.json> when a report exists, plus focused backend technical-writer chart tests and frontend chart-contract tests.
    - Keep live tests tiny; do not use paid or credentialed services.
-10. Stop after one patch cycle and summarize changed files, reasoning, tests, and whether the affected feature acceptance signal now looks stronger.
+10. Stop after one patch cycle and summarize changed files, reasoning, tests, whether Playwright CLI was used, inspected URL/report path, key DOM findings, smallest responsible layer patched, and whether the affected feature acceptance signal now looks stronger.
 11. In your analysis, use repo tools such as rg/grep/find yourself to inspect the generated agent_execution.log, previous pass summaries, changed files, tests, and stop markers. The shell loop intentionally does not classify logs for you.
 12. End your final answer with exactly these two machine-readable lines:
     IMPROVER_RESULT: patched|no_patch|blocked
@@ -170,6 +253,8 @@ update_latest_summary() {
     printf 'Loop mode: %s\n' "$LOOP_FOCUS"
     printf 'Requested loop focus: %s\n' "$REQUESTED_LOOP_FOCUS"
     printf 'Run directory: %s\n' "$RUN_DIR"
+    printf 'Codex reasoning effort: %s\n' "$CODEX_REASONING_EFFORT"
+    printf 'Chart audit render: %s\n' "$CHART_AUDIT_RENDER"
     printf 'Updated: %s\n\n' "$(date -Is)"
     printf '## Passes\n\n'
     local file pass
@@ -183,9 +268,12 @@ update_latest_summary() {
   } > "$LATEST_SUMMARY"
 }
 
-CODEX_MODEL_ARGS=()
+CODEX_MODEL_ARGS=(
+  -c "model_reasoning_effort=\"$CODEX_REASONING_EFFORT\""
+  -c "plan_mode_reasoning_effort=\"$CODEX_REASONING_EFFORT\""
+)
 if [[ -n "${CODEX_MODEL:-}" ]]; then
-  CODEX_MODEL_ARGS=(--model "$CODEX_MODEL")
+  CODEX_MODEL_ARGS=(--model "$CODEX_MODEL" "${CODEX_MODEL_ARGS[@]}")
 fi
 
 printf 'Running FRED preflight outside Codex sandbox...\n'
@@ -215,6 +303,9 @@ consecutive_codex_failures=0
 printf 'Improve loop run directory: %s\n' "$RUN_DIR"
 printf 'Loop mode: %s\n' "$LOOP_FOCUS"
 printf 'Requested loop focus: %s\n' "$REQUESTED_LOOP_FOCUS"
+printf 'Codex reasoning effort: %s\n' "$CODEX_REASONING_EFFORT"
+printf 'Chart audit render: %s\n' "$CHART_AUDIT_RENDER"
+printf 'Cypress Electron flags: %s\n' "$ELECTRON_EXTRA_LAUNCH_ARGS"
 printf 'Latest rollup: %s\n' "$LATEST_SUMMARY"
 
 for i in $(seq "$START_ITER" "$end_iter"); do

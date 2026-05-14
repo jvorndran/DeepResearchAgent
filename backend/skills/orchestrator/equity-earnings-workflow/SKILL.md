@@ -1,7 +1,6 @@
 ---
 name: equity-earnings-workflow
-description: Blueprint for company financial statement and earnings queries
-triggers: [revenue, earnings, income statement, EPS, margin, AAPL, MSFT, TSMC, ticker]
+description: Use for company revenue, earnings, income-statement, EPS, margin, AAPL, MSFT, TSMC, ticker, and financial-statement queries.
 ---
 
 # Equity Earnings Blueprint

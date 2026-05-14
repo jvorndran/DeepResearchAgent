@@ -1,7 +1,6 @@
 ---
 name: macro-correlation-workflow
-description: Blueprint for FRED macro correlation queries
-triggers: [GDP, unemployment, inflation, CPI, interest rate, FRED, macro, correlation]
+description: Use for macro or FRED requests covering GDP, unemployment, inflation, CPI, rates, recession windows, regimes, correlations, scenarios, or forecasts.
 ---
 
 # Macro Correlation Blueprint

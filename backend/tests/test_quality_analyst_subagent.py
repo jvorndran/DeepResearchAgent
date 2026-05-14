@@ -11,6 +11,10 @@ from agents.quality_analyst import (
 )
 
 
+def _compact_text(text: str) -> str:
+    return " ".join(text.split())
+
+
 def test_quality_analyst_is_compiled_without_deepagents_filesystem_tools():
     assert QUALITY_ANALYST_SUBAGENT["name"] == "quality-analyst"
     assert "runnable" in QUALITY_ANALYST_SUBAGENT
@@ -18,16 +22,30 @@ def test_quality_analyst_is_compiled_without_deepagents_filesystem_tools():
     assert "system_prompt" not in QUALITY_ANALYST_SUBAGENT
 
 
-def test_quality_analyst_prompt_rejects_inconsistent_consistency_claims():
-    assert "Consistency claims" in QUALITY_ANALYST_SYSTEM_PROMPT
-    assert 'answer "yes" or "consistent"' in QUALITY_ANALYST_SYSTEM_PROMPT
-    assert "near-zero or negative period/regime outcomes" in QUALITY_ANALYST_SYSTEM_PROMPT
+def test_quality_analyst_prompt_is_compact_resident_contract():
+    prompt = _compact_text(QUALITY_ANALYST_SYSTEM_PROMPT)
 
+    assert len(QUALITY_ANALYST_SYSTEM_PROMPT) < 2_350
+    assert "RESIDENT CONTRACT" in prompt
+    assert "Decide only from `load_report_for_review(report.json)`" in prompt
+    assert "`submit_quality_decision` is terminal" in prompt
+    assert "Conditional fidelity detail belongs in the review packet" in prompt
+    assert "not resident prompt text" in prompt
+    assert '"consistent", "always", or "guaranteed" claims' in prompt
+    assert "unexplained date/range drift" in prompt
+    assert "missing validation/replay" in prompt
 
-def test_quality_analyst_prompt_rejects_unexplained_date_range_drift():
-    assert "Date/range fidelity" in QUALITY_ANALYST_SYSTEM_PROMPT
-    assert "since 2000" in QUALITY_ANALYST_SYSTEM_PROMPT
-    assert "derived metric such as YoY growth after lookback loss" in QUALITY_ANALYST_SYSTEM_PROMPT
+    migrated_details = [
+        "top analog, similarity scores, risk score, or issuer metrics",
+        "near-zero or negative period/regime outcomes",
+        "since 2000",
+        "derived metric such as YoY growth after lookback loss",
+        "backtest_summary",
+        "historical_simulations",
+        "assumptions, indicator triggers, and confidence/uncertainty notes",
+    ]
+    for detail in migrated_details:
+        assert detail not in prompt
 
 
 def test_load_report_for_review_returns_compact_review_packet(tmp_path):
@@ -50,7 +68,12 @@ def test_load_report_for_review_returns_compact_review_packet(tmp_path):
                 "executive_summary": "Mixed but not collapsing.",
                 "markdown": "Summary\n\n<!-- CHART:chart_unrate -->\n\nDetails",
                 "charts": [{"id": "chart_unrate"}],
-                "data_sources": [{"series_id": "UNRATE"}],
+                "data_sources": [
+                    {
+                        "series_id": "UNRATE",
+                        "date_range": {"start": "2000-01-01", "end": "2026-03-01"},
+                    }
+                ],
                 "metadata": {"word_count": 5},
             }
         ),
@@ -63,11 +86,46 @@ def test_load_report_for_review_returns_compact_review_packet(tmp_path):
     assert payload["title"] == "Labor Market Review"
     assert payload["chart_markers"] == ["chart_unrate"]
     assert payload["chart_ids"] == ["chart_unrate"]
-    assert payload["data_sources"] == [{"series_id": "UNRATE"}]
+    assert payload["data_sources"] == [
+        {
+            "series_id": "UNRATE",
+            "date_range": {"start": "2000-01-01", "end": "2026-03-01"},
+        }
+    ]
     assert payload["execution_summary"]["status"] == "success"
     assert payload["execution_summary"]["path"].endswith("execution_summary.json")
     assert "yield_leads" in payload["execution_summary"]["statistical_summary"]
     assert payload["execution_summary"]["chart_ids"] == ["chart_unrate"]
+
+
+def test_load_report_for_review_keeps_missing_execution_summary_minimal(tmp_path):
+    report_path = tmp_path / "report.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Is labor weakening?",
+                "title": "Labor Market Review",
+                "executive_summary": "Mixed but not collapsing.",
+                "markdown": "Summary",
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 5},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(load_report_for_review.invoke({"report_path": str(report_path)}))
+    summary = payload["execution_summary"]
+
+    assert summary == {
+        "status": "missing",
+        "path": str(report_path.with_name("execution_summary.json")),
+        "note": "No sibling execution_summary.json was found.",
+    }
+    assert "backtest_summary" not in summary
+    assert "historical_simulations" not in summary
+    assert "similarity_scores" not in summary
 
 
 def test_load_report_for_review_preserves_failed_quant_summary(tmp_path):
@@ -141,22 +199,68 @@ def test_load_report_for_review_preserves_normal_length_full_markdown(tmp_path):
     assert "[truncated for review]" not in payload["markdown"]
 
 
-def test_quality_analyst_prompt_uses_embedded_execution_summary_packet():
-    assert "execution_summary` packet" in QUALITY_ANALYST_SYSTEM_PROMPT
-    assert "includes the sibling execution summary review packet" in QUALITY_ANALYST_SYSTEM_PROMPT
-    assert "Execution-summary fidelity" in QUALITY_ANALYST_SYSTEM_PROMPT
-    assert "top analog, similarity scores, risk score, or issuer metrics" in (
-        QUALITY_ANALYST_SYSTEM_PROMPT
+def test_load_report_for_review_preserves_conditional_fidelity_fields(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "top_analog": "2008",
+                "similarity_scores": {"1995": 17.4, "2008": 23.7},
+                "composite_recession_risk": {"current": 91.3},
+                "backtest_summary": {"metrics": {"precision": 0.058}},
+                "model_comparison": {"naive": {"rmse": 1.2}},
+                "historical_simulations": [{"label": "2008", "status": "ok"}],
+                "aapl_msft_metrics": {"AAPL_rev_b": 365.82},
+            }
+        ),
+        encoding="utf-8",
     )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Compare current recession risk with prior cycles.",
+                "title": "Cycle Analog Report",
+                "executive_summary": "Risk summary.",
+                "markdown": "## Executive Summary\nRisk summary.",
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 5},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(load_report_for_review.invoke({"report_path": str(report_path)}))
+    summary = payload["execution_summary"]
+
+    assert summary["top_analog"] == "2008"
+    assert "23.7" in summary["similarity_scores"]
+    assert "91.3" in summary["composite_recession_risk"]
+    assert "precision" in summary["backtest_summary"]
+    assert "naive" in summary["model_comparison"]
+    assert "2008" in summary["historical_simulations"]
+    assert "AAPL_rev_b" in summary["aapl_msft_metrics"]
+
+
+def test_quality_analyst_prompt_uses_embedded_execution_summary_packet():
+    prompt = _compact_text(QUALITY_ANALYST_SYSTEM_PROMPT)
+
+    assert "any sibling `execution_summary` packet" in prompt
+    assert "Treat that packet as controlling context" in prompt
+    assert "do not inspect sibling files directly" in prompt
+    assert "deterministic artifact/fidelity blockers" in prompt
 
 
 def test_quality_analyst_prompt_keeps_terminal_decision_compact():
-    assert "Silent review" in QUALITY_ANALYST_SYSTEM_PROMPT
-    assert "Do not narrate your review" in QUALITY_ANALYST_SYSTEM_PROMPT
-    assert "After `submit_quality_decision` returns" in QUALITY_ANALYST_SYSTEM_PROMPT
-    assert "emit exactly one compact JSON object" in QUALITY_ANALYST_SYSTEM_PROMPT
-    assert "Never emit only `Approved.` or `Rejected.`" in QUALITY_ANALYST_SYSTEM_PROMPT
-    assert "Never include markdown tables" in QUALITY_ANALYST_SYSTEM_PROMPT
+    prompt = _compact_text(QUALITY_ANALYST_SYSTEM_PROMPT)
+
+    assert "OUTPUT RULES" in prompt
+    assert "Do not narrate review reasoning" in prompt
+    assert "After the terminal tool result" in prompt
+    assert "emit exactly one compact JSON object" in prompt
+    assert "Never emit only `Approved.` or `Rejected.`" in prompt
+    assert "markdown tables" in prompt
 
 
 def test_submit_quality_decision_rejection_preserves_required_fixes():
@@ -511,9 +615,13 @@ def test_submit_quality_decision_rejects_missing_upside_downside_scenario_table(
 
 
 def test_quality_analyst_prompt_rejects_missing_required_scenario_table():
-    assert "Scenario/stress requests" in QUALITY_ANALYST_SYSTEM_PROMPT
-    assert "scenario_requirement.valid" in QUALITY_ANALYST_SYSTEM_PROMPT
-    assert "assumptions, indicator triggers, and confidence/uncertainty notes" in QUALITY_ANALYST_SYSTEM_PROMPT
+    prompt = _compact_text(QUALITY_ANALYST_SYSTEM_PROMPT)
+
+    assert "`scenario_requirement`" in prompt
+    assert "missing requested scenario or stress coverage" in prompt
+    assert "assumptions, indicator triggers, and confidence/uncertainty notes" not in (
+        prompt
+    )
 
 
 def test_submit_quality_decision_rejects_econometric_report_without_validation(tmp_path):
@@ -979,9 +1087,12 @@ def test_submit_quality_decision_rejects_recession_probability_without_composite
 
 
 def test_quality_analyst_prompt_requires_econometric_validation():
-    assert "Econometric validation" in QUALITY_ANALYST_SYSTEM_PROMPT
-    assert "backtest_summary" in QUALITY_ANALYST_SYSTEM_PROMPT
-    assert "historical_simulations" in QUALITY_ANALYST_SYSTEM_PROMPT
+    prompt = _compact_text(QUALITY_ANALYST_SYSTEM_PROMPT)
+
+    assert "missing validation/replay" in prompt
+    assert "predictive or historical-comparison work" in prompt
+    assert "backtest_summary" not in prompt
+    assert "historical_simulations" not in prompt
 
 
 def test_load_report_for_review_rejects_non_report_artifacts(tmp_path):
