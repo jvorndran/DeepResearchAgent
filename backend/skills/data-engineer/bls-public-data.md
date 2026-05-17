@@ -17,5 +17,10 @@ public data via tools `bls_search_known_series`, `bls_get_series`.
   `save_data` afterward.
 - BLS Public Data API v1 requires no key but has limited metadata. Use returned
   curated metadata for direct-BLS versus FRED source differences.
-- Keep no-key requests to a 10-year-or-smaller window; for longer histories,
-  prefer FRED plus a focused BLS recent-window check.
+- `bls_get_series` normalizes partial or over-wide no-key year windows to one
+  explicit 10-year-or-smaller direct-source check and returns the requested
+  versus applied window in metadata. Do not retry the same BLS objective after
+  that normalization; for longer histories, prefer FRED plus the focused BLS
+  recent-window check.
+- If BLS returns `retryable:false`, preserve the compact error in
+  `metadata.fetch_errors` and continue with FRED or other active public sources.

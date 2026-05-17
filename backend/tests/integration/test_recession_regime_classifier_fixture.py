@@ -30,15 +30,18 @@ def test_recession_regime_classifier_fixture_execution_summary_schema(tmp_path):
 
     loaded = json.loads(summary_path.read_text(encoding="utf-8"))
 
-    assert loaded["regime_label"] in {
+    assert loaded["current_regime_row"]["regime"] in {
         "expansion",
         "slowdown",
         "recession",
         "recovery",
         "reacceleration",
     }
-    assert loaded["evidence_table"]
-    assert isinstance(loaded["historical_analogs"], list)
-    assert loaded["false_positive_caveat"]
-    assert loaded["missing_indicators"] == []
+    assert loaded["regime_evidence_rows"]
+    assert isinstance(loaded["regime_analog_rows"], list)
+    assert loaded["missing_indicator_rows"] == []
+    assert loaded["regime_design"]["method"] == "recession_regime_classifier"
+    assert "evidence_table" not in loaded
+    assert "historical_analogs" not in loaded
+    assert "false_positive_caveat" not in loaded
     assert loaded["methods_used"] == ["recession_regime_classifier"]

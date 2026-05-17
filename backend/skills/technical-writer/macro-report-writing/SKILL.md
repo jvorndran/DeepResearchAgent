@@ -34,17 +34,16 @@ Use the plan result as the controlling outline, with this default order:
 Do not add a `## Disclaimer` section because the system appends the legal footer
 after save.
 
-## Scenario Table
+## Scenario Evidence
 
-When `general_rules` requires `## Scenario Table`, render a markdown table with
-exactly these headers:
+When `execution_summary_for_draft` provides scenario rows and the narrative
+uses them, render a markdown table with these headers:
 
 `Scenario`, `Assumptions`, `Indicator Triggers`, `Confidence`, `Uncertainty Notes`
 
-The first-column row keys must be lowercase `base`, `bull`, and `bear`. Use
-semicolons or `<br>` inside cells for multiple items, not extra columns. Use
-`execution_summary_for_draft` scenario rows when present and do not invent
-probability weights when only confidence labels are supplied.
+Use the row keys supplied by the evidence, semicolons or `<br>` inside cells for
+multiple items, and do not invent probability weights when only confidence
+labels are supplied.
 
 ## Word Count
 

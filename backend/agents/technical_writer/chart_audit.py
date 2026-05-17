@@ -31,7 +31,6 @@ _CHART_REQUEST_KEYWORDS = (
     "charts",
     "chart pack",
     "chart-pack",
-    "dashboard",
     "plot",
     "plots",
     "renderable",

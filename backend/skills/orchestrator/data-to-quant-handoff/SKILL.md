@@ -18,6 +18,12 @@ The quant-developer task description must include:
 
 Tell quant-developer to paste the `data_files` JSON object into `analysis.py` as a single dictionary and reference paths by key, not by retyping long auto-saved filenames into separate string literals. Tell it to use those exact paths and not call `glob`, `ls`, or `read_file` to rediscover them.
 
+When helper composition depends on the user's requested scope, include the full
+approved user request in the task description. Quant-developer should write
+`analysis.py`, call reusable helpers there, and compose any requested charts
+from helper evidence rows rather than invoking a report-specific artifact
+route.
+
 ## Econometric forecast handoff
 
 For econometric forecast requests, especially six-month unemployment forecasts using yield curve, claims, payrolls, and industrial production:

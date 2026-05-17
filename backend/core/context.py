@@ -16,5 +16,6 @@ class ResearchContext:
     job_id: str
     output_dir: Optional[str] = None  # Absolute path: backend/outputs/{job_id}
     data_dir: Optional[str] = None  # Absolute path: backend/data/{job_id}
+    query: Optional[str] = None
     user_id: Optional[str] = None
     preferences: Optional[dict] = field(default_factory=dict)

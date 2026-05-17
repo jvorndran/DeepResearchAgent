@@ -153,6 +153,19 @@ def test_census_client_surfaces_malformed_two_dimensional_table():
     assert "row width did not match header" in str(exc_info.value)
 
 
+def test_census_client_classifies_requests_json_decode_as_invalid_json():
+    session = FakeSession(FakeResponse(requests.exceptions.JSONDecodeError("bad json", "", 0)))
+
+    with pytest.raises(CensusDataError) as exc_info:
+        CensusPublicDataClient(session=session).get_table(
+            dataset="2023/acs/acs5/profile",
+            variables=["population"],
+            geography="state",
+        )
+
+    assert str(exc_info.value) == "Census response was not valid JSON."
+
+
 def test_census_client_returns_disabled_payload_without_network_call():
     session = FakeSession()
 

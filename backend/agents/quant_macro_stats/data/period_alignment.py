@@ -1,16 +1,19 @@
 """Period alignment and composite predictive indicator helpers."""
-from .shared import *
-from .shared import (
-    _adfuller,
+
+from typing import Any, Iterable
+
+import numpy as np
+import pandas as pd
+
+from .._utils import (
+    METHOD_COMPOSITE_PREDICTIVE_INDICATOR,
     _as_ordered_frame,
-    _clean_regression_frame,
     _direction_multiplier,
     _finite_float,
     _iso_date,
     _require_columns,
-    _scipy_stats,
-    _statsmodels_api,
 )
+
 
 def align_period_features(
     series_frames: dict[str, pd.DataFrame],
@@ -288,9 +291,11 @@ def build_composite_predictive_indicator(
         }
         weight_method = "equal_weight_directional"
     else:
-        clean_weights = _finite_dict(
-            {feature: weights.get(feature, 0.0) for feature in normalized_features}
-        )
+        clean_weights = {
+            feature: numeric
+            for feature in normalized_features
+            if (numeric := _finite_float(weights.get(feature, 0.0))) is not None
+        }
         total_abs = sum(abs(value) for value in clean_weights.values())
         if total_abs == 0:
             raise ValueError("weights must include at least one non-zero finite feature weight")
@@ -325,20 +330,30 @@ def build_composite_predictive_indicator(
     }
 
     latest_row = normalized.dropna(subset=["composite_index"]).tail(1)
-    latest_index_value = (
-        _finite_float(latest_row["composite_index"].iloc[0]) if not latest_row.empty else None
-    )
-    latest_feature_values = (
-        {
-            feature: _finite_float(latest_row[f"{feature}__signal"].iloc[0])
-            for feature in normalized_features
+    current_row: dict[str, Any] | None = None
+    if not latest_row.empty:
+        latest = latest_row.iloc[0]
+        current_index_value = _finite_float(latest["composite_index"])
+        current_row = {
+            "date": _iso_date(latest[date_col]),
+            "target": target,
+            "target_variable": target_col,
+            "prediction_horizon": prediction_horizon,
+            "composite_index": current_index_value,
+            "composite_percentile_0_100": None,
+            "classification": _classify_threshold(current_index_value, thresholds),
+            "target_value": _finite_float(latest[target_col]),
+            "target_future": _finite_float(latest["_target_future"]),
+            "target_event": bool(latest["_target_event"]),
+            "feature_count_used": int(latest["feature_count_used"]),
+            "feature_values": {
+                feature: _finite_float(latest[f"{feature}__signal"])
+                for feature in normalized_features
+            },
         }
-        if not latest_row.empty
-        else {}
-    )
-    latest_signal = _classify_threshold(latest_index_value, thresholds)
-    score_history: list[dict[str, Any]] = []
-    train_score_values = train_scores.to_numpy(dtype=float)
+
+    composite_score_rows: list[dict[str, Any]] = []
+    train_score_values = np.sort(train_scores.to_numpy(dtype=float))
     for _, row in normalized.dropna(subset=["composite_index"]).iterrows():
         index_value = _finite_float(row["composite_index"])
         percentile = (
@@ -350,25 +365,54 @@ def build_composite_predictive_indicator(
             if index_value is not None and len(train_score_values)
             else None
         )
-        score_history.append(
-            {
-                "date": _iso_date(row[date_col]),
-                "composite_index": index_value,
-                "composite_percentile_0_100": percentile,
-                "target_value": _finite_float(row[target_col]),
-                "target_future": _finite_float(row["_target_future"]),
-                "target_event": bool(row["_target_event"]),
-                "feature_count_used": int(row["feature_count_used"]),
-            }
-        )
+        score_row = {
+            "date": _iso_date(row[date_col]),
+            "composite_index": index_value,
+            "composite_percentile_0_100": percentile,
+            "target_value": _finite_float(row[target_col]),
+            "target_future": _finite_float(row["_target_future"]),
+            "target_event": bool(row["_target_event"]),
+            "feature_count_used": int(row["feature_count_used"]),
+            "classification": _classify_threshold(index_value, thresholds),
+        }
+        composite_score_rows.append(score_row)
+        if current_row is not None and score_row["date"] == current_row["date"]:
+            current_row["composite_percentile_0_100"] = percentile
+
+    if current_row is None and composite_score_rows:
+        current_row = {
+            **composite_score_rows[-1],
+            "target": target,
+            "target_variable": target_col,
+            "prediction_horizon": prediction_horizon,
+            "feature_values": {},
+        }
+
+    validation_design = {
+        "method": METHOD_COMPOSITE_PREDICTIVE_INDICATOR,
+        "target": target,
+        "target_variable": target_col,
+        "target_event_threshold": target_event_threshold,
+        "prediction_horizon": prediction_horizon,
+        "train_fraction": train_fraction,
+        "train_window": {
+            "start": _iso_date(train[date_col].iloc[0]) if not train.empty else None,
+            "end": _iso_date(train[date_col].iloc[-1]) if not train.empty else None,
+        },
+        "normalization_method": normalization_method,
+        "weight_method": weight_method,
+        "minimum_features_per_scored_row": required_feature_count,
+        "classification_rule": thresholds["classification"],
+    }
 
     test = (
         normalized.iloc[train_cutoff:].dropna(subset=["composite_index", "_target_future"]).copy()
     )
     if test.empty:
-        backtest = {
+        validation_metrics = {
             "status": "insufficient_test_observations",
             "test_observations": 0,
+            "test_window": None,
             "metrics": {},
         }
     else:
@@ -380,7 +424,7 @@ def build_composite_predictive_indicator(
         tn = int((~actual & ~predicted).sum())
         fn = int((actual & ~predicted).sum())
         observations = int(len(test))
-        backtest = {
+        validation_metrics = {
             "status": "ok",
             "test_observations": observations,
             "test_window": {
@@ -399,6 +443,10 @@ def build_composite_predictive_indicator(
         }
 
     return {
+        "composite_current_row": current_row,
+        "composite_score_rows": composite_score_rows,
+        "composite_validation_metrics": validation_metrics,
+        "composite_validation_design": validation_design,
         "target": target,
         "target_variable": target_col,
         "prediction_horizon": prediction_horizon,
@@ -420,19 +468,11 @@ def build_composite_predictive_indicator(
                 (normalized["feature_count_used"] == len(normalized_features)).sum()
             ),
         },
-        "backtest_summary": backtest,
-        "latest_index_value": latest_index_value,
-        "latest_percentile_0_100": (
-            score_history[-1]["composite_percentile_0_100"] if score_history else None
-        ),
-        "latest_feature_values": latest_feature_values,
-        "latest_signal": latest_signal,
-        "score_history": score_history,
         "thresholds": thresholds,
         "methods_used": [METHOD_COMPOSITE_PREDICTIVE_INDICATOR],
         "limitations": [
             "This is a predictive indicator, not a guaranteed forecast.",
             "Training-set normalization and thresholds reduce lookahead but remain sensitive to revisions and sample choice.",
-            "Binary backtest metrics depend on the selected target event threshold and prediction horizon.",
+            "Binary validation metrics depend on the selected target event threshold and prediction horizon.",
         ],
     }

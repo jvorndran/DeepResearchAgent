@@ -1,8 +1,8 @@
 """Public orchestrator API."""
+
 from .common import (
     Any,
     AsyncIterator,
-    ClientSession,
     Dict,
     FredMCPRequiredError,
     MCPTimeoutError,
@@ -67,12 +67,15 @@ async def run_research(
             job_id=job_id,
             output_dir=str(_BACKEND_DIR / "outputs" / job_id),
             data_dir=str(_BACKEND_DIR / "data" / job_id),
+            query=query,
             user_id=user_id,
         )
 
         config = {"configurable": {"thread_id": job_id}}
 
-        graph_input_resolver = getattr(public_orchestrator, "resolve_graph_input", resolve_graph_input)
+        graph_input_resolver = getattr(
+            public_orchestrator, "resolve_graph_input", resolve_graph_input
+        )
         graph_input = await graph_input_resolver(agent, config, messages)
         result = await agent.ainvoke(graph_input, context=ctx, config=config)
 
@@ -163,12 +166,15 @@ async def stream_research(
             job_id=job_id,
             output_dir=str(_BACKEND_DIR / "outputs" / job_id),
             data_dir=str(_BACKEND_DIR / "data" / job_id),
+            query=query,
             user_id=user_id,
         )
 
         config = {"configurable": {"thread_id": job_id}}
 
-        graph_input_resolver = getattr(public_orchestrator, "resolve_graph_input", resolve_graph_input)
+        graph_input_resolver = getattr(
+            public_orchestrator, "resolve_graph_input", resolve_graph_input
+        )
         graph_input = await graph_input_resolver(agent, config, messages)
 
         max_retries = 3

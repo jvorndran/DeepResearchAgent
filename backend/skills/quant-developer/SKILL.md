@@ -15,7 +15,7 @@ as a human-readable index and is not part of the DeepAgents metadata scan.
   multi-source handling, SEC company-facts use, and artifact handoff rules.
 - `quant-sandbox-environment`: sandbox paths, execution command shape, CSV
   loading patterns, FRED notes handling, and provider data format details.
-- `quant-macro-helper-workflows`: deterministic macro helper signatures,
+- `quant-macro-helper-workflows`: reusable macro helper signatures,
   forecast/backtest/regime/scenario/analog routes, and pandas/FRED safety.
 - `quant-chart-generation`: canonical Recharts JSON schema and chart output
   constraints.

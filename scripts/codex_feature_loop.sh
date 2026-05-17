@@ -144,7 +144,7 @@ Run the test agent, explain what new feature appears to have been added to this 
 Instructions:
 1. From backend/, run:
    UV_CACHE_DIR=/tmp/uv-cache uv run python tests/runner.py --max-runtime-seconds 2400 --max-tool-calls 300 --max-identical-tool-calls 25 --max-fred-search-calls 100 --max-model-messages 5000 --query "$query"
-2. Read the generated outputs/improver-*/agent_execution.log and any report artifacts.
+2. Read the generated outputs/improver-*/trace-digest.md first, then trace_diagnostics.json, phoenix_spans.jsonl, and any report artifacts.
 3. Run relevant focused tests added by the build phase. For public no-key HTTP integrations, also run relevant live smoke tests with RUN_LIVE_INTEGRATION_TESTS=1 when they exist. For local analysis features, run fixture-driven integration tests that exercise the real helper/artifact path.
 4. If public live smoke tests fail only because of provider/network unavailability while mocked contract tests pass, report that separately; do not confuse provider availability with code correctness.
 5. Compare observed agent behavior, mocked tests, and integration tests to the feature acceptance signal in the markdown section.
@@ -154,7 +154,7 @@ Instructions:
 Final response requirements:
 - Explain the new feature added in plain language.
 - State what evidence shows it is working or not working.
-- Include the generated agent log path.
+- Include the generated trace digest path and the trace signal that drove the verdict.
 - End with exactly one line:
   FEATURE_VERDICT: pass
   or
@@ -190,7 +190,7 @@ Goal:
 Improve the feature based on the verifier result, then stop. Do not move to another feature inside this session.
 
 Instructions:
-1. Inspect the verifier summary and generated agent log path.
+1. Inspect the verifier summary and generated trace digest path.
 2. Patch only the smallest issue that prevented the acceptance signal from being met.
 3. Preserve the frontend intake/approval flow.
 4. Keep free/no-key constraints strict.

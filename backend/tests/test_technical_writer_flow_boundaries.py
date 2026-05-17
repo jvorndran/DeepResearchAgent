@@ -81,6 +81,77 @@ def test_plan_report_structure_reads_chart_id_list_shape(tmp_path):
     assert result["chart_ids"] == ["yield_curve_vs_recessions"]
 
 
+def test_plan_report_structure_surfaces_generic_company_helper_evidence(tmp_path):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text(
+        json.dumps(
+            {
+                "company_income_statement_history": {
+                    "id": "company_income_statement_history",
+                    "type": "composed",
+                    "title": "Company Revenue and Profit History",
+                    "xAxisKey": "period",
+                    "series": [{"dataKey": "revenue_b", "label": "Revenue"}],
+                    "data": [{"period": "NVDA FY2026", "revenue_b": 215.938}],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    execution_summary = {
+        "latest_fundamentals": {
+            "NVDA": {
+                "fiscal_year": 2026,
+                "revenue_b": 215.938,
+                "net_margin_pct": 55.6,
+                "cash_and_securities_b": 10.605,
+                "diluted_eps": 4.9,
+            }
+        },
+        "company_macro_sensitivity": [
+            {
+                "ticker": "NVDA",
+                "latest_fiscal_year": 2026,
+                "latest_avg_fedfunds_pct": None,
+                "latest_recession_months": None,
+            }
+        ],
+        "source_coverage": {
+            "sec_company_facts": {"status": "covered"},
+            "valuation_market_data": {"status": "not_available"},
+        },
+        "numeric_facts": [
+            {
+                "id": "sec_company_facts.NVDA.revenue_b",
+                "display_value": "$215.938B",
+                "raw_value": 215.938,
+                "tolerance": 0.005,
+                "source_key": "sec_company_facts.latest_fundamentals.NVDA.revenue_b",
+                "subject": "NVDA",
+                "metric": "revenue_b",
+            }
+        ],
+    }
+
+    result = json.loads(
+        plan_report_structure.func(
+            query_type="earnings_analysis",
+            charts_json_path=str(charts_path),
+            execution_summary=json.dumps(execution_summary),
+            original_query="Prepare a stock-specific NVIDIA fundamentals report.",
+            runtime=_Runtime(),
+        )
+    )
+
+    assert result["helper_evidence_for_draft"]["tables"]["latest_fundamentals"]["NVDA"][
+        "revenue_b"
+    ] == 215.938
+    assert "Generic helper-produced evidence" in result["execution_summary_for_draft"]
+    assert "$215.938B" in result["execution_summary_for_draft"]
+    assert "company_macro_sensitivity" in result["execution_summary_for_draft"]
+    assert "valuation_market_data" in result["execution_summary_for_draft"]
+
+
 def test_plan_report_structure_surfaces_chart_facts_for_draft(tmp_path):
     charts_path = tmp_path / "charts.json"
     charts_path.write_text(
@@ -205,7 +276,7 @@ def test_plan_report_structure_surfaces_acceptance_headline_metrics(tmp_path):
     charts_path.write_text('{"chart_yield_curve": {"id": "chart_yield_curve"}}', encoding="utf-8")
     summary = {
         "statistical_summary": {
-            "latest_unrate": 4.3,
+            "latest_unemployment_rate": 4.3,
             "latest_cpi_yoy": 3.12,
             "latest_yield_curve_bps": 52.1,
             "latest_composite_risk": 30.8,
@@ -227,7 +298,7 @@ def test_plan_report_structure_surfaces_acceptance_headline_metrics(tmp_path):
     )
 
     draft = result["execution_summary_for_draft"]
-    assert "latest_unrate: 4.3" in draft
+    assert "latest_unemployment_rate: 4.3" in draft
     assert "latest_cpi_yoy: 3.12" in draft
     assert "latest_yield_curve_bps: 52.1" in draft
     assert "latest_composite_risk: 30.8" in draft
@@ -236,13 +307,21 @@ def test_plan_report_structure_surfaces_acceptance_headline_metrics(tmp_path):
     assert "Use ONLY those exact chart IDs" in result["general_rules"]
 
 
-def test_plan_report_structure_preserves_nested_quant_acceptance_metrics(tmp_path):
+def test_plan_report_structure_preserves_generic_quant_acceptance_metrics(tmp_path):
     charts_path = tmp_path / "charts.json"
     charts_path.write_text('{"recession_probability": {"id": "recession_probability"}}', encoding="utf-8")
     summary_path = tmp_path / "execution_summary.json"
     summary_path.write_text(
         json.dumps(
             {
+                "forecast_origin": {
+                    "target_variable": "UNRATE",
+                    "model_spec": "ARX unemployment bridge",
+                },
+                "forecast_table": [
+                    {"date": "2026-04", "forecast": 4.35, "lower": 4.1, "upper": 4.6},
+                    {"date": "2026-05", "forecast": 4.39, "lower": 4.1, "upper": 4.7},
+                ],
                 "statistical_summary": {
                     "latest_unemployment_rate": 4.3,
                     "latest_cpi_yoy": 3.1,
@@ -250,26 +329,19 @@ def test_plan_report_structure_preserves_nested_quant_acceptance_metrics(tmp_pat
                     "latest_yield_spread": 0.62,
                     "latest_fed_funds_rate": 3.64,
                     "recession_probability_current": 97.0,
-                    "current_regime": "expansion",
-                    "composite_indicator": {
-                        "latest_index_value": 0.41,
-                        "latest_percentile_0_100": 63.2,
-                        "latest_signal": "elevated but below recession threshold",
-                    },
-                    "forecast_result": {
-                        "model_spec": "ARX unemployment bridge",
-                        "forecast_table": [
-                            {"month": "2026-04", "forecast": 4.35, "lower_ci": 4.1, "upper_ci": 4.6},
-                            {"month": "2026-05", "forecast": 4.39, "lower_ci": 4.1, "upper_ci": 4.7},
-                        ],
-                    },
-                    "regime_result": {
-                        "regime_label": "soft landing",
-                        "regime_score": 0.58,
-                        "score_momentum": -0.03,
-                        "category_scores": {"labor": 0.2, "inflation": 0.6},
-                    },
-                }
+                },
+                "composite_current_row": {
+                    "date": "2026-03-01",
+                    "composite_index": 0.41,
+                    "composite_percentile_0_100": 63.2,
+                    "classification": "elevated but below recession threshold",
+                },
+                "current_regime_row": {
+                    "regime": "soft landing",
+                    "regime_score": 0.58,
+                    "score_momentum": -0.03,
+                    "category_scores": {"labor": 0.2, "inflation": 0.6},
+                },
             }
         ),
         encoding="utf-8",
@@ -291,11 +363,10 @@ def test_plan_report_structure_preserves_nested_quant_acceptance_metrics(tmp_pat
     assert "latest_yield_spread: 0.62" in draft
     assert "latest_fed_funds_rate: 3.64" in draft
     assert "recession_probability_current: 97" in draft
-    assert "current_regime: expansion" in draft
-    assert "latest_signal: elevated but below recession threshold" in draft
-    assert "month=2026-04; forecast=4.35; lower_ci=4.1; upper_ci=4.6" in draft
-    assert "regime: soft landing" in draft
-    assert "regime_score: 0.58" in draft
+    assert "regime=soft landing" in draft
+    assert "classification=elevated but below recession threshold" in draft
+    assert "forecast_table: 2026-04: date=2026-04; forecast=4.35" in draft
+    assert "regime_score=0.58" in draft
 
 
 def test_plan_report_structure_reads_job_local_execution_summary_path(tmp_path):
@@ -336,25 +407,27 @@ def test_plan_report_structure_exposes_nested_backtest_rows_and_errors(tmp_path)
     summary_path.write_text(
         json.dumps(
             {
-                "backtest_summary": {
-                    "method": "Rolling 12-quarter validation",
-                    "aapl_macro_model": {"error": "Could not extract AAPL revenue"},
-                    "aapl_naive_momentum": {"error": "Could not extract AAPL revenue"},
-                    "recession_backtest": {
-                        "2001": {
-                            "unrate_change_pp": 1.2,
-                            "indpro_change_pct": -3.45,
-                            "real_pce_change_pct": 1.97,
-                            "sentiment_decline_pts": -7.6,
-                        },
-                        "2020": {
-                            "unrate_change_pp": 11.3,
-                            "indpro_change_pct": -16.84,
-                            "real_pce_change_pct": -9.89,
-                            "sentiment_decline_pts": -11.8,
-                        },
+                "model_validation_rows": [
+                    {"model": "aapl_macro_model", "error": "Could not extract AAPL revenue"},
+                    {"model": "aapl_naive_momentum", "error": "Could not extract AAPL revenue"},
+                ],
+                "replay_rows": [
+                    {
+                        "label": "2001",
+                        "unrate_change_pp": 1.2,
+                        "indpro_change_pct": -3.45,
+                        "real_pce_change_pct": 1.97,
+                        "sentiment_decline_pts": -7.6,
                     },
-                }
+                    {
+                        "label": "2020",
+                        "unrate_change_pp": 11.3,
+                        "indpro_change_pct": -16.84,
+                        "real_pce_change_pct": -9.89,
+                        "sentiment_decline_pts": -11.8,
+                    },
+                ],
+                "limitations": ["Do not fabricate RMSE when validation rows contain errors."],
             }
         ),
         encoding="utf-8",
@@ -374,10 +447,10 @@ def test_plan_report_structure_exposes_nested_backtest_rows_and_errors(tmp_path)
     )
 
     draft = result["execution_summary_for_draft"]
-    assert "do not fabricate RMSE" in draft
-    assert "aapl_macro_model: error=Could not extract AAPL revenue" in draft
-    assert "aapl_naive_momentum: error=Could not extract AAPL revenue" in draft
-    assert "2001: unrate_change_pp=1.2" in draft
+    assert "Do not fabricate RMSE" in draft
+    assert "model=aapl_macro_model; error=Could not extract AAPL revenue" in draft
+    assert "model=aapl_naive_momentum; error=Could not extract AAPL revenue" in draft
+    assert "replay_rows: 2001: unrate_change_pp=1.2" in draft
     assert "sentiment_decline_pts=-7.6" in draft
     assert "2020: unrate_change_pp=11.3" in draft
     assert "indpro_change_pct=-16.84" in draft
@@ -504,45 +577,46 @@ def test_plan_report_structure_surfaces_full_research_acceptance_metrics(tmp_pat
     summary_path.write_text(
         json.dumps(
             {
-                "recession_risk_index": {
-                    "current_score": 1.7898878189766174,
-                    "current_classification": "High",
-                    "composite_full": {
-                        "latest_percentile_0_100": 100.0,
-                        "latest_signal": "high",
-                        "latest_feature_values": {
-                            "UMCSENT": 53.3,
-                            "INDPRO_chg_pct": 0.6545176949190212,
-                        },
-                        "backtest_summary": {
-                            "metrics": {"precision": 0.1441860465, "recall": 1.0}
-                        },
+                "composite_current_row": {
+                    "date": "2026-03-01",
+                    "composite_index": 1.7898878189766174,
+                    "composite_percentile_0_100": 100.0,
+                    "classification": "high",
+                    "feature_values": {
+                        "UMCSENT": 53.3,
+                        "INDPRO_chg_pct": 0.6545176949190212,
                     },
                 },
-                "unemployment_forecast": {
-                    "current_unemployment": 4.3,
-                    "forecast_months": [
-                        {
-                            "date": "2026-10-01",
-                            "value": 4.36,
-                            "lower_ci": 4.09,
-                            "upper_ci": 4.64,
-                        }
-                    ],
+                "composite_validation_metrics": {
+                    "status": "ok",
+                    "metrics": {"precision": 0.1441860465, "recall": 1.0},
                 },
-                "regime_classification": {
+                "forecast_origin": {
+                    "target_variable": "UNRATE",
+                    "current_value": 4.3,
+                    "model_spec": "UNRATE(t+6) ~ const + payroll_momentum",
+                },
+                "forecast_table": [
+                    {
+                        "date": "2026-10-01",
+                        "forecast": 4.36,
+                        "lower": 4.09,
+                        "upper": 4.64,
+                    }
+                ],
+                "current_regime_row": {
                     "regime": "expansion",
                     "category_scores": {"labor": 1.0, "consumption": -1.0},
-                    "evidence_table": [
-                        {
-                            "category": "financial",
-                            "indicator": "Yield Curve",
-                            "value": 0.52,
-                            "score": 1.0,
-                            "signal": "supportive",
-                        }
-                    ],
                 },
+                "regime_evidence_rows": [
+                    {
+                        "category": "financial",
+                        "indicator": "Yield Curve",
+                        "value": 0.52,
+                        "score": 1.0,
+                        "signal": "supportive",
+                    }
+                ],
                 "consumer_stress": {
                     "real_ahe_yoy_pct": 0.03,
                     "saving_rate": 3.6,
@@ -565,23 +639,19 @@ def test_plan_report_structure_surfaces_full_research_acceptance_metrics(tmp_pat
                         {"country": "DEU", "gdp_growth": -0.5, "inflation": 2.26},
                     ],
                 },
-                "apple_msft_earnings": {
-                    "AAPL": [
-                        {
-                            "fiscal_year": 2025,
-                            "revenue_growth_pct": 6.4,
-                            "net_income_growth_pct": 19.5,
-                            "margin_pct": 26.9,
-                        }
-                    ],
-                    "MSFT": [
-                        {
-                            "fiscal_year": 2025,
-                            "revenue_growth_pct": 14.9,
-                            "net_income_growth_pct": 15.5,
-                            "margin_pct": 36.1,
-                        }
-                    ],
+                "latest_fundamentals": {
+                    "AAPL": {
+                        "fiscal_year": 2025,
+                        "revenue_growth_pct": 6.4,
+                        "net_income_growth_pct": 19.5,
+                        "net_margin_pct": 26.9,
+                    },
+                    "MSFT": {
+                        "fiscal_year": 2025,
+                        "revenue_growth_pct": 14.9,
+                        "net_income_growth_pct": 15.5,
+                        "net_margin_pct": 36.1,
+                    },
                 },
                 "statistical_summary": {
                     "all_values": {
@@ -607,16 +677,19 @@ def test_plan_report_structure_surfaces_full_research_acceptance_metrics(tmp_pat
     )
 
     draft = result["execution_summary_for_draft"]
-    assert "Exact recession-risk framework values" in draft
-    assert "current_score: 1.79" in draft
-    assert "UMCSENT=53.3" in draft
-    assert "forecast_months: date=2026-10-01; value=4.36" in draft
-    assert "regime: expansion" in draft
+    assert "Generic helper-produced evidence" in draft
+    assert "composite_current_row" in draft
+    assert "composite_index=1.79" in draft
+    assert "UMCSENT" in draft
+    assert "forecast_table: 2026-10-01: date=2026-10-01; forecast=4.36" in draft
+    assert "regime=expansion" in draft
     assert "real_ahe_yoy_pct: 0.03" in draft
     assert "California: population=39242785, median_income=96334" in draft
     assert "DEU: gdp_growth=-0.5, inflation=2.26" in draft
-    assert "AAPL latest: fiscal_year=2025, revenue_growth_pct=6.4" in draft
-    assert "MSFT latest: fiscal_year=2025, revenue_growth_pct=14.9" in draft
+    assert "latest_fundamentals.AAPL: fiscal_year=2025" in draft
+    assert "revenue_growth_pct=6.4" in draft
+    assert "latest_fundamentals.MSFT: fiscal_year=2025" in draft
+    assert "revenue_growth_pct=14.9" in draft
     assert "UNRATE.latest: 4.3 (2026-04-01)" in draft
     assert "FEDFUNDS.latest: 3.64 (2026-04-01)" in draft
 
@@ -789,7 +862,7 @@ def test_plan_report_structure_prioritizes_exact_lead_lag_metrics(tmp_path):
     )
 
     draft = result["execution_summary_for_draft"]
-    assert draft.startswith("Exact lead-lag metrics from execution_summary.json")
+    assert "Exact lead-lag metrics from execution_summary.json" in draft
     assert "negative best_lag_months means the predictor leads the target" in draft
     assert "unemployment: best_lag_months=-20, best_correlation=0.4237" in draft
     assert (
@@ -972,32 +1045,33 @@ def test_plan_report_structure_accepts_large_inline_execution_summary_json(tmp_p
     )
 
     assert result["chart_ids"] == ["macro_chart"]
-    assert result["execution_summary_for_draft"].startswith("Soft landing evidence")
+    assert "Soft landing evidence" in result["execution_summary_for_draft"]
     assert len(result["execution_summary_for_draft"]) == 4000
 
 
-def test_plan_report_structure_preserves_top_level_composite_backtest_diagnostics(tmp_path):
+def test_plan_report_structure_preserves_top_level_composite_validation_diagnostics(tmp_path):
     charts_path = tmp_path / "charts.json"
     charts_path.write_text('{"recession_risk": {"id": "recession_risk"}}', encoding="utf-8")
     summary_path = tmp_path / "execution_summary.json"
     summary_path.write_text(
         json.dumps(
             {
-                "composite_predictive_indicator": {
-                    "latest_index_value": -3.22,
-                    "latest_percentile_0_100": 0.0,
-                    "latest_signal": "low",
-                    "backtest_summary": {
-                        "status": "ok",
-                        "test_window": {"start": "1974-11-01", "end": "2026-03-01"},
-                        "metrics": {
-                            "accuracy": 0.8898,
-                            "precision": 0.25,
-                            "recall": 0.0484,
-                            "false_negative": 59,
-                        },
+                "composite_current_row": {
+                    "date": "2026-03-01",
+                    "composite_index": -3.22,
+                    "composite_percentile_0_100": 0.0,
+                    "classification": "low",
+                },
+                "composite_validation_metrics": {
+                    "status": "ok",
+                    "test_window": {"start": "1974-11-01", "end": "2026-03-01"},
+                    "metrics": {
+                        "accuracy": 0.8898,
+                        "precision": 0.25,
+                        "recall": 0.0484,
+                        "false_negative": 59,
                     },
-                }
+                },
             }
         ),
         encoding="utf-8",
@@ -1015,15 +1089,16 @@ def test_plan_report_structure_preserves_top_level_composite_backtest_diagnostic
     )
 
     draft = result["execution_summary_for_draft"]
-    assert "Exact recession-risk framework values" in draft
-    assert "latest_index_value: -3.22" in draft
-    assert "backtest_window: 1974-11-01 to 2026-03-01" in draft
+    assert "Generic helper-produced evidence" in draft
+    assert "composite_current_row" in draft
+    assert "composite_index=-3.22" in draft
+    assert "composite_validation_metrics" in draft
     assert "precision=0.25" in draft
     assert "recall=0.0484" in draft
     assert "false_negative=59" in draft
 
 
-def test_plan_report_structure_requires_scenario_section_for_scenario_query(tmp_path):
+def test_plan_report_structure_surfaces_generic_scenario_score_evidence(tmp_path):
     charts_path = tmp_path / "charts.json"
     charts_path.write_text("{}", encoding="utf-8")
 
@@ -1033,29 +1108,43 @@ def test_plan_report_structure_requires_scenario_section_for_scenario_query(tmp_
             charts_json_path=str(charts_path),
             execution_summary=json.dumps(
                 {
-                    "scenario_table": [
+                    "scenario_score_rows": [
                         {
                             "scenario": "base",
-                            "assumptions": ["Slower growth"],
-                            "indicator_triggers": ["Claims stable"],
-                            "confidence": "medium",
-                            "uncertainty_notes": "Revision risk.",
+                            "score": 0.0,
+                            "delta_vs_current": 0.0,
+                            "note": "Slower growth with claims stable.",
+                            "direction": "neutral",
+                            "threshold": 0.0,
                         },
                         {
                             "scenario": "bull",
-                            "assumptions": ["Inflation cools"],
-                            "indicator_triggers": ["Spreads narrow"],
-                            "confidence": "low",
-                            "uncertainty_notes": "Policy lags.",
+                            "score": 1.2,
+                            "delta_vs_current": 1.2,
+                            "note": "Inflation cools and spreads narrow.",
+                            "direction": "upside",
+                            "threshold": 1.0,
                         },
                         {
                             "scenario": "bear",
-                            "assumptions": ["Labor cracks"],
-                            "indicator_triggers": ["Claims jump"],
-                            "confidence": "medium",
-                            "uncertainty_notes": "Timing risk.",
+                            "score": -1.7,
+                            "delta_vs_current": -1.7,
+                            "note": "Labor cracks and claims jump.",
+                            "direction": "downside",
+                            "threshold": -1.0,
                         },
-                    ]
+                    ],
+                    "numeric_facts": [
+                        {
+                            "id": "scenario_score_rows.bear.score",
+                            "source_key": "scenario_score_rows[bear].score",
+                            "display_value": "-1.70",
+                            "raw_value": -1.7,
+                            "tolerance": 0.01,
+                            "subject": "bear",
+                            "metric": "scenario_score",
+                        }
+                    ],
                 }
             ),
             original_query="Build a recession risk dashboard with base, bull, and bear scenarios.",
@@ -1063,14 +1152,15 @@ def test_plan_report_structure_requires_scenario_section_for_scenario_query(tmp_
         )
     )
 
-    assert "MUST include a `## Scenario Table` section" in result["general_rules"]
-    assert "| Scenario | Assumptions | Indicator Triggers | Confidence | Uncertainty Notes |" in result["general_rules"]
-    assert "`| base |`, `| bull |`, and `| bear |`" in result["general_rules"]
-    assert "Required scenario table from execution_summary.json" in result["execution_summary_for_draft"]
-    assert "- bear:" in result["execution_summary_for_draft"]
+    draft = result["execution_summary_for_draft"]
+    assert "Generic helper-produced evidence" in draft
+    assert "scenario_score_rows: base" in draft
+    assert "bear: score=-1.7" in draft
+    assert "scenario_score_rows.bear.score=-1.70" in draft
+    assert result["helper_evidence_for_draft"]["tables"]["scenario_score_rows"][2]["scenario"] == "bear"
+    assert result["helper_evidence_for_draft"]["tables"]["scenario_score_rows"]
 
-
-def test_plan_report_structure_prioritizes_signal_framework_backtest_values(tmp_path):
+def test_plan_report_structure_prioritizes_generic_backtest_values(tmp_path):
     charts_path = tmp_path / "charts.json"
     charts_path.write_text("{}", encoding="utf-8")
 
@@ -1080,50 +1170,61 @@ def test_plan_report_structure_prioritizes_signal_framework_backtest_values(tmp_
             charts_json_path=str(charts_path),
             execution_summary=json.dumps(
                 {
-                    "composite_indicator": {
-                        "latest_index_value": 0.06182,
-                        "latest_percentile_0_100": 83.29,
-                        "latest_signal": "high",
-                        "backtest_summary": {
-                            "metrics": {
-                                "precision": 0.01887,
-                                "recall": 0.5,
-                                "false_positive": 52,
-                            }
+                    "composite_current_row": {
+                        "date": "2026-03-01",
+                        "composite_index": 0.06182,
+                        "composite_percentile_0_100": 83.29,
+                        "classification": "high",
+                    },
+                    "composite_validation_metrics": {
+                        "metrics": {
+                            "precision": 0.01887,
+                            "recall": 0.5,
+                            "false_positive": 52,
                         },
                     },
-                    "signal_framework_summary": {
+                    "signal_validation_metrics": {
                         "observations": 532,
-                        "recession_count": 5,
-                        "recession_calls_correct": 3,
-                        "false_alarms": 9,
+                        "event_count": 5,
+                        "events_met_threshold": 3,
+                        "false_positive_windows": 9,
                         "true_positive_rate": 0.6,
                         "precision": 0.25,
                         "threshold": 2,
-                        "current_signal": {
-                            "score": 1,
-                            "interpretation": "yellow",
-                            "components_triggered": ["SIG_UM"],
-                        },
-                        "pre_recession_scores": {
-                            "2008_recession_12m_before": {
-                                "score": 2,
-                                "components_triggered": ["SIG_T10", "SIG_IC"],
-                                "max_score_date": "2007-01-01",
-                            }
-                        },
-                        "false_alarm_episodes": [
-                            {
-                                "period": "2022-2023",
-                                "max_score": 2,
-                                "components_at_peak": ["SIG_T10", "SIG_UM"],
-                            }
-                        ],
                     },
+                    "latest_signal_observation": {
+                        "score": 1,
+                        "threshold": 2,
+                        "above_threshold": False,
+                        "components_triggered": ["labor deterioration"],
+                    },
+                    "signal_event_rows": [
+                        {
+                            "event_label": "2008 recession 12m before",
+                            "score": 2,
+                            "met_threshold": True,
+                            "max_score_date": "2007-01-01",
+                        }
+                    ],
+                    "signal_false_positive_windows": [
+                        {
+                            "window_label": "2022-2023",
+                            "max_score": 2,
+                            "components_at_peak": ["yield curve", "labor"],
+                        }
+                    ],
+                    "scenario_score_rows": [
+                        {
+                            "scenario": "bear",
+                            "score": 3,
+                            "delta_vs_current": 2,
+                            "note": "red",
+                        },
+                    ],
                 }
             ),
             original_query=(
-                "Build a recession-risk report showing what a simple signal stack "
+                "Build a recession-risk report showing what a simple helper backtest "
                 "said before downturns and how often it cried wolf."
             ),
             runtime=_Runtime(),
@@ -1131,65 +1232,28 @@ def test_plan_report_structure_prioritizes_signal_framework_backtest_values(tmp_
     )
 
     draft = result["execution_summary_for_draft"]
-    assert "Controlling signal-framework backtest values" in draft
-    assert "use these values instead of unrelated composite-index percentile" in draft
-    assert "recession_calls_correct=3" in draft
-    assert "false_alarms=9" in draft
+    assert "Generic helper-produced evidence" in draft
+    assert "events_met_threshold=3" in draft
+    assert "false_positive_windows=9" in draft
     assert "precision=0.25" in draft
-    assert "current_signal: score=1" in draft
+    assert "latest_signal_observation: score=1" in draft
+    assert "2008 recession 12m before: score=2" in draft
     assert "2022-2023: max_score=2" in draft
 
 
-def test_plan_report_structure_derives_scenario_table_from_scenario_results(tmp_path):
+def test_plan_report_structure_preserves_generic_replay_rows(tmp_path):
     charts_path = tmp_path / "charts.json"
     charts_path.write_text("{}", encoding="utf-8")
 
-    result = json.loads(
-        plan_report_structure.func(
-            query_type="macro_indicator",
-            charts_json_path=str(charts_path),
-            execution_summary=json.dumps(
-                {
-                    "scenario_results": {
-                        "base": "NONE",
-                        "upside": "NONE",
-                        "downside": "MEDIUM",
-                        "detail": {
-                            "base": {"level": "NONE", "sum": 0, "YC": 0, "LR": 0, "FS": 0},
-                            "upside": {"level": "NONE", "sum": 0, "YC": 0, "LR": 0, "FS": 0},
-                            "downside": {"level": "MEDIUM", "sum": 2, "YC": 0, "LR": 1, "FS": 1},
-                        },
-                    }
-                }
-            ),
-            original_query=(
-                "Build a recession-risk report showing how the conclusion changes "
-                "under base, upside, and downside cases."
-            ),
-            runtime=_Runtime(),
-        )
-    )
-
-    draft = result["execution_summary_for_draft"]
-    assert "Required scenario table from execution_summary.json" in draft
-    assert "- base:" in draft
-    assert "- bull:" in draft
-    assert "- bear:" in draft
-    assert "Level: MEDIUM" in draft
-    assert "Lr: 1" in draft
-
-
-def test_plan_report_structure_preserves_all_signal_framework_recession_rows(tmp_path):
-    charts_path = tmp_path / "charts.json"
-    charts_path.write_text("{}", encoding="utf-8")
-    pre_scores = {
-        f"{year}_recession_12m_before": {
+    replay_rows = [
+        {
+            "event_label": f"{year} recession 12m before",
             "score": 1 if year == 2020 else 0,
-            "components_triggered": ["YC_inv"] if year == 2020 else [],
+            "met_threshold": year == 2020,
             "max_score_date": "2019-08-31" if year == 2020 else f"{year}-01-31",
         }
         for year in (1960, 1970, 1973, 1980, 1981, 1990, 2001, 2008, 2020)
-    }
+    ]
 
     result = json.loads(
         plan_report_structure.func(
@@ -1197,19 +1261,19 @@ def test_plan_report_structure_preserves_all_signal_framework_recession_rows(tmp
             charts_json_path=str(charts_path),
             execution_summary=json.dumps(
                 {
-                    "signal_framework_summary": {
+                    "signal_validation_metrics": {
                         "observations": 233278,
-                        "recession_count": 9,
-                        "recession_calls_correct": 2,
-                        "false_alarms": 7,
+                        "event_count": 9,
+                        "events_met_threshold": 2,
+                        "false_positive_windows": 7,
                         "precision": 0.2222222222,
                         "threshold": 2,
-                        "pre_recession_scores": pre_scores,
-                    }
+                    },
+                    "signal_event_rows": replay_rows,
                 }
             ),
             original_query=(
-                "Build a recession-risk report showing what a simple signal stack "
+                "Build a recession-risk report showing what a simple helper backtest "
                 "said before earlier downturns and how often it cried wolf."
             ),
             runtime=_Runtime(),
@@ -1217,15 +1281,87 @@ def test_plan_report_structure_preserves_all_signal_framework_recession_rows(tmp
     )
 
     draft = result["execution_summary_for_draft"]
-    assert "`recession_count` is the total number of recessions tested" in draft
-    assert "`recession_calls_correct` is the number that reached the alert threshold" in draft
-    assert "recession_count=9" in draft
-    assert "recession_calls_correct=2" in draft
-    assert "2020_recession_12m_before: score=1" in draft
-    assert "components_triggered=['YC_inv']" in draft
+    assert "Generic helper-produced evidence" in draft
+    assert "event_count=9" in draft
+    assert "events_met_threshold=2" in draft
+    assert "2020 recession 12m before: score=1; met_threshold=True" in draft
 
 
-def test_plan_report_structure_preserves_regime_classifier_fields(tmp_path):
+def test_plan_report_structure_surfaces_generic_signal_helper_evidence(tmp_path):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text("{}", encoding="utf-8")
+
+    helper_evidence = {
+        "signal_validation_metrics": {
+            "event_count": 5,
+            "events_met_threshold": 3,
+            "events_below_threshold": 2,
+            "false_positive_windows": 4,
+            "precision": 0.428571,
+            "threshold": 2,
+        },
+        "latest_signal_observation": {
+            "date": "2026-03-01",
+            "score": 1,
+            "threshold": 2,
+            "max_score": 3,
+            "above_threshold": False,
+            "confirming_signals": ["Yield curve inversion lead window"],
+            "contradicting_signals": ["Labor deterioration"],
+        },
+        "signal_event_rows": [
+            {
+                "event_label": "2008 recession 12m before",
+                "score": 2,
+                "met_threshold": True,
+                "max_score_date": "2007-03-01",
+                "components_triggered": ["Yield curve inversion lead window", "Credit tightening"],
+            }
+        ],
+        "signal_false_positive_windows": [
+            {
+                "window_label": "2022-2023",
+                "max_score": 2,
+                "components_at_peak": ["Yield curve inversion lead window", "Credit tightening"],
+            }
+        ],
+        "scenario_score_rows": [
+            {"scenario": "base", "score": 1, "delta_vs_current": 0, "note": "yellow"},
+            {"scenario": "bull", "score": 0, "delta_vs_current": -1, "note": "green"},
+            {"scenario": "bear", "score": 3, "delta_vs_current": 2, "note": "red"},
+        ],
+    }
+
+    result = json.loads(
+        plan_report_structure.func(
+            query_type="macro_indicator",
+            charts_json_path=str(charts_path),
+            execution_summary=json.dumps(helper_evidence),
+            original_query=(
+                "Build a recession-risk report showing signal stack false positives "
+                "and base, upside, and downside cases."
+            ),
+            runtime=_Runtime(),
+        )
+    )
+
+    draft = result["execution_summary_for_draft"]
+    assert "Generic helper-produced evidence" in draft
+    assert "events_met_threshold=3" in draft
+    assert "false_positive_windows=4" in draft
+    assert "latest_signal_observation: date=2026-03-01" in draft
+    assert "2008 recession 12m before: score=2" in draft
+    assert "2022-2023: max_score=2" in draft
+    assert "bear: score=3" in draft
+    assert (
+        result["helper_evidence_for_draft"]["diagnostics"]["signal_validation_metrics"][
+            "false_positive_windows"
+        ]
+        == 4
+    )
+
+
+def test_plan_report_structure_preserves_generic_regime_rows(tmp_path):
     charts_path = tmp_path / "charts.json"
     charts_path.write_text("{}", encoding="utf-8")
 
@@ -1235,10 +1371,14 @@ def test_plan_report_structure_preserves_regime_classifier_fields(tmp_path):
             charts_json_path=str(charts_path),
             execution_summary=json.dumps(
                 {
-                    "regime_label": "slowdown",
-                    "regime_score": -0.31,
-                    "category_scores": {"rates": -0.6, "labor": -0.2, "output": 0.1},
-                    "evidence_table": [
+                    "current_regime_row": {
+                        "date": "2026-03-31",
+                        "status": "ok",
+                        "regime": "slowdown",
+                        "regime_score": -0.31,
+                        "category_scores": {"rates": -0.6, "labor": -0.2, "output": 0.1},
+                    },
+                    "regime_evidence_rows": [
                         {
                             "category": "rates",
                             "indicator": "yield_curve",
@@ -1247,11 +1387,14 @@ def test_plan_report_structure_preserves_regime_classifier_fields(tmp_path):
                             "rationale": "Curve inversion is a slowdown signal.",
                         }
                     ],
-                    "historical_analogs": [
-                        {"date": "2001-02-28", "label": "slowdown", "regime_score": -0.29}
+                    "regime_analog_rows": [
+                        {"date": "2001-02-28", "regime": "slowdown", "regime_score": -0.29}
                     ],
-                    "missing_indicators": [],
-                    "false_positive_caveat": "False positives can occur around noisy data revisions.",
+                    "missing_indicator_rows": [],
+                    "regime_design": {
+                        "method": "recession_regime_classifier",
+                        "min_categories": 3,
+                    },
                     "methods_used": ["recession_regime_classifier"],
                 }
             ),
@@ -1261,14 +1404,16 @@ def test_plan_report_structure_preserves_regime_classifier_fields(tmp_path):
     )
 
     draft = result["execution_summary_for_draft"]
-    assert "Required regime-classifier fields" in draft
-    assert "regime_label: slowdown" in draft
-    assert "evidence_table" in draft
-    assert "historical_analogs" in draft
-    assert "false_positive_caveat" in draft
+    assert "Generic helper-produced evidence" in draft
+    assert "current_regime_row" in draft
+    assert "regime=slowdown" in draft
+    assert "regime_evidence_rows" in draft
+    assert "yield_curve" in draft
+    assert "regime_analog_rows" in draft
+    assert "false_positive_caveat" not in draft
 
 
-def test_plan_report_structure_preserves_econometric_validation_and_simulations(tmp_path):
+def test_plan_report_structure_surfaces_generic_econometric_validation_rows(tmp_path):
     charts_path = tmp_path / "charts.json"
     charts_path.write_text("{}", encoding="utf-8")
 
@@ -1278,26 +1423,27 @@ def test_plan_report_structure_preserves_econometric_validation_and_simulations(
             charts_json_path=str(charts_path),
             execution_summary=json.dumps(
                 {
-                    "backtest_summary": {
-                        "status": "ok",
-                        "horizon_results": [
-                            {
-                                "prediction_horizon": 1,
-                                "test_observations": 18,
-                                "metrics": {"mae": 0.12, "rmse": 0.18},
-                                "baseline_comparison": {
-                                    "last_value": {"mae": 0.2},
-                                    "train_mean": {"mae": 0.5},
-                                },
-                                "best_model_by_mae": "direct_ols",
-                            }
-                        ],
-                    },
-                    "model_comparison": [
-                        {"horizon": 1, "model": "direct_ols", "mae": 0.12},
-                        {"horizon": 1, "model": "baseline_last_value", "mae": 0.2},
+                    "walk_forward_backtest_rows": [
+                        {
+                            "prediction_horizon": 1,
+                            "test_observations": 18,
+                            "metrics": {"mae": 0.12, "rmse": 0.18},
+                            "baseline_comparison": {
+                                "last_value": {"mae": 0.2},
+                                "train_mean": {"mae": 0.5},
+                            },
+                            "best_model_by_mae": "direct_ols",
+                        }
                     ],
-                    "historical_simulations": [
+                    "model_comparison_by_horizon": [
+                        {
+                            "horizon": 1,
+                            "direct_ols_mae": 0.12,
+                            "last_value_mae": 0.2,
+                        },
+                    ],
+                    "diagnostics": {"forecast_validation": {"status": "ok", "rmse": 0.18}},
+                    "replay_rows": [
                         {
                             "label": "global financial crisis",
                             "start": "2007-12-01",
@@ -1318,53 +1464,211 @@ def test_plan_report_structure_preserves_econometric_validation_and_simulations(
     )
 
     draft = result["execution_summary_for_draft"]
-    assert "Required econometric validation" in draft
-    assert "last_value_mae=0.2" in draft
-    assert "Exact model comparison rows" in draft
-    assert "Required historical simulation/replay rows" in draft
-    assert "global financial crisis" in draft
+    assert "Reusable validation and simulation evidence" in draft
+    assert "walk_forward_backtest_rows" in draft
+    assert "model_comparison_by_horizon: 1: horizon=1; direct_ols_mae=0.12" in draft
+    assert "Generic helper-produced evidence" in draft
+    assert "replay_rows: global financial crisis" in draft
 
 
-def test_plan_report_structure_surfaces_nested_what_happened_next_replay_limits(tmp_path):
+def test_plan_report_structure_surfaces_generic_forecast_rows(tmp_path):
     charts_path = tmp_path / "charts.json"
     charts_path.write_text("{}", encoding="utf-8")
+
+    summary = {
+        "forecast_origin": {
+            "as_of_date": "2026-01",
+            "target_variable": "UNRATE",
+            "target_unit": "percent",
+            "model_spec": "UNRATE(t+6) ~ const + UNRATE + payroll",
+        },
+        "forecast_table": [
+            {
+                "horizon": 6,
+                "date": "2026-07-01",
+                "forecast": 4.64,
+                "lower": 4.1,
+                "upper": 5.2,
+                "last_value_baseline": 4.3,
+            }
+        ],
+        "model_comparison_by_horizon": [
+            {
+                "horizon": 6,
+                "direct_ols_mae": 0.712,
+                "last_value_mae": 0.635,
+                "train_mean_mae": 2.373,
+                "winner_by_mae": "last_value",
+            }
+        ],
+        "historical_failure_episodes": [
+            {
+                "target_date": "2020-10-01",
+                "prediction_date": "2020-04-01",
+                "classification": "large_overprediction",
+                "actual": 6.9,
+                "forecast": 22.758,
+                "absolute_error": 15.858,
+                "baseline_last_value": 14.8,
+            }
+        ],
+        "event_backtest_metrics": {
+            "false_positive_count": 140,
+            "miss_count": 107,
+            "precision": 0.278,
+            "recall": 0.335,
+        },
+        "signal_false_positive_windows": [
+            {
+                "period": "2021",
+                "peak_date": "2021-06-01",
+                "max_signal": 66.2,
+                "threshold": 65,
+            }
+        ],
+    }
 
     result = json.loads(
         plan_report_structure.func(
             query_type="macro_indicator",
             charts_json_path=str(charts_path),
-            execution_summary=json.dumps(
-                {
-                    "what_happened_next": {
-                        "simulation_design": {
-                            "outcome_variable": "USREC",
-                            "signal_variables": ["yield_slope", "BAA10Y_spread"],
-                            "lookahead_periods": 12,
-                        },
-                        "historical_simulations": [
-                            {
-                                "label": "global financial crisis",
-                                "start": "2007-12-01",
-                                "end": "2009-06-01",
-                                "status": "ok",
-                                "outcome_during_window": {"max": 1.0, "mean": 0.95},
-                                "subsequent_outcome": {"periods": 12, "max": 0.0},
-                            }
-                        ],
-                    }
-                }
-            ),
-            original_query="Explain what happened next in prior cycle windows.",
+            execution_summary=json.dumps(summary),
+            original_query="Review the unemployment forecast, baselines, historical failures, and false alarms.",
             runtime=_Runtime(),
         )
     )
 
     draft = result["execution_summary_for_draft"]
-    assert "Exact what-happened-next replay design" in draft
-    assert "outcome_variable=USREC" in draft
-    assert "Do not invent S&P 500" in draft
-    assert "USREC_during_max=1.0" in draft
-    assert "USREC_subsequent_periods=12" in draft
+    assert "Generic helper-produced evidence" in draft
+    assert "forecast_table: 2026-07-01: horizon=6; date=2026-07-01; forecast=4.64" in draft
+    assert "model_comparison_by_horizon: 6: horizon=6; direct_ols_mae=0.712" in draft
+    assert "historical_failure_episodes: 2020-10-01:" in draft
+    assert "signal_false_positive_windows: period=2021" in draft
+    assert "event_backtest_metrics: false_positive_count=140" in draft
+
+
+def test_plan_report_structure_keeps_non_rate_forecast_rows_unit_neutral(tmp_path):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text("{}", encoding="utf-8")
+
+    summary = {
+        "forecast_origin": {
+            "as_of_date": "2026-01",
+            "target_variable": "PAYEMS",
+            "model_spec": "PAYEMS(t+1) ~ const + payroll_momentum",
+        },
+        "forecast_table": [
+            {
+                "horizon": 1,
+                "date": "2026-02-01",
+                "forecast": 155250,
+                "lower": 154800,
+                "upper": 155900,
+                "last_value_baseline": 155000,
+            }
+        ],
+        "model_comparison_by_horizon": [
+            {"horizon": 1, "direct_ols_mae": 120.5, "last_value_mae": 150.25}
+        ],
+    }
+
+    result = json.loads(
+        plan_report_structure.func(
+            query_type="macro_indicator",
+            charts_json_path=str(charts_path),
+            execution_summary=json.dumps(summary),
+            original_query="Forecast payroll employment with reusable evidence rows.",
+            runtime=_Runtime(),
+        )
+    )
+
+    draft = result["execution_summary_for_draft"]
+    assert "forecast_table: 2026-02-01: horizon=1; date=2026-02-01; forecast=155250" in draft
+    assert "155250%" not in draft
+
+
+def test_write_research_report_accepts_reusable_forecast_rows_without_exact_gate(tmp_path):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text("{}", encoding="utf-8")
+    summary = {
+        "forecast_table": [
+            {"horizon": 6, "date": "2026-07-01", "forecast": 4.64, "lower": 4.1, "upper": 5.2}
+        ],
+        "model_comparison_by_horizon": [
+            {"horizon": 6, "direct_ols_mae": 0.712, "last_value_mae": 0.635, "train_mean_mae": 2.373}
+        ],
+    }
+
+    result = json.loads(
+        write_research_report.func(
+            markdown=(
+                "## Executive Summary\n"
+                "The unemployment forecast reaches 4.0% by mid-2025 with a 3.8% to 4.4% interval.\n\n"
+                "## Research Query\nReview unemployment forecast."
+            ),
+            charts_json_path=str(charts_path),
+            original_query="Review unemployment forecast.",
+            execution_summary=json.dumps(summary),
+            runtime=SimpleNamespace(context=SimpleNamespace(job_id="job-forecast-review", output_dir=str(tmp_path))),
+        )
+    )
+
+    assert result["report_path"].endswith("report.json")
+    assert result["validation_issues"] == []
+
+
+def test_write_research_report_rejects_company_fundamental_numeric_drift(tmp_path):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text("{}", encoding="utf-8")
+    summary = {
+        "latest_fundamentals": {
+            "NVDA": {
+                "revenue_b": 215.938,
+                "cash_and_securities_b": 10.605,
+            }
+        },
+        "numeric_facts": [
+            {
+                "id": "sec_company_facts.NVDA.revenue_b",
+                "display_value": "$215.938B",
+                "raw_value": 215.938,
+                "tolerance": 0.005,
+                "source_key": "sec_company_facts.latest_fundamentals.NVDA.revenue_b",
+                "subject": "NVDA",
+                "metric": "revenue_b",
+            },
+            {
+                "id": "sec_company_facts.NVDA.cash_and_securities_b",
+                "display_value": "$10.605B",
+                "raw_value": 10.605,
+                "tolerance": 0.005,
+                "source_key": "sec_company_facts.latest_fundamentals.NVDA.cash_and_securities_b",
+                "subject": "NVDA",
+                "metric": "cash_and_securities_b",
+            },
+        ],
+    }
+
+    result = json.loads(
+        write_research_report.func(
+            markdown=(
+                "## Executive Summary\n"
+                "NVDA revenue was about $130B and cash was more than $40B.\n\n"
+                "## Research Query\nReview NVIDIA revenue and balance sheet."
+            ),
+            charts_json_path=str(charts_path),
+            original_query="Review NVIDIA revenue and balance sheet.",
+            execution_summary=json.dumps(summary),
+            runtime=SimpleNamespace(
+                context=SimpleNamespace(job_id="job-company-fundamentals", output_dir=str(tmp_path))
+            ),
+        )
+    )
+
+    assert result["status"] == "error"
+    assert result["failure_category"] == "numeric_fact_mismatch"
+    assert "NVDA revenue_b" in result["message"]
+    assert "NVDA cash_and_securities_b" in result["message"]
 
 
 def test_plan_report_structure_preserves_dict_backtest_model_and_simulation_metrics(tmp_path):
@@ -1377,11 +1681,7 @@ def test_plan_report_structure_preserves_dict_backtest_model_and_simulation_metr
             charts_json_path=str(charts_path),
             execution_summary=json.dumps(
                 {
-                    "backtest_summary": {
-                        "years": {
-                            "2020": {"auc": 0.2, "brier_score": 0.417},
-                            "2024": {"auc": 0.5, "brier_score": 0.0023},
-                        },
+                    "validation_diagnostics": {
                         "average_auc": 0.478,
                         "average_brier_score": 0.0664,
                         "calibration": {
@@ -1390,37 +1690,27 @@ def test_plan_report_structure_preserves_dict_backtest_model_and_simulation_metr
                         },
                         "method": "Rolling OOS logistic regression",
                     },
-                    "model_comparison": {
-                        "logistic_regression": {
+                    "model_validation_rows": [
+                        {
+                            "model": "logistic_regression",
                             "accuracy": 0.9432,
                             "precision": 0.7857,
                             "recall": 0.569,
                             "f1_score": 0.66,
                             "auc": 0.3685,
                         },
-                        "yield_curve_benchmark": {
+                        {
+                            "model": "yield_curve_benchmark",
                             "accuracy": 0.7746,
                             "precision": 0.1111,
                             "recall": 0.1897,
                             "f1_score": 0.1401,
                             "auc": 0.3685,
                         },
-                    },
-                    "historical_simulations": {
-                        "analog_count": 10,
-                        "analog_dates": ["2003-10-01", "1981-09-01"],
-                        "forward_horizons": {
-                            "3m": {
-                                "mean_unrate_change": 0.22,
-                                "pct_recession": 40,
-                            },
-                            "12m": {
-                                "mean_unrate_change": 1.42,
-                                "pct_recession": 50,
-                            },
-                        },
-                        "method": "Top-10 nearest neighbors on 4 features",
-                    },
+                    ],
+                    "replay_rows": [
+                        {"label": "2020", "auc": 0.2, "brier_score": 0.417},
+                    ],
                 }
             ),
             original_query=(
@@ -1434,14 +1724,11 @@ def test_plan_report_structure_preserves_dict_backtest_model_and_simulation_metr
     draft = result["execution_summary_for_draft"]
     assert "average_auc=0.478" in draft
     assert "average_brier_score=0.0664" in draft
-    assert "2020: auc=0.2, brier_score=0.417" in draft
+    assert "replay_rows: 2020: auc=0.2; brier_score=0.417" in draft
     assert "model=logistic_regression" in draft
     assert "accuracy=0.9432" in draft
     assert "model=yield_curve_benchmark" in draft
     assert "f1_score=0.1401" in draft
-    assert "analog_count: 10" in draft
-    assert "analog_dates: 2003-10-01; 1981-09-01" in draft
-    assert "horizon=12m, mean_unrate_change=1.42, pct_recession=50" in draft
 
 
 def test_plan_report_structure_preserves_backtest_z_score_tables(tmp_path):
@@ -1454,7 +1741,7 @@ def test_plan_report_structure_preserves_backtest_z_score_tables(tmp_path):
             charts_json_path=str(charts_path),
             execution_summary=json.dumps(
                 {
-                    "backtest_summary": {
+                    "validation_diagnostics": {
                         "method": "euclidean_z_distance",
                         "current_z_scores": {
                             "UNRATE": -0.8627,
@@ -1467,11 +1754,6 @@ def test_plan_report_structure_preserves_backtest_z_score_tables(tmp_path):
                             "CPIAUCSL": None,
                         },
                     },
-                    "historical_simulations": {
-                        "method": "current_vs_historical_regime_replay",
-                        "current_values": {"UNRATE": 4.3333, "FEDFUNDS": 3.9825},
-                        "pre_recession_values": {"UNRATE": 4.0833, "FEDFUNDS": 4.4178},
-                    },
                 }
             ),
             original_query="Use historical replay and be explicit about backtest limits.",
@@ -1481,9 +1763,7 @@ def test_plan_report_structure_preserves_backtest_z_score_tables(tmp_path):
 
     draft = result["execution_summary_for_draft"]
     assert "current_z_scores: UNRATE=-0.8627; FEDFUNDS=-0.1479; CPIAUCSL=null" in draft
-    assert "pre_recession_avg_z_scores: UNRATE=-1.0098; FEDFUNDS=-0.0235" in draft
-    assert "simulation_current_values: UNRATE=4.3333; FEDFUNDS=3.9825" in draft
-    assert "simulation_pre_recession_values: UNRATE=4.0833; FEDFUNDS=4.4178" in draft
+    assert "pre_recession_avg_z_scores: UNRATE=-1.01; FEDFUNDS=-0.0235" in draft
 
 
 def test_plan_report_structure_surfaces_headline_scalar_metrics_first(tmp_path):
@@ -1501,7 +1781,6 @@ def test_plan_report_structure_surfaces_headline_scalar_metrics_first(tmp_path):
                         "cpi_yoy": 3.32,
                         "yield_curve_10y3m": 0.62,
                     },
-                    "regime_classification": "Late Cycle",
                     "rri_current_value": 40.4,
                     "sahm_triggered": False,
                     "real_fed_funds_rate": 0.32,
@@ -1572,7 +1851,7 @@ def test_plan_report_structure_preserves_consumer_state_peer_and_sec_summary_val
     assert "consumer_stress_level=medium" in draft
 
 
-def test_plan_report_structure_surfaces_top_level_state_and_tech_values(tmp_path):
+def test_plan_report_structure_surfaces_top_level_state_and_generic_company_values(tmp_path):
     charts_path = tmp_path / "charts.json"
     charts_path.write_text("{}", encoding="utf-8")
 
@@ -1588,12 +1867,29 @@ def test_plan_report_structure_surfaces_top_level_state_and_tech_values(tmp_path
                         {"state": "California", "pop": 39242785, "income": 96334},
                         {"state": "Texas", "pop": 29640343, "income": 76292},
                     ],
-                    "tech_earnings": {
-                        "AAPL_rev_b": 365.82,
-                        "AAPL_nm_pct": 25.9,
-                        "MSFT_rev_b": 168.09,
-                        "MSFT_nm_pct": 36.5,
+                    "latest_fundamentals": {
+                        "AAPL": {
+                            "fiscal_year": 2025,
+                            "revenue_b": 365.82,
+                            "net_margin_pct": 25.9,
+                        },
+                        "MSFT": {
+                            "fiscal_year": 2025,
+                            "revenue_b": 168.09,
+                            "net_margin_pct": 36.5,
+                        },
                     },
+                    "numeric_facts": [
+                        {
+                            "id": "sec_company_facts.AAPL.revenue_b",
+                            "display_value": "$365.82B",
+                            "raw_value": 365.82,
+                            "tolerance": 0.005,
+                            "subject": "AAPL",
+                            "metric": "revenue_b",
+                            "source_key": "latest_fundamentals.AAPL.revenue_b",
+                        }
+                    ],
                 }
             ),
             original_query="Compare consumer stress in large states and tech earnings sensitivity.",
@@ -1607,9 +1903,99 @@ def test_plan_report_structure_surfaces_top_level_state_and_tech_values(tmp_path
     assert "Exact state comparison values from execution_summary.json" in draft
     assert "- California: pop=39242785, income=96334" in draft
     assert "- Texas: pop=29640343, income=76292" in draft
-    assert "Exact large-cap technology earnings values from execution_summary.json" in draft
-    assert "- AAPL_rev_b: 365.8" in draft
-    assert "- MSFT_nm_pct: 36.5" in draft
+    assert "Generic helper-produced evidence" in draft
+    assert "latest_fundamentals.AAPL: fiscal_year=2025" in draft
+    assert "net_margin_pct=36.5" in draft
+    assert "sec_company_facts.AAPL.revenue_b=$365.82B" in draft
+
+
+def test_plan_report_structure_compacts_top_level_helper_evidence(tmp_path):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text("{}", encoding="utf-8")
+
+    summary = {
+        "methods_used": ["analog_window_comparison"],
+        "chart_ids": ["analog_similarity"],
+        "historical_window_coverage": [
+            {
+                "label": "1995 soft landing",
+                "status": "covered",
+                "requested": True,
+                "requested_years": ["1995"],
+                "observed_months": 30,
+                "expected_months": 30,
+            }
+        ],
+        "analog_similarity_ranking": [
+            {
+                "label": "2001 recession",
+                "raw_distance": 19.831,
+                "normalized_similarity": 4.801,
+                "status": "ok",
+            }
+        ],
+        "analog_profiles": {
+            "2001 recession": {"unemployment": 5.5, "inflation": 2.7},
+            "current": {"unemployment": 4.1, "inflation": 3.1},
+        },
+        "source_coverage": {
+            "sec_company_facts": {"status": "covered"},
+            "valuation_market_data": {"status": "not_available"},
+        },
+        "limitations": ["Analog windows compare observed history, not causal mechanisms."],
+        "international_comparison": {
+            "latest_year": 2024,
+            "table": [
+                {
+                    "country": "United States",
+                    "gdp_growth": 2.79,
+                    "inflation": 3.1,
+                }
+            ],
+        },
+        "scenario_score_rows": [
+            {"scenario": "base", "score": 0.0, "note": "steady baseline"},
+            {"scenario": "bull", "score": 1.0, "note": "upside case"},
+            {"scenario": "bear", "score": -1.0, "note": "downside case"},
+        ],
+        "numeric_facts": [
+            {
+                "id": "state_comparison.CA.per_capita_personal_income",
+                "label": "California per-capita personal income",
+                "raw_value": 91116,
+                "display_value": "$91,120",
+                "unit": "usd_per_person",
+                "precision": -1,
+                "tolerance": 5,
+                "source_key": "state_comparison[CA].income",
+                "as_of_date": "2025-01",
+            }
+        ],
+        "latest_snapshot": {"unemployment_rate": 4.3},
+    }
+
+    result = json.loads(
+        plan_report_structure.func(
+            query_type="macro_indicator",
+            charts_json_path=str(charts_path),
+            execution_summary=json.dumps(summary),
+            original_query="Build a macro cycle report with unemployment outlook and tech earnings.",
+            runtime=_Runtime(),
+        )
+    )
+
+    draft = result["execution_summary_for_draft"]
+    assert "Structured evidence from execution_summary.json" not in draft
+    assert "Display-ready numeric facts from execution_summary.json" in draft
+    assert "state_comparison.CA.per_capita_personal_income=$91,120" in draft
+    assert "source_key=state_comparison[CA].income" in draft
+    assert "sec_company_facts: status=covered" in draft
+    assert "valuation_market_data: status=not_available" in draft
+    assert "Exact international peer comparison from execution_summary.json" in draft
+    assert "Generic helper-produced evidence" in draft
+    assert "historical_window_coverage: 1995 soft landing" in draft
+    assert "analog_similarity_ranking: 2001 recession" in draft
+    assert result["helper_evidence_for_draft"]["tables"]["analog_similarity_ranking"][0]["label"] == "2001 recession"
 
 
 def test_plan_report_structure_preserves_combined_consumer_acceptance_schema(tmp_path):
@@ -1635,24 +2021,25 @@ def test_plan_report_structure_preserves_combined_consumer_acceptance_schema(tmp
                         "consumer_squeeze": False,
                         "recession_risk": False,
                     },
-                    "composite_indicator": {
-                        "latest_index_value": 1.8556,
-                        "latest_percentile_0_100": 100.0,
-                        "latest_signal": "high",
-                        "latest_feature_values": {
+                    "composite_current_row": {
+                        "date": "2026-03-01",
+                        "composite_index": 1.8556,
+                        "composite_percentile_0_100": 100.0,
+                        "classification": "high",
+                        "feature_values": {
                             "UNRATE": 4.3,
                             "PAYEMS_yoy": 0.0877,
                             "PSAVERT": 3.6,
                             "UMCSENT": 53.3,
                         },
-                        "backtest_summary": {
-                            "status": "ok",
-                            "metrics": {
-                                "precision": 0.0987,
-                                "recall": 0.9836,
-                                "false_positive": 548,
-                                "false_negative": 1,
-                            },
+                    },
+                    "composite_validation_metrics": {
+                        "status": "ok",
+                        "metrics": {
+                            "precision": 0.0987,
+                            "recall": 0.9836,
+                            "false_positive": 548,
+                            "false_negative": 1,
                         },
                     },
                     "state_comparison": [
@@ -1670,41 +2057,55 @@ def test_plan_report_structure_preserves_combined_consumer_acceptance_schema(tmp
                             "Germany": {"gdp_growth": -0.5, "cpi": 2.26},
                         },
                     },
-                    "apple_summary": {
-                        "fiscal_year_start": 2021,
-                        "fiscal_year_latest": 2025,
-                        "revenue_cagr_pct": 3.276,
-                        "revenue_growth_pct": 13.762,
-                        "net_margin_pct": 26.915,
+                    "latest_fundamentals": {
+                        "AAPL": {
+                            "fiscal_year": 2025,
+                            "revenue_cagr_pct": 3.276,
+                            "revenue_growth_pct": 13.762,
+                            "net_margin_pct": 26.915,
+                        },
+                        "MSFT": {
+                            "fiscal_year": 2025,
+                            "revenue_cagr_pct": 13.782,
+                            "revenue_growth_pct": 67.605,
+                            "net_margin_pct": 36.146,
+                        },
                     },
-                    "msft_summary": {
-                        "fiscal_year_start": 2021,
-                        "fiscal_year_latest": 2025,
-                        "revenue_cagr_pct": 13.782,
-                        "revenue_growth_pct": 67.605,
-                        "net_margin_pct": 36.146,
-                    },
-                    "scenario_table": [
+                    "numeric_facts": [
+                        {
+                            "id": "sec_company_facts.MSFT.revenue_growth_pct",
+                            "display_value": "67.61%",
+                            "raw_value": 67.605,
+                            "tolerance": 0.005,
+                            "subject": "MSFT",
+                            "metric": "revenue_growth_pct",
+                            "source_key": "latest_fundamentals.MSFT.revenue_growth_pct",
+                        }
+                    ],
+                    "scenario_score_rows": [
                         {
                             "scenario": "base",
-                            "assumptions": ["Growth moderates, labor resilient"],
-                            "indicator_triggers": ["UNRATE 4.0-5.0, PSAVERT 4-6"],
-                            "confidence": "medium",
-                            "uncertainty_notes": "Fiscal wildcards",
+                            "score": 0.0,
+                            "drivers": ["Growth moderates, labor resilient"],
+                            "direction": "neutral",
+                            "threshold": 0.0,
+                            "note": "UNRATE 4.0-5.0, PSAVERT 4-6",
                         },
                         {
                             "scenario": "bull",
-                            "assumptions": ["Soft landing, consumer rebounds"],
-                            "indicator_triggers": ["UNRATE<4.5, PSAVERT>4, UMCSENT>70"],
-                            "confidence": "low",
-                            "uncertainty_notes": "Inflation resurgence risk",
+                            "score": 1.0,
+                            "drivers": ["Soft landing, consumer rebounds"],
+                            "direction": "upside",
+                            "threshold": 1.0,
+                            "note": "UNRATE<4.5, PSAVERT>4, UMCSENT>70",
                         },
                         {
                             "scenario": "bear",
-                            "assumptions": ["Consumer squeeze deepens"],
-                            "indicator_triggers": ["Real earn<0, PSAVERT<4, DRCCLACBS>5"],
-                            "confidence": "medium",
-                            "uncertainty_notes": "Labor divergence",
+                            "score": -1.0,
+                            "drivers": ["Consumer squeeze deepens"],
+                            "direction": "downside",
+                            "threshold": -1.0,
+                            "note": "Real earn<0, PSAVERT<4, DRCCLACBS>5",
                         },
                     ],
                 }
@@ -1721,25 +2122,28 @@ def test_plan_report_structure_preserves_combined_consumer_acceptance_schema(tmp
     assert "Exact current scenario trigger status" in draft
     assert "soft_landing=false" in draft
     assert "These are boolean trigger states, not probabilities" in draft
-    assert "Exact recession-risk framework values" in draft
-    assert "latest_index_value: 1.856" in draft
-    assert "backtest_metrics: precision=0.0987; recall=0.9836" in draft
+    assert "Generic helper-produced evidence" in draft
+    assert "composite_current_row" in draft
+    assert "composite_index=1.856" in draft
+    assert "composite_validation_metrics" in draft
+    assert "precision=0.0987" in draft
+    assert "recall=0.9836" in draft
     assert "- California: pop=39242785, med_inc=96334, med_home=783300" in draft
     assert "Exact World Bank peer comparison" in draft
     assert "- Germany: gdp_growth=-0.5, cpi=2.26" in draft
-    assert "Exact SEC EDGAR Apple/Microsoft summary values" in draft
-    assert "- AAPL: fiscal_year_start=2021, fiscal_year_latest=2025" in draft
+    assert "Generic helper-produced evidence" in draft
+    assert "latest_fundamentals.AAPL: fiscal_year=2025" in draft
     assert "revenue_growth_pct=67.61" in draft
-    assert "do not add segment mix, installed-base, or sensitivity percentages" in draft
-    assert "Required scenario table from execution_summary.json" in draft
-    assert "confidence=medium" in draft
+    assert "sec_company_facts.MSFT.revenue_growth_pct=67.61%" in draft
+    assert "scenario_score_rows: base" in draft
+    assert "confidence=medium" not in draft
 
 
-def test_plan_report_structure_compacts_current_regime_before_long_history(tmp_path):
+def test_plan_report_structure_compacts_generic_current_regime_before_long_history(tmp_path):
     charts_path = tmp_path / "charts.json"
     charts_path.write_text("{}", encoding="utf-8")
     history = [
-        {"date": f"2005-{month:02d}", "composite_score": 0.1, "regime_label": "expansion"}
+        {"date": f"2005-{month:02d}", "regime_score": 0.1, "regime": "expansion"}
         for month in range(1, 13)
     ] * 60
 
@@ -1749,19 +2153,24 @@ def test_plan_report_structure_compacts_current_regime_before_long_history(tmp_p
             charts_json_path=str(charts_path),
             execution_summary=json.dumps(
                 {
-                    "current_regime": "reacceleration",
-                    "composite_score": 0.7,
-                    "domain_scores": {
-                        "rates": 1,
-                        "labor": 0,
-                        "inflation": 0,
-                        "credit": 2,
-                        "output": 1,
+                    "current_regime_row": {
+                        "date": "2026-03",
+                        "status": "ok",
+                        "regime": "reacceleration",
+                        "regime_score": 0.7,
+                        "category_scores": {
+                            "rates": 1,
+                            "labor": 0,
+                            "inflation": 0,
+                            "credit": 2,
+                            "output": 1,
+                        },
                     },
-                    "composite_score_history": history,
-                    "evidence_table": [
+                    "regime_history_rows": history,
+                    "regime_evidence_rows": [
                         {
-                            "domain": "Inflation",
+                            "category": "Inflation",
+                            "indicator": "CPI_YOY",
                             "weight": 0.2,
                             "sub_indicators_used": ["CPI_YOY", "CPIC_YOY"],
                             "raw_values_latest": {"CPI_YOY": 0.0329, "CPIC_YOY": 0.026},
@@ -1769,19 +2178,19 @@ def test_plan_report_structure_compacts_current_regime_before_long_history(tmp_p
                             "contribution_to_composite": 0.0,
                         }
                     ],
-                    "historical_analogs": [
+                    "regime_analog_rows": [
                         {
                             "date": "2007-04",
-                            "regime_label": "reacceleration",
+                            "regime": "reacceleration",
                             "distance": 1.4151,
                             "domain_scores": {"composite": 0.75, "rates_score": 1},
                         }
                     ],
-                    "false_positive_caveats": [
-                        "Borderline: composite 0.70 within 0.2 of threshold."
-                    ],
-                    "classification_boundary_margin": 0.0,
-                    "current_month": "2026-03",
+                    "regime_design": {
+                        "method": "recession_regime_classifier",
+                        "min_categories": 3,
+                    },
+                    "limitations": ["Borderline: composite 0.70 within 0.2 of threshold."],
                     "statistical_summary": {
                         "latest_unemployment_rate": 4.3,
                         "latest_cpi_yoy_pct": 3.29,
@@ -1795,14 +2204,15 @@ def test_plan_report_structure_compacts_current_regime_before_long_history(tmp_p
     )
 
     draft = result["execution_summary_for_draft"]
-    assert draft.startswith("Required regime-classifier fields")
-    assert "regime_label: reacceleration" in draft
-    assert "regime_score: 0.7" in draft
-    assert "category_scores: rates=1; labor=0; inflation=0; credit=2; output=1" in draft
-    assert "raw_values_latest=CPI_YOY=0.0329;CPIC_YOY=0.026" in draft
-    assert "latest_unemployment_rate=4.3" in draft
-    assert "false_positive_caveats: Borderline: composite 0.70" in draft
-    assert "composite_score_history" not in draft
+    assert draft.startswith("Generic helper-produced evidence")
+    assert "current_regime_row" in draft
+    assert "regime=reacceleration" in draft
+    assert "regime_score=0.7" in draft
+    assert "category_scores={'rates': 1, 'labor': 0, 'inflation': 0, 'credit': 2, 'output': 1}" in draft
+    assert "raw_values_latest={'CPI_YOY': 0.0329, 'CPIC_YOY': 0.026}" in draft
+    assert "latest_unemployment_rate: 4.3" in draft
+    assert "limitations: Borderline: composite 0.70" in draft
+    assert "regime_history_rows" in draft
 
 
 def test_write_research_report_embeds_chart_id_list_shape(tmp_path):
@@ -1895,7 +2305,6 @@ def test_write_research_report_recovers_original_query_from_markdown_section(tmp
 
     assert "status" not in result
     assert report["query"] == query
-    assert report["scenario_table"] is not None
 
 
 def test_write_research_report_preserves_legacy_dual_axis_line_bar_charts(tmp_path):
@@ -2057,35 +2466,17 @@ def test_write_research_report_normalizes_legacy_dual_axis_config_charts(tmp_pat
     assert report["charts"]["labor_replay"]["series"][1]["yAxisId"] == "right"
 
 
-def test_write_research_report_embeds_scenario_table_and_gate_passes(tmp_path):
+def test_write_research_report_keeps_scenario_scores_in_execution_summary_only(tmp_path):
     charts_path = tmp_path / "charts.json"
     charts_path.write_text("{}", encoding="utf-8")
     summary_path = tmp_path / "execution_summary.json"
     summary_path.write_text(
         json.dumps(
             {
-                "scenario_table": [
-                    {
-                        "scenario": "base",
-                        "assumptions": ["Growth slows but avoids contraction"],
-                        "indicator_triggers": ["Initial claims stay below stress threshold"],
-                        "confidence": "medium",
-                        "uncertainty_notes": "Labor data revisions can alter the signal.",
-                    },
-                    {
-                        "scenario": "bull",
-                        "assumptions": ["Inflation cools while payrolls remain positive"],
-                        "indicator_triggers": ["Credit spreads narrow"],
-                        "confidence": "low",
-                        "uncertainty_notes": "Requires benign policy lag effects.",
-                    },
-                    {
-                        "scenario": "bear",
-                        "assumptions": ["Credit stress and layoffs rise together"],
-                        "indicator_triggers": ["Claims and spreads breach stress thresholds"],
-                        "confidence": "medium",
-                        "uncertainty_notes": "Trigger timing is uncertain.",
-                    },
+                "scenario_score_rows": [
+                    {"scenario": "base", "score": 0.0, "note": "Growth slows."},
+                    {"scenario": "bull", "score": 1.0, "note": "Inflation cools."},
+                    {"scenario": "bear", "score": -1.0, "note": "Credit stress rises."},
                 ]
             }
         ),
@@ -2124,9 +2515,62 @@ def test_write_research_report_embeds_scenario_table_and_gate_passes(tmp_path):
     report = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
 
     assert result["validation_issues"] == []
-    assert [row["scenario"] for row in report["scenario_table"]] == ["base", "bull", "bear"]
+    assert "scenario_score_rows" not in report
     assert gate["passes_gate"] is True
-    assert gate["scenarios"]["valid"] is True
+    assert gate["scenarios"]["row_count"] == 0
+
+
+def test_write_research_report_allows_generic_scenario_markdown_prewrite(tmp_path):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text("{}", encoding="utf-8")
+    summary_path = tmp_path / "execution_summary.json"
+    summary_path.write_text(
+        json.dumps(
+            {
+                "scenario_score_rows": [
+                    {
+                        "scenario": "bear",
+                        "score": -1.4,
+                        "value": 44.0,
+                        "threshold": 65.0,
+                        "direction": "at_or_above",
+                        "note": "Labor stress remains below the bear threshold.",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    runtime = SimpleNamespace(context=SimpleNamespace(job_id="job-1", output_dir=str(tmp_path)))
+    markdown = (
+        "## Executive Summary\nRecession risk is scenario-dependent.\n\n"
+        "## Scenario Table\n\n"
+        "| Scenario | Assumptions | Indicator Triggers | Confidence | Uncertainty Notes |\n"
+        "| --- | --- | --- | --- | --- |\n"
+        "| base | Growth slows but avoids contraction | Unemployment above 5.0% | medium | Labor data revisions can alter the signal. |\n"
+        "| bull | Inflation cools while payrolls remain positive | Credit spreads narrow | low | Requires benign policy lag effects. |\n"
+        "| bear | Credit stress and layoffs rise together | Labor stress >= 65.00 | medium | Trigger timing is uncertain. |\n\n"
+        "## Research Query\nBuild a recession risk dashboard with base, bull, and bear scenarios."
+    )
+
+    result = json.loads(
+        write_research_report.func(
+            runtime=runtime,
+            markdown=markdown,
+            charts_json_path=str(charts_path),
+            original_query="Build a recession risk dashboard with base, bull, and bear scenarios.",
+            title="Recession Risk Scenario Dashboard",
+            executive_summary="Recession risk is scenario-dependent.",
+            analysis_type="macro_indicator",
+            execution_summary=str(summary_path),
+        )
+    )
+
+    report = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
+
+    assert "report_path" in result
+    assert "scenario_score_rows" not in report
+    assert "status" not in result
 
 
 def test_write_research_report_recovers_original_query_from_prior_plan(tmp_path):
@@ -2182,7 +2626,6 @@ def test_write_research_report_recovers_original_query_from_prior_plan(tmp_path)
     assert "status" not in result
     assert result["validation_issues"] == []
     assert report["query"] == query
-    assert [row["scenario"] for row in report["scenario_table"]] == ["base", "bull", "bear"]
 
 
 def test_write_research_report_loads_job_execution_summary_when_omitted(tmp_path):
@@ -2191,28 +2634,10 @@ def test_write_research_report_loads_job_execution_summary_when_omitted(tmp_path
     (tmp_path / "execution_summary.json").write_text(
         json.dumps(
             {
-                "scenario_table": [
-                    {
-                        "scenario": "base",
-                        "assumptions": ["Growth slows but avoids contraction"],
-                        "indicator_triggers": ["Initial claims stay contained"],
-                        "confidence": "medium",
-                        "uncertainty_notes": "Labor data revisions can alter the signal.",
-                    },
-                    {
-                        "scenario": "bull",
-                        "assumptions": ["Inflation cools while payrolls remain positive"],
-                        "indicator_triggers": ["Credit spreads narrow"],
-                        "confidence": "low",
-                        "uncertainty_notes": "Requires benign policy lag effects.",
-                    },
-                    {
-                        "scenario": "bear",
-                        "assumptions": ["Credit stress and layoffs rise together"],
-                        "indicator_triggers": ["Claims and spreads breach stress thresholds"],
-                        "confidence": "medium",
-                        "uncertainty_notes": "Trigger timing is uncertain.",
-                    },
+                "scenario_score_rows": [
+                    {"scenario": "base", "score": 0.0, "note": "Growth slows."},
+                    {"scenario": "bull", "score": 1.0, "note": "Inflation cools."},
+                    {"scenario": "bear", "score": -1.0, "note": "Credit stress rises."},
                 ]
             }
         ),
@@ -2249,718 +2674,60 @@ def test_write_research_report_loads_job_execution_summary_when_omitted(tmp_path
     )
     report = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
 
-    assert [row["scenario"] for row in report["scenario_table"]] == ["base", "bull", "bear"]
+    assert "scenario_score_rows" not in report
     assert gate["passes_gate"] is True
-    assert gate["scenarios"]["valid"] is True
+    assert gate["scenarios"]["row_count"] == 0
 
 
-def test_write_research_report_loads_nested_scenario_analysis_table(tmp_path):
-    charts_path = tmp_path / "charts.json"
-    charts_path.write_text("{}", encoding="utf-8")
-    (tmp_path / "execution_summary.json").write_text(
-        json.dumps(
-            {
-                "scenario_analysis": {
-                    "scenario_table": [
-                        {
-                            "scenario": "base",
-                            "assumptions": ["Soft landing continues"],
-                            "indicator_triggers": ["Payroll growth remains positive"],
-                            "confidence": "medium",
-                            "uncertainty_notes": "Inflation data can revise.",
-                        },
-                        {
-                            "scenario": "bull",
-                            "assumptions": ["Growth reaccelerates"],
-                            "indicator_triggers": ["Real income improves"],
-                            "confidence": "low",
-                            "uncertainty_notes": "Productivity impulse is uncertain.",
-                        },
-                        {
-                            "scenario": "bear",
-                            "assumptions": ["Credit stress tightens"],
-                            "indicator_triggers": ["Unemployment rises"],
-                            "confidence": "low",
-                            "uncertainty_notes": "Timing remains uncertain.",
-                        },
-                    ]
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-    runtime = SimpleNamespace(context=SimpleNamespace(job_id="job-1", output_dir=str(tmp_path)))
-    markdown = (
-        "## Executive Summary\nRecession risk is scenario-dependent.\n\n"
-        "## Scenario Table\n\n"
-        "| Scenario | Assumptions | Indicator Triggers | Confidence | Uncertainty Notes |\n"
-        "| --- | --- | --- | --- | --- |\n"
-        "| base | Soft landing continues | Payroll growth remains positive | medium | Inflation data can revise. |\n"
-        "| bull | Growth reaccelerates | Real income improves | low | Productivity impulse is uncertain. |\n"
-        "| bear | Credit stress tightens | Unemployment rises | low | Timing remains uncertain. |\n\n"
-        "## Research Query\nBuild base/upside/downside scenarios for recession risk."
-    )
-
-    result = json.loads(
-        write_research_report.func(
-            runtime=runtime,
-            markdown=markdown,
-            charts_json_path=str(charts_path),
-            original_query="Build base/upside/downside scenarios for recession risk.",
-            title="Recession Risk Scenario Dashboard",
-            executive_summary="Recession risk is scenario-dependent.",
-            analysis_type="macro_indicator",
-        )
-    )
-    gate = json.loads(
-        validate_research_report_file.func(
-            runtime=runtime,
-            report_json_path=result["report_path"],
-        )
-    )
-    report = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
-
-    assert [row["scenario"] for row in report["scenario_table"]] == ["base", "bull", "bear"]
-    assert report["scenario_table"][0]["assumptions"] == ["Soft landing continues"]
-    assert gate["passes_gate"] is True
-    assert gate["scenarios"]["valid"] is True
-
-
-def test_write_research_report_normalizes_title_cased_compact_scenarios(tmp_path):
-    charts_path = tmp_path / "charts.json"
-    charts_path.write_text("{}", encoding="utf-8")
-    (tmp_path / "execution_summary.json").write_text(
-        json.dumps(
-            {
-                "scenarios": [
-                    {
-                        "Scenario": "Base (Soft Landing)",
-                        "Prob": "55%",
-                        "Equities": "S&P +5-10%",
-                        "Tech": "+8-12%",
-                    },
-                    {
-                        "Scenario": "Upside",
-                        "Prob": "20%",
-                        "Equities": "S&P +15-20%",
-                        "Tech": "+15-20%",
-                    },
-                    {
-                        "Scenario": "Downside",
-                        "Prob": "25%",
-                        "Equities": "S&P -15-20%",
-                        "Tech": "0-3%",
-                    },
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
-    runtime = SimpleNamespace(context=SimpleNamespace(job_id="job-1", output_dir=str(tmp_path)))
-    markdown = (
-        "## Executive Summary\nRecession risk is scenario-dependent.\n\n"
-        "## Scenario Table\n\n"
-        "| Scenario | Assumptions | Indicator Triggers | Confidence | Uncertainty Notes |\n"
-        "| --- | --- | --- | --- | --- |\n"
-        "| Base (Soft Landing) | Growth slows but avoids contraction | Claims stay contained | Medium | Data revisions can alter signals. |\n"
-        "| Upside | Real income and productivity improve | Production reaccelerates | Low | Requires benign policy lag effects. |\n"
-        "| Downside | Credit stress and layoffs rise together | Claims and spreads breach thresholds | Low | Trigger timing is uncertain. |\n\n"
-        "## Research Query\nProvide base, upside, and downside scenarios."
-    )
-
-    result = json.loads(
-        write_research_report.func(
-            runtime=runtime,
-            markdown=markdown,
-            charts_json_path=str(charts_path),
-            original_query="Provide base, upside, and downside scenarios.",
-            title="Scenario Dashboard",
-            executive_summary="Recession risk is scenario-dependent.",
-            analysis_type="macro_indicator",
-        )
-    )
-    gate = json.loads(
-        validate_research_report_file.func(
-            runtime=runtime,
-            report_json_path=result["report_path"],
-        )
-    )
-    report = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
-
-    assert [row["scenario"] for row in report["scenario_table"]] == ["base", "bull", "bear"]
-    assert "Equities: S&P +5-10%" in report["scenario_table"][0]["assumptions"]
-    assert gate["passes_gate"] is True
-    assert gate["scenarios"]["valid"] is True
-
-
-def test_write_research_report_normalizes_parenthesized_compact_scenarios(tmp_path):
-    charts_path = tmp_path / "charts.json"
-    charts_path.write_text("{}", encoding="utf-8")
-    (tmp_path / "execution_summary.json").write_text(
-        json.dumps(
-            {
-                "scenario_table": [
-                    {
-                        "scenario": "Base(Soft Landing)",
-                        "unrate": "~4.3%",
-                        "gdp": "~1.8%",
-                        "earnings": "Apple/MSFT stable margins",
-                    },
-                    {
-                        "scenario": "Upside(Reaccel)",
-                        "unrate": "~3.8%",
-                        "gdp": ">2.5%",
-                        "earnings": "Pricing power",
-                    },
-                    {
-                        "scenario": "Downside(Recession)",
-                        "unrate": ">5.0%",
-                        "gdp": "<0.5%",
-                        "earnings": "Revenue flat/negative",
-                    },
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
-    runtime = SimpleNamespace(context=SimpleNamespace(job_id="job-1", output_dir=str(tmp_path)))
-    markdown = (
-        "## Executive Summary\nRecession risk is scenario-dependent.\n\n"
-        "## Scenario Table\n\n"
-        "| Scenario | Probability | GDP Growth | Unemployment (6M) | EPS Impact |\n"
-        "|---|---|---|---|---|\n"
-        "| base | 55% | 1.5-2.0% | 4.2-4.5% | Stable margins |\n"
-        "| bull | 20% | 2.5-3.0% | 3.8-4.1% | Pricing power |\n"
-        "| bear | 25% | -1.0 to 0.0% | 5.0-5.5% | Revenue pressure |\n\n"
-        "## Research Query\nProvide base, upside, and downside scenarios."
-    )
-
-    result = json.loads(
-        write_research_report.func(
-            runtime=runtime,
-            markdown=markdown,
-            charts_json_path=str(charts_path),
-            original_query="Provide base, upside, and downside scenarios.",
-            title="Scenario Dashboard",
-            executive_summary="Recession risk is scenario-dependent.",
-            analysis_type="macro_indicator",
-        )
-    )
-    gate = json.loads(
-        validate_research_report_file.func(
-            runtime=runtime,
-            report_json_path=result["report_path"],
-        )
-    )
-    report = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
-
-    assert [row["scenario"] for row in report["scenario_table"]] == ["base", "bull", "bear"]
-    assert "Gdp: ~1.8%" in report["scenario_table"][0]["assumptions"]
-    assert gate["passes_gate"] is True
-    assert gate["scenarios"]["valid"] is True
-
-
-def test_write_research_report_recovers_scenario_table_from_markdown(tmp_path):
-    charts_path = tmp_path / "charts.json"
-    charts_path.write_text("{}", encoding="utf-8")
-    (tmp_path / "execution_summary.json").write_text(
-        json.dumps({"statistical_summary": "Soft landing base case with scenario risks."}),
-        encoding="utf-8",
-    )
-    runtime = SimpleNamespace(context=SimpleNamespace(job_id="job-1", output_dir=str(tmp_path)))
-    markdown = (
-        "## Executive Summary\nRecession risk is scenario-dependent.\n\n"
-        "## Scenario Table\n\n"
-        "| Scenario | Assumptions | Indicator Triggers | Confidence | Uncertainty Notes |\n"
-        "| --- | --- | --- | --- | --- |\n"
-        "| Base / Soft Landing | Growth slows but avoids contraction; inflation cools gradually | Claims stay contained; credit spreads remain orderly | Medium | Data revisions can alter labor and inflation signals. |\n"
-        "| Bull / Reacceleration | Productivity and real income improve | Payrolls and production reaccelerate | Low | Requires benign policy lag effects. |\n"
-        "| Bear / Recession | Credit stress and layoffs rise together | Claims and delinquencies breach stress thresholds | Medium | Trigger timing is uncertain. |\n\n"
-        "## Research Query\nProvide base, upside, and downside scenarios."
-    )
-
-    result = json.loads(
-        write_research_report.func(
-            runtime=runtime,
-            markdown=markdown,
-            charts_json_path=str(charts_path),
-            original_query="Provide base, upside, and downside scenarios.",
-            title="Scenario Dashboard",
-            executive_summary="Recession risk is scenario-dependent.",
-            analysis_type="macro_indicator",
-        )
-    )
-    gate = json.loads(
-        validate_research_report_file.func(
-            runtime=runtime,
-            report_json_path=result["report_path"],
-        )
-    )
-    report = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
-
-    assert [row["scenario"] for row in report["scenario_table"]] == ["base", "bull", "bear"]
-    assert "Growth slows" in report["scenario_table"][0]["assumptions"][0]
-    assert gate["passes_gate"] is True
-    assert gate["scenarios"]["valid"] is True
-
-
-def test_write_research_report_recovers_probability_confidence_scenario_table(tmp_path):
-    charts_path = tmp_path / "charts.json"
-    charts_path.write_text("{}", encoding="utf-8")
-    runtime = SimpleNamespace(context=SimpleNamespace(job_id="job-1", output_dir=str(tmp_path)))
-    markdown = (
-        "## Executive Summary\nScenario risk is balanced but recession risk remains material.\n\n"
-        "## Scenario Table\n\n"
-        "| Scenario | Assumptions | Indicator Triggers | Confidence | Uncertainty Notes |\n"
-        "| base | Soft landing continues; GDP near 2%; unemployment rises only modestly | Claims below 250k; credit stabilizes | 50% | Data revisions can change the signal. |\n"
-        "| bull | Reacceleration from productivity and easier policy | Payrolls above 200k; production improves | ~20% | AI capex payoff is uncertain. |\n"
-        "| bear | Recession begins as credit and labor weaken together | Claims above 300k; delinquencies rise | 0.30 | Shock timing is uncertain. |\n\n"
-        "## Research Query\nBuild base, upside, and downside scenarios."
-    )
-
-    result = json.loads(
-        write_research_report.func(
-            runtime=runtime,
-            markdown=markdown,
-            charts_json_path=str(charts_path),
-            original_query="Build base, upside, and downside scenarios.",
-            title="Scenario Dashboard",
-            executive_summary="Scenario risk is balanced but recession risk remains material.",
-            analysis_type="macro_indicator",
-        )
-    )
-    gate = json.loads(
-        validate_research_report_file.func(
-            runtime=runtime,
-            report_json_path=result["report_path"],
-        )
-    )
-    report = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
-
-    assert [row["scenario"] for row in report["scenario_table"]] == ["base", "bull", "bear"]
-    assert [row["confidence"] for row in report["scenario_table"]] == [
-        "medium",
-        "low",
-        "medium",
-    ]
-    assert gate["passes_gate"] is True
-    assert gate["scenarios"]["valid"] is True
-
-
-def test_write_research_report_recovers_labeled_probability_confidence_table(tmp_path):
-    charts_path = tmp_path / "charts.json"
-    charts_path.write_text("{}", encoding="utf-8")
-    runtime = SimpleNamespace(context=SimpleNamespace(job_id="job-1", output_dir=str(tmp_path)))
-    markdown = (
-        "## Executive Summary\nThe regime is a soft landing with downside tail risk.\n\n"
-        "## Scenario Table\n\n"
-        "| Scenario | Assumptions | Indicator Triggers | Confidence | Uncertainty Notes |\n"
-        "| base | GDP +1.5-2.0%; unemployment peaks 4.5% | Payrolls stabilize; core PCE cools | Moderate (45%) | Sticky services inflation could delay easing. |\n"
-        "| bull | GDP +2.5-3.0%; productivity accelerates | Payrolls +200k; sentiment improves | Low (20%) | Reacceleration could reignite inflation. |\n"
-        "| bear | GDP -1.0-1.5%; credit crunch | Sahm triggers; payrolls negative | Elevated (35%) | Timing is the main uncertainty. |\n\n"
-        "## Research Query\nBuild base, upside, and downside scenarios."
-    )
-
-    result = json.loads(
-        write_research_report.func(
-            runtime=runtime,
-            markdown=markdown,
-            charts_json_path=str(charts_path),
-            original_query="Build base, upside, and downside scenarios.",
-            title="Scenario Dashboard",
-            executive_summary="The regime is a soft landing with downside tail risk.",
-            analysis_type="macro_indicator",
-        )
-    )
-    gate = json.loads(
-        validate_research_report_file.func(
-            runtime=runtime,
-            report_json_path=result["report_path"],
-        )
-    )
-    report = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
-
-    assert [row["scenario"] for row in report["scenario_table"]] == ["base", "bull", "bear"]
-    assert [row["confidence"] for row in report["scenario_table"]] == [
-        "medium",
-        "low",
-        "medium",
-    ]
-    assert gate["passes_gate"] is True
-    assert gate["scenarios"]["valid"] is True
-
-
-def test_write_research_report_recovers_investment_committee_scenario_table(tmp_path):
-    charts_path = tmp_path / "charts.json"
-    charts_path.write_text("{}", encoding="utf-8")
-    (tmp_path / "execution_summary.json").write_text(
-        json.dumps({"statistical_summary": "Scenario rows are rendered in markdown."}),
-        encoding="utf-8",
-    )
-    runtime = SimpleNamespace(context=SimpleNamespace(job_id="job-1", output_dir=str(tmp_path)))
-    markdown = (
-        "## Executive Summary\nScenario risk is skewed but not recessionary.\n\n"
-        "## Scenario Table\n\n"
-        "| Scenario | Probability | Key Triggers | Unemployment Path | Yield Curve | AAPL Revenue Impact | MSFT Revenue Impact |\n"
-        "|---|---|---|---|---|---|---|\n"
-        "| base | ~50% | Steady payrolls and Fed easing | 4.4 to 4.6% peak | Steepens slowly | -1% to -3% | +2% to +5% |\n"
-        "| bull | ~20% | AI productivity boom and housing recovery | Falls below 4.0% | Normalizes | +3% to +6% | +8% to +15% |\n"
-        "| bear | ~30% | Sahm triggers and credit crunch | Rises to 5.5 to 6.0% | Steepens abruptly | -8% to -12% | -5% to -8% |\n\n"
-        "## Research Query\nBuild base, upside, and downside scenarios."
-    )
-
-    result = json.loads(
-        write_research_report.func(
-            runtime=runtime,
-            markdown=markdown,
-            charts_json_path=str(charts_path),
-            original_query="Build base, upside, and downside scenarios.",
-            title="Scenario Dashboard",
-            executive_summary="Scenario risk is skewed but not recessionary.",
-            analysis_type="macro_indicator",
-        )
-    )
-    gate = json.loads(
-        validate_research_report_file.func(
-            runtime=runtime,
-            report_json_path=result["report_path"],
-        )
-    )
-    report = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
-
-    assert [row["scenario"] for row in report["scenario_table"]] == ["base", "bull", "bear"]
-    assert "Probability: ~50%" in report["scenario_table"][0]["assumptions"]
-    assert "Unemployment Path: 4.4 to 4.6% peak" in report["scenario_table"][0]["assumptions"]
-    assert "Steady payrolls" in report["scenario_table"][0]["indicator_triggers"][0]
-    assert gate["passes_gate"] is True
-    assert gate["scenarios"]["valid"] is True
-
-
-def test_write_research_report_falls_back_when_execution_summary_is_compact_prose(tmp_path):
-    charts_path = tmp_path / "charts.json"
-    charts_path.write_text("{}", encoding="utf-8")
-    (tmp_path / "execution_summary.json").write_text(
-        json.dumps(
-            {
-                "scenarios": {
-                    "base": {
-                        "pct": 50,
-                        "gdp_f": 1.8,
-                        "drivers": "Gradual easing and labor resilience",
-                    },
-                    "upside": {
-                        "pct": 25,
-                        "gdp_f": 2.6,
-                        "drivers": "Rate cuts and productivity upside",
-                    },
-                    "downside": {
-                        "pct": 25,
-                        "gdp_f": 0.5,
-                        "drivers": "Credit stress and consumer weakness",
-                    },
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-    runtime = SimpleNamespace(context=SimpleNamespace(job_id="job-1", output_dir=str(tmp_path)))
-    markdown = (
-        "## Executive Summary\nRecession risk is scenario-dependent.\n\n"
-        "## Scenario Table\n\n"
-        "| Scenario | Assumptions | Indicator Triggers | Confidence | Uncertainty Notes |\n"
-        "| --- | --- | --- | --- | --- |\n"
-        "| base | Growth slows but avoids contraction | Claims stay contained | medium | Revisions can alter the signal. |\n"
-        "| bull | Inflation cools without labor-market damage | Sentiment improves | low | Requires benign policy lag effects. |\n"
-        "| bear | Credit stress and layoffs rise together | Claims rise | medium | Timing is uncertain. |\n\n"
-        "## Research Query\nProvide base, upside, and downside scenarios."
-    )
-
-    result = json.loads(
-        write_research_report.func(
-            runtime=runtime,
-            markdown=markdown,
-            charts_json_path=str(charts_path),
-            original_query="Provide base, upside, and downside scenarios.",
-            title="Recession Risk Scenario Dashboard",
-            executive_summary="Recession risk is scenario-dependent.",
-            analysis_type="macro_indicator",
-            execution_summary=(
-                "Required scenario table from execution_summary.json. Render it as a "
-                "markdown table with Scenario, Assumptions, Indicator Triggers, "
-                "Confidence, and Uncertainty Notes columns:\n"
-                "- base: assumptions=Growth slows; triggers=Claims; confidence=medium"
-            ),
-        )
-    )
-    gate = json.loads(
-        validate_research_report_file.func(
-            runtime=runtime,
-            report_json_path=result["report_path"],
-        )
-    )
-    report = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
-
-    assert [row["scenario"] for row in report["scenario_table"]] == ["base", "bull", "bear"]
-    assert gate["passes_gate"] is True
-    assert gate["scenarios"]["valid"] is True
-
-
-def test_write_research_report_normalizes_compact_scenario_mapping(tmp_path):
-    charts_path = tmp_path / "charts.json"
-    charts_path.write_text("{}", encoding="utf-8")
-    (tmp_path / "execution_summary.json").write_text(
-        json.dumps(
-            {
-                "scenarios": {
-                    "base": {
-                        "gdp_growth": 2.0,
-                        "unemployment": 4.2,
-                        "cpi": 2.6,
-                        "narrative": "Soft landing",
-                    },
-                    "upside": {
-                        "gdp_growth": 3.2,
-                        "unemployment": 3.8,
-                        "cpi": 3.5,
-                        "narrative": "Reacceleration",
-                    },
-                    "downside": {
-                        "gdp_growth": -0.5,
-                        "unemployment": 6.0,
-                        "cpi": 1.5,
-                        "narrative": "Recession",
-                    },
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-    runtime = SimpleNamespace(context=SimpleNamespace(job_id="job-1", output_dir=str(tmp_path)))
-    markdown = (
-        "## Executive Summary\nRecession risk is scenario-dependent.\n\n"
-        "## Scenario Table\n\n"
-        "| Scenario | Assumptions | Indicator Triggers | Confidence | Uncertainty Notes |\n"
-        "| --- | --- | --- | --- | --- |\n"
-        "| Base | Soft landing | Incoming data remain mixed | Medium | Monitor data revisions. |\n"
-        "| Bull | Reacceleration | Growth firms | Medium | Inflation could reheat. |\n"
-        "| Bear | Recession | Labor weakens | Medium | Trigger timing is uncertain. |\n\n"
-        "## Research Query\nProvide base, upside, and downside scenarios."
-    )
-
-    result = json.loads(
-        write_research_report.func(
-            runtime=runtime,
-            markdown=markdown,
-            charts_json_path=str(charts_path),
-            original_query="Provide base, upside, and downside scenarios.",
-            title="Scenario Dashboard",
-            executive_summary="Recession risk is scenario-dependent.",
-            analysis_type="macro_indicator",
-        )
-    )
-    gate = json.loads(
-        validate_research_report_file.func(
-            runtime=runtime,
-            report_json_path=result["report_path"],
-        )
-    )
-    report = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
-
-    assert [row["scenario"] for row in report["scenario_table"]] == ["base", "bull", "bear"]
-    assert "Gdp Growth: 2.0" in report["scenario_table"][0]["assumptions"]
-    assert gate["passes_gate"] is True
-    assert gate["scenarios"]["valid"] is True
-
-
-def test_write_research_report_normalizes_nested_statistical_scenarios(tmp_path):
-    charts_path = tmp_path / "charts.json"
-    charts_path.write_text("{}", encoding="utf-8")
-    (tmp_path / "execution_summary.json").write_text(
-        json.dumps(
-            {
-                "statistical_summary": {
-                    "scenarios": [
-                        {
-                            "scenario_name": "Base",
-                            "key_assumptions": ["Growth slows but avoids contraction"],
-                            "trigger_indicators": ["Initial claims stay contained"],
-                            "confidence": "Medium - labor data remain mixed",
-                            "uncertainty_notes": "Data revisions can alter the signal.",
-                        },
-                        {
-                            "scenario_name": "Bull",
-                            "key_assumptions": ["Inflation cools while payrolls remain positive"],
-                            "trigger_indicators": ["Credit spreads narrow"],
-                            "confidence": "Low-to-Medium",
-                            "uncertainty_notes": "Requires benign policy lag effects.",
-                        },
-                        {
-                            "scenario_name": "Bear",
-                            "key_assumptions": ["Credit stress and layoffs rise together"],
-                            "trigger_indicators": ["Claims and spreads breach stress thresholds"],
-                            "confidence": "Medium",
-                            "uncertainty_notes": "Trigger timing is uncertain.",
-                        },
-                    ]
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-    runtime = SimpleNamespace(context=SimpleNamespace(job_id="job-1", output_dir=str(tmp_path)))
-    markdown = (
-        "## Executive Summary\nRecession risk is scenario-dependent.\n\n"
-        "## Scenario Table\n\n"
-        "| Scenario | Assumptions | Indicator Triggers | Confidence | Uncertainty Notes |\n"
-        "| --- | --- | --- | --- | --- |\n"
-        "| Base | Growth slows but avoids contraction | Initial claims stay contained | Medium | Data revisions can alter the signal. |\n"
-        "| Bull | Inflation cools while payrolls remain positive | Credit spreads narrow | Low | Requires benign policy lag effects. |\n"
-        "| Bear | Credit stress and layoffs rise together | Claims and spreads breach stress thresholds | Medium | Trigger timing is uncertain. |\n\n"
-        "## Research Query\nBuild a recession risk dashboard with base, bull, and bear scenarios."
-    )
-
-    result = json.loads(
-        write_research_report.func(
-            runtime=runtime,
-            markdown=markdown,
-            charts_json_path=str(charts_path),
-            original_query="Build a recession risk dashboard with base, bull, and bear scenarios.",
-            title="Recession Risk Scenario Dashboard",
-            executive_summary="Recession risk is scenario-dependent.",
-            analysis_type="macro_indicator",
-        )
-    )
-    gate = json.loads(
-        validate_research_report_file.func(
-            runtime=runtime,
-            report_json_path=result["report_path"],
-        )
-    )
-    report = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
-
-    assert [row["scenario"] for row in report["scenario_table"]] == ["base", "bull", "bear"]
-    assert [row["confidence"] for row in report["scenario_table"]] == [
-        "medium",
-        "medium",
-        "medium",
-    ]
-    assert gate["passes_gate"] is True
-    assert gate["scenarios"]["valid"] is True
-
-
-def test_write_research_report_normalizes_top_level_scenarios_from_quant_handoff(tmp_path):
-    charts_path = tmp_path / "charts.json"
-    charts_path.write_text("{}", encoding="utf-8")
-    summary_path = tmp_path / "execution_summary.json"
-    summary_path.write_text(
-        json.dumps(
-            {
-                "scenarios": [
-                    {
-                        "scenario_name": "Base - Soft Landing",
-                        "probability_assignment": 50,
-                        "key_assumptions": ["Payroll growth moderates but remains positive"],
-                        "trigger_indicators": [
-                            {
-                                "indicator_name": "Yield Curve Slope",
-                                "current_value": 0.53,
-                                "threshold": -0.2,
-                                "status": "normal",
-                            }
-                        ],
-                        "confidence_notes": ["Labor data revisions can alter the signal."],
-                    },
-                    {
-                        "scenario_name": "Bull - Reacceleration",
-                        "probability_assignment": 20,
-                        "key_assumptions": ["Inflation cools without labor-market damage"],
-                        "trigger_indicators": [
-                            {
-                                "indicator_name": "Consumer Sentiment",
-                                "current_value": 53.3,
-                                "threshold": 60.0,
-                                "status": "positive",
-                            }
-                        ],
-                        "confidence_notes": ["Requires a positive productivity shock."],
-                    },
-                    {
-                        "scenario_name": "Bear - Hard Landing",
-                        "probability_assignment": 30,
-                        "key_assumptions": ["Payrolls contract and unemployment rises"],
-                        "trigger_indicators": [
-                            {
-                                "indicator_name": "Unemployment Rate",
-                                "current_value": 4.3,
-                                "threshold": 5.5,
-                                "status": "critical",
-                            }
-                        ],
-                        "confidence_notes": ["Yield-curve lead times vary materially."],
-                    },
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
-    runtime = SimpleNamespace(context=SimpleNamespace(job_id="job-1", output_dir=str(tmp_path)))
-    markdown = (
-        "## Executive Summary\nRecession risk is scenario-dependent.\n\n"
-        "## Scenario Table\n\n"
-        "| Scenario | Assumptions | Indicator Triggers | Confidence | Uncertainty Notes |\n"
-        "| --- | --- | --- | --- | --- |\n"
-        "| Base | Payroll growth moderates but remains positive | Yield curve normal | Medium | Labor data revisions can alter the signal. |\n"
-        "| Bull | Inflation cools without labor-market damage | Sentiment improves | Low | Requires a positive productivity shock. |\n"
-        "| Bear | Payrolls contract and unemployment rises | Unemployment worsens | Medium | Yield-curve lead times vary materially. |\n\n"
-        "## Research Query\nBuild a recession risk dashboard with base, bull, and bear scenarios."
-    )
-
-    result = json.loads(
-        write_research_report.func(
-            runtime=runtime,
-            markdown=markdown,
-            charts_json_path=str(charts_path),
-            original_query="Build a recession risk dashboard with base, bull, and bear scenarios.",
-            title="Recession Risk Scenario Dashboard",
-            executive_summary="Recession risk is scenario-dependent.",
-            analysis_type="macro_indicator",
-            execution_summary=str(summary_path),
-        )
-    )
-    gate = json.loads(
-        validate_research_report_file.func(
-            runtime=runtime,
-            report_json_path=result["report_path"],
-        )
-    )
-    report = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
-
-    assert [row["scenario"] for row in report["scenario_table"]] == ["base", "bull", "bear"]
-    assert [row["confidence"] for row in report["scenario_table"]] == [
-        "medium",
-        "low",
-        "medium",
-    ]
-    assert "Yield Curve Slope" in report["scenario_table"][0]["indicator_triggers"][0]
-    assert gate["passes_gate"] is True
-    assert gate["scenarios"]["valid"] is True
-
-
-def test_validate_research_report_file_rejects_missing_scenario_table_for_scenario_query(tmp_path):
+def test_validate_research_report_file_allows_generic_scenario_markdown_value_drift(tmp_path):
     report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "scenario_score_rows": [
+                    {
+                        "scenario": "bear",
+                        "indicator": "Labor stress",
+                        "source_key": "category_scores.Labor",
+                        "value": 44.0,
+                        "score": -1.2,
+                        "direction": "at_or_above",
+                        "threshold": 65.0,
+                        "basis": "75th percentile of labor stress history",
+                        "confidence": "medium",
+                        "note": "Data revisions.",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
     report_path.write_text(
         json.dumps(
             {
                 "schema_version": 1,
                 "job_id": "job-1",
-                "created_at": "2026-04-29T00:00:00+00:00",
+                "created_at": "2026-05-14T00:00:00+00:00",
                 "query": "Build a recession risk dashboard with base, bull, and bear scenarios.",
-                "title": "Recession Risk Scenario Dashboard",
-                "executive_summary": "Scenario summary.",
-                "markdown": "## Executive Summary\nScenario summary.\n\n## Research Query\nBuild a recession risk dashboard with base, bull, and bear scenarios.",
+                "title": "Scenario Dashboard",
+                "executive_summary": "Scenario risk is balanced.",
+                "markdown": (
+                    "## Executive Summary\nScenario risk is balanced.\n\n"
+                    "## Scenario Table\n\n"
+                    "| Scenario | Assumptions | Indicator Triggers | Confidence | Uncertainty Notes |\n"
+                    "| --- | --- | --- | --- | --- |\n"
+                    "| base | Growth slows but avoids contraction | Unemployment above 5.0% | medium | Revision risk. |\n"
+                    "| bull | Inflation cools | Spreads narrow | low | Policy lags. |\n"
+                    "| bear | Labor cracks | Labor stress >= 65.00 | medium | Timing risk. |\n\n"
+                    "## Research Query\nBuild a recession risk dashboard with base, bull, and bear scenarios."
+                ),
                 "charts": {},
                 "data_sources": [],
-                "metadata": {"analysis_type": "macro_indicator", "chart_count": 0, "word_count": 12},
+                "metadata": {
+                    "analysis_type": "macro_indicator",
+                    "chart_count": 0,
+                    "word_count": 50,
+                },
             }
         ),
         encoding="utf-8",
@@ -2971,13 +2738,11 @@ def test_validate_research_report_file_rejects_missing_scenario_table_for_scenar
         validate_research_report_file.func(
             runtime=runtime,
             report_json_path=str(report_path),
-            auto_patch=False,
         )
     )
 
-    assert gate["passes_gate"] is False
-    assert "missing required scenario_table rows" in gate["blockers"][0]
-    assert gate["scenarios"]["missing_required_rows"] == ["base", "bull", "bear"]
+    assert gate["passes_gate"] is True
+    assert gate["blockers"] == []
 
 
 def test_validate_research_report_file_rejects_zero_charts_for_chart_query(tmp_path):

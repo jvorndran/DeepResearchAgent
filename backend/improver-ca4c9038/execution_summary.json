@@ -1,0 +1,2265 @@
+{
+  "statistical_summary": {
+    "composite_risk": [],
+    "scenario_analysis": {
+      "topic": "recession risk",
+      "scenario_table": [
+        {
+          "scenario": "base",
+          "assumptions": [
+            "yield curve at current level",
+            "claims +5% YoY",
+            "IP -0.5% YoY",
+            "sentiment -5% YoY",
+            "payrolls +1.0% YoY",
+            "unemployment +0.1pp",
+            "real rate unchanged"
+          ],
+          "indicator_triggers": [
+            "yield curve inversion persists",
+            "claims moderate surge",
+            "IP slight decline"
+          ],
+          "confidence": "medium",
+          "uncertainty_notes": "Most likely path assuming gradual softening"
+        },
+        {
+          "scenario": "bull",
+          "assumptions": [
+            "yield curve steepens 50bp",
+            "claims -5% YoY",
+            "IP +1.5% YoY",
+            "sentiment +5% YoY",
+            "payrolls +1.5% YoY",
+            "unemployment -0.1pp",
+            "real rate -0.5%"
+          ],
+          "indicator_triggers": [
+            "yield curve steepens",
+            "claims decline",
+            "IP improves"
+          ],
+          "confidence": "low",
+          "uncertainty_notes": "Requires material improvement in growth outlook"
+        },
+        {
+          "scenario": "bear",
+          "assumptions": [
+            "yield curve -30bp deeper inverted",
+            "claims +20% YoY",
+            "IP -3% YoY",
+            "sentiment -15% YoY",
+            "payrolls 0% YoY",
+            "unemployment +0.4pp",
+            "real rate +0.5%"
+          ],
+          "indicator_triggers": [
+            "yield curve inverts further",
+            "claims surge",
+            "IP contracts sharply",
+            "sentiment collapses",
+            "payrolls stall",
+            "unemployment rises",
+            "real rate tightens"
+          ],
+          "confidence": "low",
+          "uncertainty_notes": "Shock scenario; tail risk of hard landing"
+        }
+      ],
+      "methods_used": [
+        "scenario_stress_test"
+      ],
+      "limitations": [
+        "Scenario rows are deterministic stress cases, not probabilities or guaranteed forecasts.",
+        "Indicator triggers should be revisited when input data revisions or new releases arrive."
+      ]
+    },
+    "signal_backtest": {
+      "status": "ok",
+      "historical_simulations": {
+        "signal_framework_backtest": {
+          "status": "ok",
+          "description": "Composite signal score backtested against recession starts with no-lookahead pre-recession windows and forward false-alarm checks.",
+          "components": [
+            "signal_yield",
+            "signal_claims",
+            "signal_ip",
+            "signal_sentiment",
+            "signal_payems",
+            "signal_unrate",
+            "signal_realrate"
+          ],
+          "threshold": 3.0,
+          "lookback_periods": 12,
+          "false_alarm_lookahead_periods": 12,
+          "total_observations": 12561,
+          "recession_count": 8,
+          "recession_calls_correct": 5,
+          "false_alarms": 48,
+          "true_positive_rate": 0.625,
+          "pre_recession_scores": {
+            "1970_recession_12m_before": {
+              "status": "no_observations"
+            },
+            "1973_recession_12m_before": {
+              "score": 2.0,
+              "components_triggered": [
+                "signal_sentiment",
+                "signal_realrate"
+              ],
+              "max_score_date": "1973-02-01"
+            },
+            "1980_recession_12m_before": {
+              "score": 4.0,
+              "components_triggered": [
+                "signal_yield",
+                "signal_claims",
+                "signal_payems",
+                "signal_realrate"
+              ],
+              "max_score_date": "1979-04-01"
+            },
+            "1981_recession_12m_before": {
+              "score": 4.0,
+              "components_triggered": [
+                "signal_yield",
+                "signal_sentiment",
+                "signal_payems",
+                "signal_realrate"
+              ],
+              "max_score_date": "1980-12-01"
+            },
+            "1990_recession_12m_before": {
+              "score": 3.0,
+              "components_triggered": [
+                "signal_yield",
+                "signal_payems",
+                "signal_realrate"
+              ],
+              "max_score_date": "1989-08-01"
+            },
+            "2001_recession_12m_before": {
+              "score": 4.0,
+              "components_triggered": [
+                "signal_yield",
+                "signal_payems",
+                "signal_unrate",
+                "signal_realrate"
+              ],
+              "max_score_date": "2001-01-01"
+            },
+            "2008_recession_12m_before": {
+              "score": 3.0,
+              "components_triggered": [
+                "signal_yield",
+                "signal_payems",
+                "signal_realrate"
+              ],
+              "max_score_date": "2007-01-01"
+            },
+            "2020_recession_12m_before": {
+              "score": 2.0,
+              "components_triggered": [
+                "signal_yield",
+                "signal_payems"
+              ],
+              "max_score_date": "2019-08-01"
+            }
+          },
+          "false_alarm_episodes": [
+            {
+              "period": "1971",
+              "start": "1971-01-01",
+              "end": "1971-01-01",
+              "max_score": 3.0,
+              "components_at_peak": [
+                "signal_claims",
+                "signal_payems",
+                "signal_unrate"
+              ]
+            },
+            {
+              "period": "1978",
+              "start": "1978-08-01",
+              "end": "1978-08-01",
+              "max_score": 3.0,
+              "components_at_peak": [
+                "signal_yield",
+                "signal_payems",
+                "signal_realrate"
+              ]
+            },
+            {
+              "period": "1978",
+              "start": "1978-08-01",
+              "end": "1978-08-01",
+              "max_score": 3.0,
+              "components_at_peak": [
+                "signal_yield",
+                "signal_payems",
+                "signal_realrate"
+              ]
+            },
+            {
+              "period": "1986",
+              "start": "1986-02-01",
+              "end": "1986-02-01",
+              "max_score": 3.0,
+              "components_at_peak": [
+                "signal_payems",
+                "signal_unrate",
+                "signal_realrate"
+              ]
+            },
+            {
+              "period": "1988",
+              "start": "1988-12-01",
+              "end": "1988-12-01",
+              "max_score": 3.0,
+              "components_at_peak": [
+                "signal_yield",
+                "signal_payems",
+                "signal_realrate"
+              ]
+            },
+            {
+              "period": "1988",
+              "start": "1988-12-01",
+              "end": "1988-12-01",
+              "max_score": 3.0,
+              "components_at_peak": [
+                "signal_yield",
+                "signal_payems",
+                "signal_realrate"
+              ]
+            },
+            {
+              "period": "1988",
+              "start": "1988-12-01",
+              "end": "1988-12-01",
+              "max_score": 3.0,
+              "components_at_peak": [
+                "signal_yield",
+                "signal_payems",
+                "signal_realrate"
+              ]
+            },
+            {
+              "period": "1989",
+              "start": "1989-01-01",
+              "end": "1989-01-01",
+              "max_score": 3.0,
+              "components_at_peak": [
+                "signal_yield",
+                "signal_payems",
+                "signal_realrate"
+              ]
+            },
+            {
+              "period": "1989",
+              "start": "1989-01-01",
+              "end": "1989-06-01",
+              "max_score": 3.0,
+              "components_at_peak": [
+                "signal_yield",
+                "signal_payems",
+                "signal_realrate"
+              ]
+            },
+            {
+              "period": "1991",
+              "start": "1991-11-01",
+              "end": "1991-11-01",
+              "max_score": 3.0,
+              "components_at_peak": [
+                "signal_sentiment",
+                "signal_payems",
+                "signal_realrate"
+              ]
+            },
+            {
+              "period": "1991",
+              "start": "1991-11-01",
+              "end": "1991-11-01",
+              "max_score": 3.0,
+              "components_at_peak": [
+                "signal_sentiment",
+                "signal_payems",
+                "signal_realrate"
+              ]
+            },
+            {
+              "period": "1995",
+              "start": "1995-04-01",
+              "end": "1995-04-01",
+              "max_score": 3.0,
+              "components_at_peak": [
+                "signal_payems",
+                "signal_unrate",
+                "signal_realrate"
+              ]
+            },
+            {
+              "period": "1998",
+              "start": "1998-06-01",
+              "end": "1998-06-01",
+              "max_score": 3.0,
+              "components_at_peak": [
+                "signal_yield",
+                "signal_payems",
+                "signal_realrate"
+              ]
+            },
+            {
+              "period": "1998",
+              "start": "1998-06-01",
+              "end": "1998-07-01",
+              "max_score": 3.0,
+              "components_at_peak": [
+                "signal_yield",
+                "signal_payems",
+                "signal_realrate"
+              ]
+            },
+            {
+              "period": "1998",
+              "start": "1998-07-01",
+              "end": "1998-07-01",
+              "max_score": 3.0,
+              "components_at_peak": [
+                "signal_yield",
+                "signal_payems",
+                "signal_realrate"
+              ]
+            },
+            {
+              "period": "1998",
+              "start": "1998-07-01",
+              "end": "1998-07-01",
+              "max_score": 3.0,
+              "components_at_peak": [
+                "signal_yield",
+                "signal_payems",
+                "signal_realrate"
+              ]
+            },
+            {
+              "period": "1998",
+              "start": "1998-07-01",
+              "end": "1998-07-01",
+              "max_score": 3.0,
+              "components_at_peak": [
+                "signal_yield",
+                "signal_payems",
+                "signal_realrate"
+              ]
+            },
+            {
+              "period": "1998",
+              "start": "1998-07-01",
+              "end": "1998-07-01",
+              "max_score": 3.0,
+              "components_at_peak": [
+                "signal_yield",
+                "signal_payems",
+                "signal_realrate"
+              ]
+            },
+            {
+              "period": "1998",
+              "start": "1998-07-01",
+              "end": "1998-07-01",
+              "max_score": 3.0,
+              "components_at_peak": [
+                "signal_yield",
+                "signal_payems",
+                "signal_realrate"
+              ]
+            },
+            {
+              "period": "2000",
+              "start": "2000-02-01",
+              "end": "2000-02-01",
+              "max_score": 3.0,
+              "components_at_peak": [
+                "signal_yield",
+                "signal_payems",
+                "signal_realrate"
+              ]
+            },
+            {
+              "period": "2000",
+              "start": "2000-02-01",
+              "end": "2000-02-01",
+              "max_score": 3.0,
+              "components_at_peak": [
+                "signal_yield",
+                "signal_payems",
+                "signal_realrate"
+              ]
+            },
+            {
+              "period": "2005",
+              "start": "2005-09-01",
+              "end": "2005-09-01",
+              "max_score": 4.0,
+              "components_at_peak": [
+                "signal_claims",
+                "signal_ip",
+                "signal_sentiment",
+                "signal_payems"
+              ]
+            },
+            {
+              "period": "2005",
+              "start": "2005-09-01",
+              "end": "2005-09-01",
+              "max_score": 4.0,
+              "components_at_peak": [
+                "signal_claims",
+                "signal_ip",
+                "signal_sentiment",
+                "signal_payems"
+              ]
+            },
+            {
+              "period": "2005",
+              "start": "2005-09-01",
+              "end": "2005-09-01",
+              "max_score": 4.0,
+              "components_at_peak": [
+                "signal_claims",
+                "signal_ip",
+                "signal_sentiment",
+                "signal_payems"
+              ]
+            },
+            {
+              "period": "2005",
+              "start": "2005-12-01",
+              "end": "2005-12-01",
+              "max_score": 3.0,
+              "components_at_peak": [
+                "signal_yield",
+                "signal_payems",
+                "signal_realrate"
+              ]
+            },
+            {
+              "period": "2006",
+              "start": "2006-01-01",
+              "end": "2006-01-01",
+              "max_score": 3.0,
+              "components_at_peak": [
+                "signal_yield",
+                "signal_payems",
+                "signal_realrate"
+              ]
+            },
+            {
+              "period": "2006",
+              "start": "2006-02-01",
+              "end": "2006-02-01",
+              "max_score": 3.0,
+              "components_at_peak": [
+                "signal_yield",
+                "signal_payems",
+                "signal_realrate"
+              ]
+            },
+            {
+              "period": "2006",
+              "start": "2006-02-01",
+              "end": "2006-02-01",
+              "max_score": 3.0,
+              "components_at_peak": [
+                "signal_yield",
+                "signal_payems",
+                "signal_realrate"
+              ]
+            },
+            {
+              "period": "2006",
+              "start": "2006-03-01",
+              "end": "2006-03-01",
+              "max_score": 3.0,
+              "components_at_peak": [
+                "signal_yield",
+                "signal_payems",
+                "signal_realrate"
+              ]
+            },
+            {
+              "period": "2006",
+              "start": "2006-03-01",
+              "end": "2006-03-01",
+              "max_score": 3.0,
+              "components_at_peak": [
+                "signal_yield",
+                "signal_payems",
+                "signal_realrate"
+              ]
+            },
+            {
+              "period": "2006",
+              "start": "2006-03-01",
+              "end": "2006-03-01",
+              "max_score": 3.0,
+              "components_at_peak": [
+                "signal_yield",
+                "signal_payems",
+                "signal_realrate"
+              ]
+            },
+            {
+              "period": "2006",
+              "start": "2006-03-01",
+              "end": "2006-03-01",
+              "max_score": 3.0,
+              "components_at_peak": [
+                "signal_yield",
+                "signal_payems",
+                "signal_realrate"
+              ]
+            },
+            {
+              "period": "2006",
+              "start": "2006-03-01",
+              "end": "2006-03-01",
+              "max_score": 3.0,
+              "components_at_peak": [
+                "signal_yield",
+                "signal_payems",
+                "signal_realrate"
+              ]
+            },
+            {
+              "period": "2006",
+              "start": "2006-03-01",
+              "end": "2006-03-01",
+              "max_score": 3.0,
+              "components_at_peak": [
+                "signal_yield",
+                "signal_payems",
+                "signal_realrate"
+              ]
+            },
+            {
+              "period": "2006",
+              "start": "2006-06-01",
+              "end": "2006-06-01",
+              "max_score": 3.0,
+              "components_at_peak": [
+                "signal_yield",
+                "signal_payems",
+                "signal_realrate"
+              ]
+            },
+            {
+              "period": "2006",
+              "start": "2006-06-01",
+              "end": "2006-06-01",
+              "max_score": 3.0,
+              "components_at_peak": [
+                "signal_yield",
+                "signal_payems",
+                "signal_realrate"
+              ]
+            },
+            {
+              "period": "2006",
+              "start": "2006-06-01",
+              "end": "2006-06-01",
+              "max_score": 3.0,
+              "components_at_peak": [
+                "signal_yield",
+                "signal_payems",
+                "signal_realrate"
+              ]
+            },
+            {
+              "period": "2006",
+              "start": "2006-07-01",
+              "end": "2006-07-01",
+              "max_score": 3.0,
+              "components_at_peak": [
+                "signal_yield",
+                "signal_payems",
+                "signal_realrate"
+              ]
+            },
+            {
+              "period": "2006",
+              "start": "2006-07-01",
+              "end": "2006-08-01",
+              "max_score": 3.0,
+              "components_at_peak": [
+                "signal_yield",
+                "signal_payems",
+                "signal_realrate"
+              ]
+            },
+            {
+              "period": "2006",
+              "start": "2006-08-01",
+              "end": "2006-08-01",
+              "max_score": 3.0,
+              "components_at_peak": [
+                "signal_yield",
+                "signal_payems",
+                "signal_realrate"
+              ]
+            },
+            {
+              "period": "2006",
+              "start": "2006-08-01",
+              "end": "2006-08-01",
+              "max_score": 3.0,
+              "components_at_peak": [
+                "signal_yield",
+                "signal_payems",
+                "signal_realrate"
+              ]
+            },
+            {
+              "period": "2022",
+              "start": "2022-09-01",
+              "end": "2022-09-01",
+              "max_score": 3.0,
+              "components_at_peak": [
+                "signal_yield",
+                "signal_payems",
+                "signal_realrate"
+              ]
+            },
+            {
+              "period": "2022-2024",
+              "start": "2022-10-01",
+              "end": "2024-08-01",
+              "max_score": 4.0,
+              "components_at_peak": [
+                "signal_yield",
+                "signal_sentiment",
+                "signal_payems",
+                "signal_realrate"
+              ]
+            },
+            {
+              "period": "2024",
+              "start": "2024-08-01",
+              "end": "2024-08-01",
+              "max_score": 3.0,
+              "components_at_peak": [
+                "signal_yield",
+                "signal_payems",
+                "signal_realrate"
+              ]
+            },
+            {
+              "period": "2024",
+              "start": "2024-09-01",
+              "end": "2024-09-01",
+              "max_score": 3.0,
+              "components_at_peak": [
+                "signal_yield",
+                "signal_payems",
+                "signal_realrate"
+              ]
+            },
+            {
+              "period": "2025",
+              "start": "2025-03-01",
+              "end": "2025-03-01",
+              "max_score": 3.0,
+              "components_at_peak": [
+                "signal_sentiment",
+                "signal_payems",
+                "signal_realrate"
+              ]
+            },
+            {
+              "period": "2025",
+              "start": "2025-03-01",
+              "end": "2025-03-01",
+              "max_score": 3.0,
+              "components_at_peak": [
+                "signal_sentiment",
+                "signal_payems",
+                "signal_realrate"
+              ]
+            },
+            {
+              "period": "2025",
+              "start": "2025-03-01",
+              "end": "2025-03-01",
+              "max_score": 3.0,
+              "components_at_peak": [
+                "signal_sentiment",
+                "signal_payems",
+                "signal_realrate"
+              ]
+            }
+          ],
+          "current_signal": {
+            "score": 2.0,
+            "interpretation": "yellow",
+            "components_triggered": [
+              "signal_payems",
+              "signal_realrate"
+            ],
+            "date": "2026-05-01"
+          }
+        }
+      },
+      "simulation_design": {
+        "recession_col": "USREC",
+        "component_cols": [
+          "signal_yield",
+          "signal_claims",
+          "signal_ip",
+          "signal_sentiment",
+          "signal_payems",
+          "signal_unrate",
+          "signal_realrate"
+        ],
+        "threshold": 3.0,
+        "lookback_periods": 12,
+        "false_alarm_lookahead_periods": 12
+      },
+      "methods_used": [
+        "signal_framework_backtest"
+      ],
+      "limitations": [
+        "Component thresholds are analyst-defined and should be sensitivity-tested.",
+        "Small recession event counts make true-positive rates unstable.",
+        "False alarms are defined as signal blocks not followed by a recession within the configured lookahead window."
+      ]
+    },
+    "current_signals": {
+      "Yield Curve Inversion": {
+        "value": 0.47,
+        "triggered": false
+      },
+      "Initial Claims Surge": {
+        "value": -1.3237,
+        "triggered": false
+      },
+      "Industrial Production Decline": {
+        "value": 0.0,
+        "triggered": false
+      },
+      "Consumer Sentiment Drop": {
+        "value": 0.0,
+        "triggered": false
+      },
+      "Nonfarm Payrolls Slowdown": {
+        "value": 0.0,
+        "triggered": true
+      },
+      "Unemployment Rise": {
+        "value": 0.0,
+        "triggered": false
+      },
+      "Real Fed Funds Tight": {
+        "value": 3.64,
+        "triggered": true
+      }
+    },
+    "current_composite_score": 2
+  },
+  "data_sources": [
+    {
+      "series_id": "T10Y2Y",
+      "path": "/home/vorndranj/projects/DeepResearchAgent/backend/data/_auto/fred_get_series_T10Y2Y_1778772520204381081_e0665478.csv"
+    },
+    {
+      "series_id": "UNRATE",
+      "path": "/home/vorndranj/projects/DeepResearchAgent/backend/data/_auto/fred_get_series_UNRATE_1778772520032844629_bdab3093.csv"
+    },
+    {
+      "series_id": "ICSA",
+      "path": "/home/vorndranj/projects/DeepResearchAgent/backend/data/_auto/fred_get_series_ICSA_1778772520130273685_da204b9c.csv"
+    },
+    {
+      "series_id": "INDPRO",
+      "path": "/home/vorndranj/projects/DeepResearchAgent/backend/data/_auto/fred_get_series_INDPRO_1778772520012119970_2281305a.csv"
+    },
+    {
+      "series_id": "UMCSENT",
+      "path": "/home/vorndranj/projects/DeepResearchAgent/backend/data/_auto/fred_get_series_UMCSENT_1778772519878841019_7ec82221.csv"
+    },
+    {
+      "series_id": "USREC",
+      "path": "/home/vorndranj/projects/DeepResearchAgent/backend/data/_auto/fred_get_series_USREC_1778772519907198503_7d82ed16.csv"
+    },
+    {
+      "series_id": "FEDFUNDS",
+      "path": "/home/vorndranj/projects/DeepResearchAgent/backend/data/_auto/fred_get_series_FEDFUNDS_1778772519823946939_56ce7165.csv"
+    },
+    {
+      "series_id": "CPIAUCSL",
+      "path": "/home/vorndranj/projects/DeepResearchAgent/backend/data/_auto/fred_get_series_CPIAUCSL_1778772520075832411_b93e2dd1.csv"
+    },
+    {
+      "series_id": "PAYEMS",
+      "path": "/home/vorndranj/projects/DeepResearchAgent/backend/data/_auto/fred_get_series_PAYEMS_1778772519759656781_6d473603.csv"
+    }
+  ],
+  "historical_simulations": {
+    "signal_framework_backtest": {
+      "status": "ok",
+      "description": "Composite signal score backtested against recession starts with no-lookahead pre-recession windows and forward false-alarm checks.",
+      "components": [
+        "signal_yield",
+        "signal_claims",
+        "signal_ip",
+        "signal_sentiment",
+        "signal_payems",
+        "signal_unrate",
+        "signal_realrate"
+      ],
+      "threshold": 3.0,
+      "lookback_periods": 12,
+      "false_alarm_lookahead_periods": 12,
+      "total_observations": 12561,
+      "recession_count": 8,
+      "recession_calls_correct": 5,
+      "false_alarms": 48,
+      "true_positive_rate": 0.625,
+      "pre_recession_scores": {
+        "1970_recession_12m_before": {
+          "status": "no_observations"
+        },
+        "1973_recession_12m_before": {
+          "score": 2.0,
+          "components_triggered": [
+            "signal_sentiment",
+            "signal_realrate"
+          ],
+          "max_score_date": "1973-02-01"
+        },
+        "1980_recession_12m_before": {
+          "score": 4.0,
+          "components_triggered": [
+            "signal_yield",
+            "signal_claims",
+            "signal_payems",
+            "signal_realrate"
+          ],
+          "max_score_date": "1979-04-01"
+        },
+        "1981_recession_12m_before": {
+          "score": 4.0,
+          "components_triggered": [
+            "signal_yield",
+            "signal_sentiment",
+            "signal_payems",
+            "signal_realrate"
+          ],
+          "max_score_date": "1980-12-01"
+        },
+        "1990_recession_12m_before": {
+          "score": 3.0,
+          "components_triggered": [
+            "signal_yield",
+            "signal_payems",
+            "signal_realrate"
+          ],
+          "max_score_date": "1989-08-01"
+        },
+        "2001_recession_12m_before": {
+          "score": 4.0,
+          "components_triggered": [
+            "signal_yield",
+            "signal_payems",
+            "signal_unrate",
+            "signal_realrate"
+          ],
+          "max_score_date": "2001-01-01"
+        },
+        "2008_recession_12m_before": {
+          "score": 3.0,
+          "components_triggered": [
+            "signal_yield",
+            "signal_payems",
+            "signal_realrate"
+          ],
+          "max_score_date": "2007-01-01"
+        },
+        "2020_recession_12m_before": {
+          "score": 2.0,
+          "components_triggered": [
+            "signal_yield",
+            "signal_payems"
+          ],
+          "max_score_date": "2019-08-01"
+        }
+      },
+      "false_alarm_episodes": [
+        {
+          "period": "1971",
+          "start": "1971-01-01",
+          "end": "1971-01-01",
+          "max_score": 3.0,
+          "components_at_peak": [
+            "signal_claims",
+            "signal_payems",
+            "signal_unrate"
+          ]
+        },
+        {
+          "period": "1978",
+          "start": "1978-08-01",
+          "end": "1978-08-01",
+          "max_score": 3.0,
+          "components_at_peak": [
+            "signal_yield",
+            "signal_payems",
+            "signal_realrate"
+          ]
+        },
+        {
+          "period": "1978",
+          "start": "1978-08-01",
+          "end": "1978-08-01",
+          "max_score": 3.0,
+          "components_at_peak": [
+            "signal_yield",
+            "signal_payems",
+            "signal_realrate"
+          ]
+        },
+        {
+          "period": "1986",
+          "start": "1986-02-01",
+          "end": "1986-02-01",
+          "max_score": 3.0,
+          "components_at_peak": [
+            "signal_payems",
+            "signal_unrate",
+            "signal_realrate"
+          ]
+        },
+        {
+          "period": "1988",
+          "start": "1988-12-01",
+          "end": "1988-12-01",
+          "max_score": 3.0,
+          "components_at_peak": [
+            "signal_yield",
+            "signal_payems",
+            "signal_realrate"
+          ]
+        },
+        {
+          "period": "1988",
+          "start": "1988-12-01",
+          "end": "1988-12-01",
+          "max_score": 3.0,
+          "components_at_peak": [
+            "signal_yield",
+            "signal_payems",
+            "signal_realrate"
+          ]
+        },
+        {
+          "period": "1988",
+          "start": "1988-12-01",
+          "end": "1988-12-01",
+          "max_score": 3.0,
+          "components_at_peak": [
+            "signal_yield",
+            "signal_payems",
+            "signal_realrate"
+          ]
+        },
+        {
+          "period": "1989",
+          "start": "1989-01-01",
+          "end": "1989-01-01",
+          "max_score": 3.0,
+          "components_at_peak": [
+            "signal_yield",
+            "signal_payems",
+            "signal_realrate"
+          ]
+        },
+        {
+          "period": "1989",
+          "start": "1989-01-01",
+          "end": "1989-06-01",
+          "max_score": 3.0,
+          "components_at_peak": [
+            "signal_yield",
+            "signal_payems",
+            "signal_realrate"
+          ]
+        },
+        {
+          "period": "1991",
+          "start": "1991-11-01",
+          "end": "1991-11-01",
+          "max_score": 3.0,
+          "components_at_peak": [
+            "signal_sentiment",
+            "signal_payems",
+            "signal_realrate"
+          ]
+        },
+        {
+          "period": "1991",
+          "start": "1991-11-01",
+          "end": "1991-11-01",
+          "max_score": 3.0,
+          "components_at_peak": [
+            "signal_sentiment",
+            "signal_payems",
+            "signal_realrate"
+          ]
+        },
+        {
+          "period": "1995",
+          "start": "1995-04-01",
+          "end": "1995-04-01",
+          "max_score": 3.0,
+          "components_at_peak": [
+            "signal_payems",
+            "signal_unrate",
+            "signal_realrate"
+          ]
+        },
+        {
+          "period": "1998",
+          "start": "1998-06-01",
+          "end": "1998-06-01",
+          "max_score": 3.0,
+          "components_at_peak": [
+            "signal_yield",
+            "signal_payems",
+            "signal_realrate"
+          ]
+        },
+        {
+          "period": "1998",
+          "start": "1998-06-01",
+          "end": "1998-07-01",
+          "max_score": 3.0,
+          "components_at_peak": [
+            "signal_yield",
+            "signal_payems",
+            "signal_realrate"
+          ]
+        },
+        {
+          "period": "1998",
+          "start": "1998-07-01",
+          "end": "1998-07-01",
+          "max_score": 3.0,
+          "components_at_peak": [
+            "signal_yield",
+            "signal_payems",
+            "signal_realrate"
+          ]
+        },
+        {
+          "period": "1998",
+          "start": "1998-07-01",
+          "end": "1998-07-01",
+          "max_score": 3.0,
+          "components_at_peak": [
+            "signal_yield",
+            "signal_payems",
+            "signal_realrate"
+          ]
+        },
+        {
+          "period": "1998",
+          "start": "1998-07-01",
+          "end": "1998-07-01",
+          "max_score": 3.0,
+          "components_at_peak": [
+            "signal_yield",
+            "signal_payems",
+            "signal_realrate"
+          ]
+        },
+        {
+          "period": "1998",
+          "start": "1998-07-01",
+          "end": "1998-07-01",
+          "max_score": 3.0,
+          "components_at_peak": [
+            "signal_yield",
+            "signal_payems",
+            "signal_realrate"
+          ]
+        },
+        {
+          "period": "1998",
+          "start": "1998-07-01",
+          "end": "1998-07-01",
+          "max_score": 3.0,
+          "components_at_peak": [
+            "signal_yield",
+            "signal_payems",
+            "signal_realrate"
+          ]
+        },
+        {
+          "period": "2000",
+          "start": "2000-02-01",
+          "end": "2000-02-01",
+          "max_score": 3.0,
+          "components_at_peak": [
+            "signal_yield",
+            "signal_payems",
+            "signal_realrate"
+          ]
+        },
+        {
+          "period": "2000",
+          "start": "2000-02-01",
+          "end": "2000-02-01",
+          "max_score": 3.0,
+          "components_at_peak": [
+            "signal_yield",
+            "signal_payems",
+            "signal_realrate"
+          ]
+        },
+        {
+          "period": "2005",
+          "start": "2005-09-01",
+          "end": "2005-09-01",
+          "max_score": 4.0,
+          "components_at_peak": [
+            "signal_claims",
+            "signal_ip",
+            "signal_sentiment",
+            "signal_payems"
+          ]
+        },
+        {
+          "period": "2005",
+          "start": "2005-09-01",
+          "end": "2005-09-01",
+          "max_score": 4.0,
+          "components_at_peak": [
+            "signal_claims",
+            "signal_ip",
+            "signal_sentiment",
+            "signal_payems"
+          ]
+        },
+        {
+          "period": "2005",
+          "start": "2005-09-01",
+          "end": "2005-09-01",
+          "max_score": 4.0,
+          "components_at_peak": [
+            "signal_claims",
+            "signal_ip",
+            "signal_sentiment",
+            "signal_payems"
+          ]
+        },
+        {
+          "period": "2005",
+          "start": "2005-12-01",
+          "end": "2005-12-01",
+          "max_score": 3.0,
+          "components_at_peak": [
+            "signal_yield",
+            "signal_payems",
+            "signal_realrate"
+          ]
+        },
+        {
+          "period": "2006",
+          "start": "2006-01-01",
+          "end": "2006-01-01",
+          "max_score": 3.0,
+          "components_at_peak": [
+            "signal_yield",
+            "signal_payems",
+            "signal_realrate"
+          ]
+        },
+        {
+          "period": "2006",
+          "start": "2006-02-01",
+          "end": "2006-02-01",
+          "max_score": 3.0,
+          "components_at_peak": [
+            "signal_yield",
+            "signal_payems",
+            "signal_realrate"
+          ]
+        },
+        {
+          "period": "2006",
+          "start": "2006-02-01",
+          "end": "2006-02-01",
+          "max_score": 3.0,
+          "components_at_peak": [
+            "signal_yield",
+            "signal_payems",
+            "signal_realrate"
+          ]
+        },
+        {
+          "period": "2006",
+          "start": "2006-03-01",
+          "end": "2006-03-01",
+          "max_score": 3.0,
+          "components_at_peak": [
+            "signal_yield",
+            "signal_payems",
+            "signal_realrate"
+          ]
+        },
+        {
+          "period": "2006",
+          "start": "2006-03-01",
+          "end": "2006-03-01",
+          "max_score": 3.0,
+          "components_at_peak": [
+            "signal_yield",
+            "signal_payems",
+            "signal_realrate"
+          ]
+        },
+        {
+          "period": "2006",
+          "start": "2006-03-01",
+          "end": "2006-03-01",
+          "max_score": 3.0,
+          "components_at_peak": [
+            "signal_yield",
+            "signal_payems",
+            "signal_realrate"
+          ]
+        },
+        {
+          "period": "2006",
+          "start": "2006-03-01",
+          "end": "2006-03-01",
+          "max_score": 3.0,
+          "components_at_peak": [
+            "signal_yield",
+            "signal_payems",
+            "signal_realrate"
+          ]
+        },
+        {
+          "period": "2006",
+          "start": "2006-03-01",
+          "end": "2006-03-01",
+          "max_score": 3.0,
+          "components_at_peak": [
+            "signal_yield",
+            "signal_payems",
+            "signal_realrate"
+          ]
+        },
+        {
+          "period": "2006",
+          "start": "2006-03-01",
+          "end": "2006-03-01",
+          "max_score": 3.0,
+          "components_at_peak": [
+            "signal_yield",
+            "signal_payems",
+            "signal_realrate"
+          ]
+        },
+        {
+          "period": "2006",
+          "start": "2006-06-01",
+          "end": "2006-06-01",
+          "max_score": 3.0,
+          "components_at_peak": [
+            "signal_yield",
+            "signal_payems",
+            "signal_realrate"
+          ]
+        },
+        {
+          "period": "2006",
+          "start": "2006-06-01",
+          "end": "2006-06-01",
+          "max_score": 3.0,
+          "components_at_peak": [
+            "signal_yield",
+            "signal_payems",
+            "signal_realrate"
+          ]
+        },
+        {
+          "period": "2006",
+          "start": "2006-06-01",
+          "end": "2006-06-01",
+          "max_score": 3.0,
+          "components_at_peak": [
+            "signal_yield",
+            "signal_payems",
+            "signal_realrate"
+          ]
+        },
+        {
+          "period": "2006",
+          "start": "2006-07-01",
+          "end": "2006-07-01",
+          "max_score": 3.0,
+          "components_at_peak": [
+            "signal_yield",
+            "signal_payems",
+            "signal_realrate"
+          ]
+        },
+        {
+          "period": "2006",
+          "start": "2006-07-01",
+          "end": "2006-08-01",
+          "max_score": 3.0,
+          "components_at_peak": [
+            "signal_yield",
+            "signal_payems",
+            "signal_realrate"
+          ]
+        },
+        {
+          "period": "2006",
+          "start": "2006-08-01",
+          "end": "2006-08-01",
+          "max_score": 3.0,
+          "components_at_peak": [
+            "signal_yield",
+            "signal_payems",
+            "signal_realrate"
+          ]
+        },
+        {
+          "period": "2006",
+          "start": "2006-08-01",
+          "end": "2006-08-01",
+          "max_score": 3.0,
+          "components_at_peak": [
+            "signal_yield",
+            "signal_payems",
+            "signal_realrate"
+          ]
+        },
+        {
+          "period": "2022",
+          "start": "2022-09-01",
+          "end": "2022-09-01",
+          "max_score": 3.0,
+          "components_at_peak": [
+            "signal_yield",
+            "signal_payems",
+            "signal_realrate"
+          ]
+        },
+        {
+          "period": "2022-2024",
+          "start": "2022-10-01",
+          "end": "2024-08-01",
+          "max_score": 4.0,
+          "components_at_peak": [
+            "signal_yield",
+            "signal_sentiment",
+            "signal_payems",
+            "signal_realrate"
+          ]
+        },
+        {
+          "period": "2024",
+          "start": "2024-08-01",
+          "end": "2024-08-01",
+          "max_score": 3.0,
+          "components_at_peak": [
+            "signal_yield",
+            "signal_payems",
+            "signal_realrate"
+          ]
+        },
+        {
+          "period": "2024",
+          "start": "2024-09-01",
+          "end": "2024-09-01",
+          "max_score": 3.0,
+          "components_at_peak": [
+            "signal_yield",
+            "signal_payems",
+            "signal_realrate"
+          ]
+        },
+        {
+          "period": "2025",
+          "start": "2025-03-01",
+          "end": "2025-03-01",
+          "max_score": 3.0,
+          "components_at_peak": [
+            "signal_sentiment",
+            "signal_payems",
+            "signal_realrate"
+          ]
+        },
+        {
+          "period": "2025",
+          "start": "2025-03-01",
+          "end": "2025-03-01",
+          "max_score": 3.0,
+          "components_at_peak": [
+            "signal_sentiment",
+            "signal_payems",
+            "signal_realrate"
+          ]
+        },
+        {
+          "period": "2025",
+          "start": "2025-03-01",
+          "end": "2025-03-01",
+          "max_score": 3.0,
+          "components_at_peak": [
+            "signal_sentiment",
+            "signal_payems",
+            "signal_realrate"
+          ]
+        }
+      ],
+      "current_signal": {
+        "score": 2.0,
+        "interpretation": "yellow",
+        "components_triggered": [
+          "signal_payems",
+          "signal_realrate"
+        ],
+        "date": "2026-05-01"
+      }
+    }
+  },
+  "scenario_table": [
+    {
+      "scenario": "base",
+      "assumptions": [
+        "yield curve at current level",
+        "claims +5% YoY",
+        "IP -0.5% YoY",
+        "sentiment -5% YoY",
+        "payrolls +1.0% YoY",
+        "unemployment +0.1pp",
+        "real rate unchanged"
+      ],
+      "indicator_triggers": [
+        "yield curve inversion persists",
+        "claims moderate surge",
+        "IP slight decline"
+      ],
+      "confidence": "medium",
+      "uncertainty_notes": "Most likely path assuming gradual softening"
+    },
+    {
+      "scenario": "bull",
+      "assumptions": [
+        "yield curve steepens 50bp",
+        "claims -5% YoY",
+        "IP +1.5% YoY",
+        "sentiment +5% YoY",
+        "payrolls +1.5% YoY",
+        "unemployment -0.1pp",
+        "real rate -0.5%"
+      ],
+      "indicator_triggers": [
+        "yield curve steepens",
+        "claims decline",
+        "IP improves"
+      ],
+      "confidence": "low",
+      "uncertainty_notes": "Requires material improvement in growth outlook"
+    },
+    {
+      "scenario": "bear",
+      "assumptions": [
+        "yield curve -30bp deeper inverted",
+        "claims +20% YoY",
+        "IP -3% YoY",
+        "sentiment -15% YoY",
+        "payrolls 0% YoY",
+        "unemployment +0.4pp",
+        "real rate +0.5%"
+      ],
+      "indicator_triggers": [
+        "yield curve inverts further",
+        "claims surge",
+        "IP contracts sharply",
+        "sentiment collapses",
+        "payrolls stall",
+        "unemployment rises",
+        "real rate tightens"
+      ],
+      "confidence": "low",
+      "uncertainty_notes": "Shock scenario; tail risk of hard landing"
+    }
+  ],
+  "scenario_analysis": {
+    "topic": "scenario_stress_test",
+    "scenario_table": [
+      {
+        "scenario": "base",
+        "assumptions": [
+          "yield curve at current level",
+          "claims +5% YoY",
+          "IP -0.5% YoY",
+          "sentiment -5% YoY",
+          "payrolls +1.0% YoY",
+          "unemployment +0.1pp",
+          "real rate unchanged"
+        ],
+        "indicator_triggers": [
+          "yield curve inversion persists",
+          "claims moderate surge",
+          "IP slight decline"
+        ],
+        "confidence": "medium",
+        "uncertainty_notes": "Most likely path assuming gradual softening"
+      },
+      {
+        "scenario": "bull",
+        "assumptions": [
+          "yield curve steepens 50bp",
+          "claims -5% YoY",
+          "IP +1.5% YoY",
+          "sentiment +5% YoY",
+          "payrolls +1.5% YoY",
+          "unemployment -0.1pp",
+          "real rate -0.5%"
+        ],
+        "indicator_triggers": [
+          "yield curve steepens",
+          "claims decline",
+          "IP improves"
+        ],
+        "confidence": "low",
+        "uncertainty_notes": "Requires material improvement in growth outlook"
+      },
+      {
+        "scenario": "bear",
+        "assumptions": [
+          "yield curve -30bp deeper inverted",
+          "claims +20% YoY",
+          "IP -3% YoY",
+          "sentiment -15% YoY",
+          "payrolls 0% YoY",
+          "unemployment +0.4pp",
+          "real rate +0.5%"
+        ],
+        "indicator_triggers": [
+          "yield curve inverts further",
+          "claims surge",
+          "IP contracts sharply",
+          "sentiment collapses",
+          "payrolls stall",
+          "unemployment rises",
+          "real rate tightens"
+        ],
+        "confidence": "low",
+        "uncertainty_notes": "Shock scenario; tail risk of hard landing"
+      }
+    ],
+    "methods_used": [
+      "scenario_stress_test"
+    ]
+  },
+  "analog_window_contract": {
+    "requested_analog_windows": [],
+    "historical_window_coverage": [],
+    "analog_similarity_ranking": [],
+    "top_analog": null,
+    "score_contract": {
+      "raw_distance": "lower_is_more_similar",
+      "distance_score": "lower_is_more_similar",
+      "normalized_similarity": "higher_is_more_similar"
+    }
+  },
+  "requested_analog_windows": [],
+  "historical_window_coverage": [],
+  "analog_similarity_ranking": [],
+  "analysis_evidence": {
+    "analog_window_contract": {
+      "requested_analog_windows": [],
+      "historical_window_coverage": [],
+      "analog_similarity_ranking": [],
+      "top_analog": null,
+      "score_contract": {
+        "raw_distance": "lower_is_more_similar",
+        "distance_score": "lower_is_more_similar",
+        "normalized_similarity": "higher_is_more_similar"
+      }
+    },
+    "historical_window_coverage": []
+  },
+  "decision_evidence": {
+    "analog_window_contract": {
+      "requested_analog_windows": [],
+      "historical_window_coverage": [],
+      "analog_similarity_ranking": [],
+      "top_analog": null,
+      "score_contract": {
+        "raw_distance": "lower_is_more_similar",
+        "distance_score": "lower_is_more_similar",
+        "normalized_similarity": "higher_is_more_similar"
+      }
+    },
+    "historical_window_coverage": [],
+    "analog_similarity_ranking": []
+  },
+  "methods_used": [
+    "scenario_stress_test",
+    "signal_framework_backtest"
+  ],
+  "charts_json": "improver-ca4c9038/charts.json",
+  "execution_summary_json": "improver-ca4c9038/execution_summary.json",
+  "chart_ids": [],
+  "dropped_chart_ids": [
+    "chart_3"
+  ],
+  "backtest_summary": {
+    "total_observations": 0,
+    "recession_count": 0,
+    "recession_calls_correct": 0,
+    "false_alarms": 0,
+    "true_positive_rate": 0.0,
+    "false_alarm_rate": 0.0,
+    "threshold": 3,
+    "lookback_periods": 12
+  },
+  "signal_framework_summary": {
+    "method": "signal_framework_backtest",
+    "observations": 12561,
+    "recession_count": 8,
+    "recession_calls_correct": 5,
+    "false_alarms": 48,
+    "true_positive_rate": 0.625,
+    "precision": 0.09433962264150944,
+    "threshold": 3.0,
+    "lookback_periods": 12,
+    "false_alarm_lookahead_periods": 12,
+    "current_signal": {
+      "score": 2.0,
+      "interpretation": "yellow",
+      "components_triggered": [
+        "signal_payems",
+        "signal_realrate"
+      ],
+      "date": "2026-05-01"
+    },
+    "pre_recession_scores": {
+      "1970_recession_12m_before": {
+        "status": "no_observations"
+      },
+      "1973_recession_12m_before": {
+        "score": 2.0,
+        "components_triggered": [
+          "signal_sentiment",
+          "signal_realrate"
+        ],
+        "max_score_date": "1973-02-01"
+      },
+      "1980_recession_12m_before": {
+        "score": 4.0,
+        "components_triggered": [
+          "signal_yield",
+          "signal_claims",
+          "signal_payems",
+          "signal_realrate"
+        ],
+        "max_score_date": "1979-04-01"
+      },
+      "1981_recession_12m_before": {
+        "score": 4.0,
+        "components_triggered": [
+          "signal_yield",
+          "signal_sentiment",
+          "signal_payems",
+          "signal_realrate"
+        ],
+        "max_score_date": "1980-12-01"
+      },
+      "1990_recession_12m_before": {
+        "score": 3.0,
+        "components_triggered": [
+          "signal_yield",
+          "signal_payems",
+          "signal_realrate"
+        ],
+        "max_score_date": "1989-08-01"
+      },
+      "2001_recession_12m_before": {
+        "score": 4.0,
+        "components_triggered": [
+          "signal_yield",
+          "signal_payems",
+          "signal_unrate",
+          "signal_realrate"
+        ],
+        "max_score_date": "2001-01-01"
+      },
+      "2008_recession_12m_before": {
+        "score": 3.0,
+        "components_triggered": [
+          "signal_yield",
+          "signal_payems",
+          "signal_realrate"
+        ],
+        "max_score_date": "2007-01-01"
+      },
+      "2020_recession_12m_before": {
+        "score": 2.0,
+        "components_triggered": [
+          "signal_yield",
+          "signal_payems"
+        ],
+        "max_score_date": "2019-08-01"
+      }
+    },
+    "false_alarm_episodes": [
+      {
+        "period": "1971",
+        "start": "1971-01-01",
+        "end": "1971-01-01",
+        "max_score": 3.0,
+        "components_at_peak": [
+          "signal_claims",
+          "signal_payems",
+          "signal_unrate"
+        ]
+      },
+      {
+        "period": "1978",
+        "start": "1978-08-01",
+        "end": "1978-08-01",
+        "max_score": 3.0,
+        "components_at_peak": [
+          "signal_yield",
+          "signal_payems",
+          "signal_realrate"
+        ]
+      },
+      {
+        "period": "1978",
+        "start": "1978-08-01",
+        "end": "1978-08-01",
+        "max_score": 3.0,
+        "components_at_peak": [
+          "signal_yield",
+          "signal_payems",
+          "signal_realrate"
+        ]
+      },
+      {
+        "period": "1986",
+        "start": "1986-02-01",
+        "end": "1986-02-01",
+        "max_score": 3.0,
+        "components_at_peak": [
+          "signal_payems",
+          "signal_unrate",
+          "signal_realrate"
+        ]
+      },
+      {
+        "period": "1988",
+        "start": "1988-12-01",
+        "end": "1988-12-01",
+        "max_score": 3.0,
+        "components_at_peak": [
+          "signal_yield",
+          "signal_payems",
+          "signal_realrate"
+        ]
+      },
+      {
+        "period": "1988",
+        "start": "1988-12-01",
+        "end": "1988-12-01",
+        "max_score": 3.0,
+        "components_at_peak": [
+          "signal_yield",
+          "signal_payems",
+          "signal_realrate"
+        ]
+      },
+      {
+        "period": "1988",
+        "start": "1988-12-01",
+        "end": "1988-12-01",
+        "max_score": 3.0,
+        "components_at_peak": [
+          "signal_yield",
+          "signal_payems",
+          "signal_realrate"
+        ]
+      },
+      {
+        "period": "1989",
+        "start": "1989-01-01",
+        "end": "1989-01-01",
+        "max_score": 3.0,
+        "components_at_peak": [
+          "signal_yield",
+          "signal_payems",
+          "signal_realrate"
+        ]
+      },
+      {
+        "period": "1989",
+        "start": "1989-01-01",
+        "end": "1989-06-01",
+        "max_score": 3.0,
+        "components_at_peak": [
+          "signal_yield",
+          "signal_payems",
+          "signal_realrate"
+        ]
+      },
+      {
+        "period": "1991",
+        "start": "1991-11-01",
+        "end": "1991-11-01",
+        "max_score": 3.0,
+        "components_at_peak": [
+          "signal_sentiment",
+          "signal_payems",
+          "signal_realrate"
+        ]
+      },
+      {
+        "period": "1991",
+        "start": "1991-11-01",
+        "end": "1991-11-01",
+        "max_score": 3.0,
+        "components_at_peak": [
+          "signal_sentiment",
+          "signal_payems",
+          "signal_realrate"
+        ]
+      },
+      {
+        "period": "1995",
+        "start": "1995-04-01",
+        "end": "1995-04-01",
+        "max_score": 3.0,
+        "components_at_peak": [
+          "signal_payems",
+          "signal_unrate",
+          "signal_realrate"
+        ]
+      },
+      {
+        "period": "1998",
+        "start": "1998-06-01",
+        "end": "1998-06-01",
+        "max_score": 3.0,
+        "components_at_peak": [
+          "signal_yield",
+          "signal_payems",
+          "signal_realrate"
+        ]
+      },
+      {
+        "period": "1998",
+        "start": "1998-06-01",
+        "end": "1998-07-01",
+        "max_score": 3.0,
+        "components_at_peak": [
+          "signal_yield",
+          "signal_payems",
+          "signal_realrate"
+        ]
+      },
+      {
+        "period": "1998",
+        "start": "1998-07-01",
+        "end": "1998-07-01",
+        "max_score": 3.0,
+        "components_at_peak": [
+          "signal_yield",
+          "signal_payems",
+          "signal_realrate"
+        ]
+      },
+      {
+        "period": "1998",
+        "start": "1998-07-01",
+        "end": "1998-07-01",
+        "max_score": 3.0,
+        "components_at_peak": [
+          "signal_yield",
+          "signal_payems",
+          "signal_realrate"
+        ]
+      },
+      {
+        "period": "1998",
+        "start": "1998-07-01",
+        "end": "1998-07-01",
+        "max_score": 3.0,
+        "components_at_peak": [
+          "signal_yield",
+          "signal_payems",
+          "signal_realrate"
+        ]
+      },
+      {
+        "period": "1998",
+        "start": "1998-07-01",
+        "end": "1998-07-01",
+        "max_score": 3.0,
+        "components_at_peak": [
+          "signal_yield",
+          "signal_payems",
+          "signal_realrate"
+        ]
+      },
+      {
+        "period": "1998",
+        "start": "1998-07-01",
+        "end": "1998-07-01",
+        "max_score": 3.0,
+        "components_at_peak": [
+          "signal_yield",
+          "signal_payems",
+          "signal_realrate"
+        ]
+      },
+      {
+        "period": "2000",
+        "start": "2000-02-01",
+        "end": "2000-02-01",
+        "max_score": 3.0,
+        "components_at_peak": [
+          "signal_yield",
+          "signal_payems",
+          "signal_realrate"
+        ]
+      },
+      {
+        "period": "2000",
+        "start": "2000-02-01",
+        "end": "2000-02-01",
+        "max_score": 3.0,
+        "components_at_peak": [
+          "signal_yield",
+          "signal_payems",
+          "signal_realrate"
+        ]
+      },
+      {
+        "period": "2005",
+        "start": "2005-09-01",
+        "end": "2005-09-01",
+        "max_score": 4.0,
+        "components_at_peak": [
+          "signal_claims",
+          "signal_ip",
+          "signal_sentiment",
+          "signal_payems"
+        ]
+      },
+      {
+        "period": "2005",
+        "start": "2005-09-01",
+        "end": "2005-09-01",
+        "max_score": 4.0,
+        "components_at_peak": [
+          "signal_claims",
+          "signal_ip",
+          "signal_sentiment",
+          "signal_payems"
+        ]
+      },
+      {
+        "period": "2005",
+        "start": "2005-09-01",
+        "end": "2005-09-01",
+        "max_score": 4.0,
+        "components_at_peak": [
+          "signal_claims",
+          "signal_ip",
+          "signal_sentiment",
+          "signal_payems"
+        ]
+      },
+      {
+        "period": "2005",
+        "start": "2005-12-01",
+        "end": "2005-12-01",
+        "max_score": 3.0,
+        "components_at_peak": [
+          "signal_yield",
+          "signal_payems",
+          "signal_realrate"
+        ]
+      },
+      {
+        "period": "2006",
+        "start": "2006-01-01",
+        "end": "2006-01-01",
+        "max_score": 3.0,
+        "components_at_peak": [
+          "signal_yield",
+          "signal_payems",
+          "signal_realrate"
+        ]
+      },
+      {
+        "period": "2006",
+        "start": "2006-02-01",
+        "end": "2006-02-01",
+        "max_score": 3.0,
+        "components_at_peak": [
+          "signal_yield",
+          "signal_payems",
+          "signal_realrate"
+        ]
+      },
+      {
+        "period": "2006",
+        "start": "2006-02-01",
+        "end": "2006-02-01",
+        "max_score": 3.0,
+        "components_at_peak": [
+          "signal_yield",
+          "signal_payems",
+          "signal_realrate"
+        ]
+      },
+      {
+        "period": "2006",
+        "start": "2006-03-01",
+        "end": "2006-03-01",
+        "max_score": 3.0,
+        "components_at_peak": [
+          "signal_yield",
+          "signal_payems",
+          "signal_realrate"
+        ]
+      },
+      {
+        "period": "2006",
+        "start": "2006-03-01",
+        "end": "2006-03-01",
+        "max_score": 3.0,
+        "components_at_peak": [
+          "signal_yield",
+          "signal_payems",
+          "signal_realrate"
+        ]
+      },
+      {
+        "period": "2006",
+        "start": "2006-03-01",
+        "end": "2006-03-01",
+        "max_score": 3.0,
+        "components_at_peak": [
+          "signal_yield",
+          "signal_payems",
+          "signal_realrate"
+        ]
+      },
+      {
+        "period": "2006",
+        "start": "2006-03-01",
+        "end": "2006-03-01",
+        "max_score": 3.0,
+        "components_at_peak": [
+          "signal_yield",
+          "signal_payems",
+          "signal_realrate"
+        ]
+      },
+      {
+        "period": "2006",
+        "start": "2006-03-01",
+        "end": "2006-03-01",
+        "max_score": 3.0,
+        "components_at_peak": [
+          "signal_yield",
+          "signal_payems",
+          "signal_realrate"
+        ]
+      },
+      {
+        "period": "2006",
+        "start": "2006-03-01",
+        "end": "2006-03-01",
+        "max_score": 3.0,
+        "components_at_peak": [
+          "signal_yield",
+          "signal_payems",
+          "signal_realrate"
+        ]
+      },
+      {
+        "period": "2006",
+        "start": "2006-06-01",
+        "end": "2006-06-01",
+        "max_score": 3.0,
+        "components_at_peak": [
+          "signal_yield",
+          "signal_payems",
+          "signal_realrate"
+        ]
+      },
+      {
+        "period": "2006",
+        "start": "2006-06-01",
+        "end": "2006-06-01",
+        "max_score": 3.0,
+        "components_at_peak": [
+          "signal_yield",
+          "signal_payems",
+          "signal_realrate"
+        ]
+      },
+      {
+        "period": "2006",
+        "start": "2006-06-01",
+        "end": "2006-06-01",
+        "max_score": 3.0,
+        "components_at_peak": [
+          "signal_yield",
+          "signal_payems",
+          "signal_realrate"
+        ]
+      },
+      {
+        "period": "2006",
+        "start": "2006-07-01",
+        "end": "2006-07-01",
+        "max_score": 3.0,
+        "components_at_peak": [
+          "signal_yield",
+          "signal_payems",
+          "signal_realrate"
+        ]
+      },
+      {
+        "period": "2006",
+        "start": "2006-07-01",
+        "end": "2006-08-01",
+        "max_score": 3.0,
+        "components_at_peak": [
+          "signal_yield",
+          "signal_payems",
+          "signal_realrate"
+        ]
+      },
+      {
+        "period": "2006",
+        "start": "2006-08-01",
+        "end": "2006-08-01",
+        "max_score": 3.0,
+        "components_at_peak": [
+          "signal_yield",
+          "signal_payems",
+          "signal_realrate"
+        ]
+      },
+      {
+        "period": "2006",
+        "start": "2006-08-01",
+        "end": "2006-08-01",
+        "max_score": 3.0,
+        "components_at_peak": [
+          "signal_yield",
+          "signal_payems",
+          "signal_realrate"
+        ]
+      },
+      {
+        "period": "2022",
+        "start": "2022-09-01",
+        "end": "2022-09-01",
+        "max_score": 3.0,
+        "components_at_peak": [
+          "signal_yield",
+          "signal_payems",
+          "signal_realrate"
+        ]
+      },
+      {
+        "period": "2022-2024",
+        "start": "2022-10-01",
+        "end": "2024-08-01",
+        "max_score": 4.0,
+        "components_at_peak": [
+          "signal_yield",
+          "signal_sentiment",
+          "signal_payems",
+          "signal_realrate"
+        ]
+      },
+      {
+        "period": "2024",
+        "start": "2024-08-01",
+        "end": "2024-08-01",
+        "max_score": 3.0,
+        "components_at_peak": [
+          "signal_yield",
+          "signal_payems",
+          "signal_realrate"
+        ]
+      },
+      {
+        "period": "2024",
+        "start": "2024-09-01",
+        "end": "2024-09-01",
+        "max_score": 3.0,
+        "components_at_peak": [
+          "signal_yield",
+          "signal_payems",
+          "signal_realrate"
+        ]
+      },
+      {
+        "period": "2025",
+        "start": "2025-03-01",
+        "end": "2025-03-01",
+        "max_score": 3.0,
+        "components_at_peak": [
+          "signal_sentiment",
+          "signal_payems",
+          "signal_realrate"
+        ]
+      },
+      {
+        "period": "2025",
+        "start": "2025-03-01",
+        "end": "2025-03-01",
+        "max_score": 3.0,
+        "components_at_peak": [
+          "signal_sentiment",
+          "signal_payems",
+          "signal_realrate"
+        ]
+      },
+      {
+        "period": "2025",
+        "start": "2025-03-01",
+        "end": "2025-03-01",
+        "max_score": 3.0,
+        "components_at_peak": [
+          "signal_sentiment",
+          "signal_payems",
+          "signal_realrate"
+        ]
+      }
+    ],
+    "methods_used": [
+      "signal_framework_backtest"
+    ]
+  }
+}

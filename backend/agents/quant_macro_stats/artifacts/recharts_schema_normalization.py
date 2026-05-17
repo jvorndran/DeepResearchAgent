@@ -1,16 +1,10 @@
 """Chart-contract normalization helpers for quant artifacts."""
-from .shared import *
-from .shared import (
-    _adfuller,
-    _as_ordered_frame,
-    _clean_regression_frame,
-    _direction_multiplier,
-    _finite_float,
-    _iso_date,
-    _require_columns,
-    _scipy_stats,
-    _statsmodels_api,
-)
+from copy import deepcopy
+from typing import Any
+
+import pandas as pd
+
+from .._utils import _finite_float
 
 def _looks_like_chart_definition(payload: dict[str, Any]) -> bool:
     return any(
@@ -424,6 +418,69 @@ def _repair_axis_chart_x_aliases(chart: dict[str, Any]) -> dict[str, Any]:
     return chart
 
 
+def _collapse_duplicate_axis_rows(chart: dict[str, Any]) -> dict[str, Any]:
+    data = chart.get("data")
+    x_key = chart.get("xAxisKey") or chart.get("xKey") or chart.get("x_key")
+    if not isinstance(data, list) or not isinstance(x_key, str) or not x_key:
+        return chart
+
+    series_keys = _chart_series_keys(chart)
+    if not series_keys:
+        return chart
+
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    order: list[str] = []
+    for row in data:
+        if not isinstance(row, dict):
+            continue
+        x_value = row.get(x_key)
+        x_label = str(x_value).strip() if x_value is not None else ""
+        if not x_label:
+            return chart
+        if x_label not in grouped:
+            grouped[x_label] = []
+            order.append(x_label)
+        grouped[x_label].append(row)
+
+    if all(len(rows) == 1 for rows in grouped.values()) or sum(
+        len(rows) for rows in grouped.values()
+    ) != len(data):
+        return chart
+
+    series_key_set = set(series_keys)
+    collapsed: list[dict[str, Any]] = []
+    for x_label in order:
+        rows = grouped[x_label]
+        if len(rows) == 1:
+            collapsed.append(rows[0])
+            continue
+        merged: dict[str, Any] = {x_key: rows[0].get(x_key)}
+        for row in rows:
+            for key, value in row.items():
+                if key == x_key or key in series_key_set or key in merged:
+                    continue
+                if value is not None and str(value).strip():
+                    merged[key] = value
+        for key in series_keys:
+            numeric_values = [
+                numeric
+                for row in rows
+                if (numeric := _finite_float(row.get(key))) is not None
+            ]
+            if numeric_values:
+                merged[key] = sum(numeric_values) / len(numeric_values)
+                continue
+            for row in rows:
+                value = row.get(key)
+                if value is not None and str(value).strip():
+                    merged[key] = value
+                    break
+        collapsed.append(merged)
+
+    chart["data"] = collapsed
+    return chart
+
+
 def _parse_chart_timestamp(value: Any) -> pd.Timestamp | None:
     if value is None:
         return None
@@ -581,6 +638,7 @@ def _drop_empty_chart_definitions(chart_map: dict[str, Any]) -> tuple[dict[str, 
         if isinstance(chart, dict):
             chart = _canonicalize_axis_chart_schema(chart)
             chart = _repair_axis_chart_x_aliases(chart)
+            chart = _collapse_duplicate_axis_rows(chart)
             chart = _normalize_axis_chart_extent(chart)
             chart = _collapse_same_scale_dual_axes(chart)
         if not isinstance(chart, dict) or not _chart_has_finite_values(chart):
@@ -631,3 +689,21 @@ def _normalize_declared_since_lists(value: Any, key: str | None = None) -> None:
         if (end or start) >= cutoff:
             filtered.append(item)
     value[:] = filtered
+
+
+def normalize_quant_report_charts(
+    charts: dict[str, Any] | list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Return a renderable Recharts map plus IDs dropped by schema cleanup."""
+
+    chart_map, dropped_chart_ids = _drop_empty_chart_definitions(
+        _chart_map_from_payload(charts)
+    )
+    return {
+        "charts": chart_map,
+        "chart_ids": list(chart_map),
+        "dropped_chart_ids": dropped_chart_ids,
+    }
+
+
+__all__ = ["normalize_quant_report_charts"]

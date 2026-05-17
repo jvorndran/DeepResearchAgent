@@ -16,21 +16,12 @@ OUTPUT_BASE_DIR = os.getenv("OUTPUT_DIR", str(_BACKEND_DIR / "outputs"))
 _VENV_PYTHON = _BACKEND_DIR / ".venv" / "bin" / "python"
 PYTHON_EXECUTABLE = str(_VENV_PYTHON) if _VENV_PYTHON.exists() else sys.executable
 
-_DETERMINISTIC_ARTIFACT_TOOL_NAMES = {
-    "build_recession_dashboard_artifacts",
-    "build_inflation_policy_chart_pack_artifacts",
-    "build_consumer_stress_dashboard_artifacts",
-    "build_historical_replay_chart_pack_artifacts",
-    "build_unemployment_forecast_chart_pack_artifacts",
-    "build_macro_cycle_chart_pack_artifacts",
-}
-_FIRST_WRITE_TOOL_NAMES = {"write_file", *_DETERMINISTIC_ARTIFACT_TOOL_NAMES}
+_FIRST_WRITE_TOOL_NAMES = {"write_file"}
 _AFTER_WRITE_TOOL_NAMES = {
     "write_file",
     "read_file",
     "edit_file",
     "execute",
-    *_DETERMINISTIC_ARTIFACT_TOOL_NAMES,
 }
 _INSPECTION_TOOL_NAMES = {"ls", "glob", "grep"}
 _MAX_ANALYSIS_SCRIPT_LINES = 360

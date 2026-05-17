@@ -7,9 +7,9 @@ from langchain_core.tools import tool
 
 from ..report_artifacts import chart_marker_ids, load_report_json
 from .fidelity import (
+    _approval_failure_metadata,
     _approval_blockers,
     _load_sibling_execution_summary,
-    _scenario_requirement,
 )
 from .utils import _parse_required_fixes, _truncate
 
@@ -30,6 +30,8 @@ def _compact_decision_payload(raw: str) -> str | None:
         "report_path",
         "reason",
         "required_fixes",
+        "failure_category",
+        "required_upstream",
         "notes",
         "ready_for_upload",
     )
@@ -140,11 +142,6 @@ def load_report_for_review(report_path: str) -> str:
             "markdown_truncated_for_context": len(markdown) > 50000,
             "chart_markers": chart_marker_ids(markdown),
             "chart_ids": chart_ids,
-            "scenario_table": data.get("scenario_table"),
-            "scenario_requirement": _scenario_requirement(
-                str(data.get("query", "")),
-                data.get("scenario_table"),
-            ),
             "data_sources": data.get("data_sources", []),
             "metadata": data.get("metadata", {}),
             "execution_summary": _load_sibling_execution_summary(path),
@@ -159,6 +156,8 @@ def submit_quality_decision(
     notes: str = "",
     reason: str = "",
     required_fixes: str | list[str] = "",
+    failure_category: str = "",
+    required_upstream: str = "",
 ) -> str:
     """
     Terminal quality decision: approve or reject the report for delivery.
@@ -173,6 +172,8 @@ def submit_quality_decision(
         notes: Short approval notes (for approve)
         reason: Primary rejection reason (for reject)
         required_fixes: Concrete fixes required — JSON array string or list of strings (for reject)
+        failure_category: Optional structured rejection category, e.g. numeric_fact_mismatch
+        required_upstream: Optional specialist owner for the next repair task
 
     Returns:
         JSON string: approved payload with ready_for_upload true, or rejected payload with
@@ -182,12 +183,14 @@ def submit_quality_decision(
     if d in ("approve", "approved"):
         blockers = _approval_blockers(report_path)
         if blockers:
+            metadata = _approval_failure_metadata(report_path)
             return json.dumps(
                 {
                     "status": "rejected",
                     "report_path": report_path,
                     "reason": blockers[0],
                     "required_fixes": blockers,
+                    **metadata,
                     "ready_for_upload": False,
                 }
             )
@@ -201,12 +204,23 @@ def submit_quality_decision(
         )
     if d in ("reject", "rejected"):
         fixes = _parse_required_fixes(required_fixes)
+        metadata = {
+            key: value.strip()
+            for key, value in {
+                "failure_category": failure_category,
+                "required_upstream": required_upstream,
+            }.items()
+            if isinstance(value, str) and value.strip()
+        }
+        if not metadata:
+            metadata = _approval_failure_metadata(report_path)
         return json.dumps(
             {
                 "status": "rejected",
                 "report_path": report_path,
                 "reason": reason,
                 "required_fixes": fixes,
+                **metadata,
                 "ready_for_upload": False,
             }
         )

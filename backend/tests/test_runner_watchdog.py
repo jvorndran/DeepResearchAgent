@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import httpx
 import pytest
@@ -28,6 +29,39 @@ class FakeMessage:
     def __init__(self, content="", tool_calls=None):
         self.content = content
         self.tool_calls = tool_calls or []
+
+
+class ToolMessage(FakeMessage):
+    def __init__(self, content="", name="task"):
+        super().__init__(content=content)
+        self.name = name
+
+
+def read_runner_artifacts(tmp_path):
+    job_dir = tmp_path / "job-test"
+    status = json.loads((job_dir / "runner_status.json").read_text())
+    diagnostics = json.loads((job_dir / "trace_diagnostics.json").read_text())
+    digest = (job_dir / "trace-digest.md").read_text()
+    spans = [
+        json.loads(line)
+        for line in (job_dir / "phoenix_spans.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    return status, diagnostics, digest, spans
+
+
+def span_event_types(spans):
+    return {
+        (span.get("attributes") or {}).get("event_type")
+        for span in spans
+        if isinstance(span.get("attributes"), dict)
+    }
+
+
+@pytest.fixture(autouse=True)
+def local_runner_tracing(monkeypatch):
+    monkeypatch.setenv("RUNNER_TRACE_EXPORT_MODE", "local")
+    monkeypatch.delenv("RUNNER_REQUIRE_PHOENIX", raising=False)
 
 
 def test_watchdog_stops_on_repeated_identical_tool_call():
@@ -187,10 +221,14 @@ def test_runner_marks_stream_errors_as_stopped_early(monkeypatch, tmp_path):
 
     asyncio.run(run_research_loop("query", "job-test", watchdog))
 
-    log_text = (tmp_path / "job-test" / "agent_execution.log").read_text()
-    assert "fred_mcp_required: FRED MCP probe failed" in log_text
-    assert "STOPPED_EARLY" in log_text
-    assert "STOP_REASON: fred_mcp_required: FRED MCP probe failed" in log_text
+    status, diagnostics, digest, spans = read_runner_artifacts(tmp_path)
+    assert not (tmp_path / "job-test" / ("agent_execution" + ".log")).exists()
+    assert status["status"] == "STOPPED_EARLY"
+    assert status["stop_reason"] == "fred_mcp_required: FRED MCP probe failed"
+    assert diagnostics["status"] == "STOPPED_EARLY"
+    assert diagnostics["error_spans"][0]["message"] == "fred_mcp_required: FRED MCP probe failed"
+    assert "Primary trace signal: stream error" in digest
+    assert "stream_error" in span_event_types(spans)
 
 
 def test_runner_marks_setup_stream_errors_as_setup_failed(monkeypatch, tmp_path):
@@ -217,11 +255,66 @@ def test_runner_marks_setup_stream_errors_as_setup_failed(monkeypatch, tmp_path)
 
     asyncio.run(run_research_loop("query", "job-test", watchdog))
 
-    log_text = (tmp_path / "job-test" / "agent_execution.log").read_text()
-    assert "fred_mcp_required: FRED MCP probe failed" in log_text
-    assert "SETUP_FAILED" in log_text
-    assert "STOPPED_EARLY" not in log_text
-    assert "STOP_REASON: fred_mcp_required: FRED MCP probe failed" in log_text
+    status, diagnostics, digest, spans = read_runner_artifacts(tmp_path)
+    assert status["status"] == "SETUP_FAILED"
+    assert status["stop_reason"].startswith("fred_mcp_required: FRED MCP probe failed")
+    assert diagnostics["status"] == "SETUP_FAILED"
+    assert diagnostics["primary_trace_signal"] == "setup failure"
+    assert "Primary trace signal: setup failure" in digest
+    assert "stream_error" in span_event_types(spans)
+
+
+def test_runner_marks_exhausted_latest_qa_rejection_as_terminal_failure(
+    monkeypatch,
+    tmp_path,
+):
+    rejected = {
+        "status": "rejected",
+        "report_path": str(tmp_path / "job-test" / "report.json"),
+        "reason": "Report contradicts execution_summary signal-framework results.",
+        "required_fixes": ["Rewrite the report from execution_summary.json."],
+    }
+
+    async def fake_stream_research(**_kwargs):
+        for _ in range(3):
+            yield {
+                "type": "messages",
+                "data": (ToolMessage(json.dumps(rejected)), {"langgraph_node": "tools"}),
+            }
+        yield {
+            "type": "messages",
+            "data": (
+                FakeMessage("Report approved: outputs/job-test/report.json"),
+                {"langgraph_node": "model"},
+            ),
+        }
+        yield {
+            "type": "updates",
+            "data": {"execute": {"messages": []}},
+        }
+
+    monkeypatch.setattr("tests.runner.stream_research", fake_stream_research)
+    monkeypatch.setenv("OUTPUT_DIR", str(tmp_path))
+
+    watchdog = Watchdog(
+        max_runtime_seconds=900,
+        max_tool_calls=60,
+        max_identical_tool_calls=2,
+        max_fred_search_calls=10,
+        max_model_messages=80,
+    )
+
+    asyncio.run(run_research_loop("query", "job-test", watchdog))
+
+    status, diagnostics, digest, spans = read_runner_artifacts(tmp_path)
+    assert status["status"] == "QA_REJECTED"
+    assert "QA repair budget exhausted after latest rejected decision" in status[
+        "stop_reason"
+    ]
+    assert diagnostics["status"] == "QA_REJECTED"
+    assert diagnostics["primary_trace_signal"] == "qa rejection terminal failure"
+    assert "Primary trace signal: qa rejection terminal failure" in digest
+    assert "qa_terminal_failure" in span_event_types(spans)
 
 
 def test_runner_logs_traceback_for_empty_message_fatal_exception(monkeypatch, tmp_path):
@@ -242,12 +335,13 @@ def test_runner_logs_traceback_for_empty_message_fatal_exception(monkeypatch, tm
 
     asyncio.run(run_research_loop("query", "job-test", watchdog))
 
-    log_text = (tmp_path / "job-test" / "agent_execution.log").read_text()
-    assert "FATAL ERROR" in log_text
-    assert "ERROR: AssertionError: AssertionError()" in log_text
-    assert "TRACEBACK:" in log_text
-    assert "raise AssertionError()" in log_text
-    assert "STOP_REASON: ERROR: AssertionError: AssertionError()" in log_text
+    status, diagnostics, digest, spans = read_runner_artifacts(tmp_path)
+    assert status["status"] == "FATAL_ERROR"
+    assert status["stop_reason"] == "ERROR: AssertionError: AssertionError()"
+    assert "raise AssertionError()" in status["traceback"]
+    assert diagnostics["primary_trace_signal"] == "fatal runner error"
+    assert "Primary trace signal: fatal runner error" in digest
+    assert "fatal_error" in span_event_types(spans)
 
 
 def test_format_fatal_exception_uses_exception_type_for_empty_message():
@@ -337,12 +431,13 @@ def test_runner_auto_approves_approval_interrupt(monkeypatch, tmp_path):
 
     asyncio.run(run_research_loop("query", "job-test", watchdog))
 
-    log_text = (tmp_path / "job-test" / "agent_execution.log").read_text()
+    status, diagnostics, _digest, spans = read_runner_artifacts(tmp_path)
     assert len(calls) == 2
     assert calls[0]["messages"] is None
     assert calls[1]["messages"][0]["metadata"]["action"] == "commence_research"
-    assert "AUTO APPROVE" in log_text
-    assert "COMPLETED" in log_text
+    assert status["status"] == "COMPLETED"
+    assert diagnostics["status"] == "COMPLETED"
+    assert "approval_auto_resume" in span_event_types(spans)
 
 
 def test_runner_forces_execution_after_incomplete_intake(monkeypatch, tmp_path):
@@ -374,12 +469,13 @@ def test_runner_forces_execution_after_incomplete_intake(monkeypatch, tmp_path):
 
     asyncio.run(run_research_loop("ambiguous query", "job-test", watchdog))
 
-    log_text = (tmp_path / "job-test" / "agent_execution.log").read_text()
+    status, diagnostics, _digest, spans = read_runner_artifacts(tmp_path)
     assert len(calls) == 2
     assert calls[0]["messages"] is None
     assert calls[1]["messages"][0]["metadata"]["action"] == "commence_research"
-    assert "FORCE EXECUTE" in log_text
-    assert "COMPLETED" in log_text
+    assert status["status"] == "COMPLETED"
+    assert diagnostics["status"] == "COMPLETED"
+    assert "forced_execution" in span_event_types(spans)
 
 
 def test_runner_counts_streamed_text_chunks_as_one_message(monkeypatch, tmp_path):
@@ -410,12 +506,17 @@ def test_runner_counts_streamed_text_chunks_as_one_message(monkeypatch, tmp_path
 
     asyncio.run(run_research_loop("query", "job-test", watchdog))
 
-    log_text = (tmp_path / "job-test" / "agent_execution.log").read_text()
-    assert "[MESSAGE" in log_text
-    assert "Hello" in log_text
-    assert "model message budget exceeded" not in log_text
+    status, diagnostics, _digest, spans = read_runner_artifacts(tmp_path)
+    message_spans = [
+        span
+        for span in spans
+        if (span.get("attributes") or {}).get("event_type") == "model_message"
+    ]
+    assert status["status"] == "COMPLETED"
+    assert message_spans[0]["attributes"]["message.text"] == "Hello"
+    assert diagnostics["model_message_count"] == 1
+    assert diagnostics["stop_reason"] is None
     assert watchdog.model_messages == 1
-    assert "COMPLETED" in log_text
 
 
 @pytest.mark.asyncio

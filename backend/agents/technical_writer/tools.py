@@ -16,7 +16,7 @@ from langchain_core.tools import tool
 from langchain.tools import ToolRuntime
 
 from core.context import ResearchContext
-from core.report_schema import DataSource, ReportMetadata, ResearchReport, ScenarioRow
+from core.report_schema import DataSource, ReportMetadata, ResearchReport
 
 from ..report_artifacts import chart_marker_ids, inject_auto_report_footer
 
@@ -44,16 +44,6 @@ _MACRO_QUERY_KEYWORDS = {
     "personal consumption",
     "disposable personal income",
     "delinquency",
-}
-
-_SCENARIO_QUERY_KEYWORDS = {
-    "scenario",
-    "scenarios",
-    "stress test",
-    "stress testing",
-    "base case",
-    "bull case",
-    "bear case",
 }
 
 _SUPPORTED_CHART_TYPES = {
@@ -87,11 +77,6 @@ def _is_macro_report(query_type: str, original_query: str) -> bool:
     return False
 
 
-def _requires_scenario_table(original_query: str) -> bool:
-    lowered_query = original_query.lower()
-    return any(keyword in lowered_query for keyword in _SCENARIO_QUERY_KEYWORDS)
-
-
 def _plan_context_path(runtime: ToolRuntime[ResearchContext]) -> Path | None:
     output_dir = getattr(runtime.context, "output_dir", None)
     if not output_dir:
@@ -104,6 +89,7 @@ def _save_plan_context(
     *,
     charts_json_path: str,
     original_query: str,
+    helper_evidence: dict[str, Any] | None = None,
 ) -> None:
     path = _plan_context_path(runtime)
     if path is None:
@@ -112,13 +98,15 @@ def _save_plan_context(
         "charts_json_path": charts_json_path,
         "original_query": original_query,
     }
+    if helper_evidence:
+        payload["helper_evidence"] = helper_evidence
     try:
         path.write_text(json.dumps(payload), encoding="utf-8")
     except OSError:
         return
 
 
-def _load_plan_context(runtime: ToolRuntime[ResearchContext]) -> dict[str, str]:
+def _load_plan_context(runtime: ToolRuntime[ResearchContext]) -> dict[str, Any]:
     path = _plan_context_path(runtime)
     if path is None:
         return {}
@@ -128,11 +116,15 @@ def _load_plan_context(runtime: ToolRuntime[ResearchContext]) -> dict[str, str]:
         return {}
     if not isinstance(parsed, dict):
         return {}
-    return {
+    context: dict[str, Any] = {
         key: value.strip()
         for key in ("charts_json_path", "original_query")
         if isinstance((value := parsed.get(key)), str) and value.strip()
     }
+    value = parsed.get("helper_evidence")
+    if isinstance(value, dict) and value:
+        context["helper_evidence"] = value
+    return context
 
 
 def _extract_research_query_from_markdown(markdown: str) -> str:
@@ -1053,352 +1045,6 @@ def _execution_summary_payload(
     return _job_local_payload()
 
 
-def _coerce_string_list(value: Any) -> list[str]:
-    if isinstance(value, list):
-        cleaned: list[str] = []
-        for item in value:
-            if isinstance(item, dict):
-                label = (
-                    item.get("indicator_name")
-                    or item.get("name")
-                    or item.get("indicator")
-                    or item.get("metric")
-                )
-                status = item.get("status")
-                current = item.get("current_value")
-                threshold = item.get("threshold")
-                parts = [str(label).strip()] if label else []
-                details = []
-                if status is not None:
-                    details.append(f"status={status}")
-                if current is not None:
-                    details.append(f"current={current}")
-                if threshold is not None:
-                    details.append(f"threshold={threshold}")
-                if details:
-                    parts.append("(" + ", ".join(details) + ")")
-                text = " ".join(parts).strip() or str(item).strip()
-            else:
-                text = str(item).strip()
-            if text:
-                cleaned.append(text)
-        return cleaned
-    if isinstance(value, str) and value.strip():
-        return [part.strip() for part in value.split(";") if part.strip()]
-    return []
-
-
-def _coerce_scenario_name(value: Any) -> str:
-    text = str(value or "").strip().lower()
-    aliases = {"upside": "bull", "downside": "bear"}
-    for alias, scenario in aliases.items():
-        if text == alias or (
-            text.startswith(alias)
-            and len(text) > len(alias)
-            and not text[len(alias)].isalnum()
-        ):
-            return scenario
-    for scenario in ("base", "bull", "bear"):
-        if text == scenario or text.startswith(f"{scenario} ") or text.startswith(f"{scenario}-"):
-            return scenario
-        if text.startswith(scenario) and len(text) > len(scenario) and not text[len(scenario)].isalnum():
-            return scenario
-    return text
-
-
-def _coerce_confidence(value: Any) -> str:
-    lowered = str(value or "").strip().lower()
-    if "medium" in lowered:
-        return "medium"
-    if "moderate" in lowered or "elevated" in lowered:
-        return "medium"
-    if "high" in lowered:
-        return "high"
-    if "low" in lowered:
-        return "low"
-    numeric_match = re.search(r"[-+]?\d+(?:\.\d+)?\s*%?", lowered)
-    numeric = numeric_match.group(0).replace("%", "").replace("~", "").strip() if numeric_match else ""
-    try:
-        probability = float(numeric)
-    except ValueError:
-        return lowered
-    if "%" not in lowered and 0 <= probability <= 1:
-        probability *= 100
-    return _coerce_probability_confidence(probability)
-
-
-def _coerce_probability_confidence(value: Any) -> str:
-    try:
-        probability = float(value)
-    except (TypeError, ValueError):
-        return "medium"
-    if probability >= 65:
-        return "high"
-    if probability <= 25:
-        return "low"
-    return "medium"
-
-
-def _coerce_uncertainty_notes(row: dict[str, Any]) -> str:
-    for key in ("uncertainty_notes", "uncertainty", "notes"):
-        value = row.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    notes = _coerce_string_list(row.get("confidence_notes"))
-    if notes:
-        return "; ".join(notes)
-    summary = row.get("narrative_summary")
-    if isinstance(summary, str) and summary.strip():
-        return summary.strip()
-    return ""
-
-
-def _get_case_insensitive(row: dict[str, Any], *keys: str) -> Any:
-    """Fetch a dict value while tolerating title-cased compact quant payloads."""
-    for key in keys:
-        if key in row:
-            return row[key]
-    lowered = {str(key).lower(): value for key, value in row.items()}
-    for key in keys:
-        value = lowered.get(key.lower())
-        if value is not None:
-            return value
-    return None
-
-
-def _fallback_scenario_assumptions(row: dict[str, Any]) -> list[str]:
-    excluded = {
-        "scenario",
-        "scenario_name",
-        "assumptions",
-        "key_assumptions",
-        "indicator_triggers",
-        "trigger_indicators",
-        "triggers",
-        "confidence",
-        "confidence_level",
-        "prob",
-        "probability",
-        "probability_assignment",
-        "uncertainty_notes",
-        "uncertainty",
-        "notes",
-    }
-    assumptions = [
-        f"{_labelize_key(str(key))}: {value}"
-        for key, value in row.items()
-        if str(key).lower() not in excluded and value not in (None, "")
-    ]
-    return assumptions or ["Scenario details were provided in compact form by the quantitative analysis."]
-
-
-def _scenario_rows_from_mapping(rows: dict[str, Any]) -> list[dict[str, Any]] | None:
-    """Normalize compact quant scenario mappings into ScenarioRow-shaped dicts."""
-    scenario_rows: list[dict[str, Any]] = []
-    for raw_name, raw_value in rows.items():
-        scenario_name = _coerce_scenario_name(raw_name)
-        if scenario_name not in {"base", "bull", "bear"}:
-            continue
-        if isinstance(raw_value, dict):
-            narrative = raw_value.get("narrative") or raw_value.get("summary") or raw_value.get("outlook")
-            assumptions = raw_value.get("assumptions") or raw_value.get("key_assumptions")
-            if assumptions is None:
-                assumptions = [
-                    f"{_labelize_key(key)}: {value}"
-                    for key, value in raw_value.items()
-                    if key
-                    not in {
-                        "confidence",
-                        "confidence_level",
-                        "indicator_triggers",
-                        "trigger_indicators",
-                        "narrative",
-                        "summary",
-                        "outlook",
-                        "uncertainty_notes",
-                        "uncertainty",
-                        "notes",
-                    }
-                    and value is not None
-                ]
-                if narrative:
-                    assumptions.insert(0, str(narrative))
-            indicator_triggers = (
-                raw_value.get("indicator_triggers")
-                or raw_value.get("trigger_indicators")
-                or raw_value.get("triggers")
-            )
-            if indicator_triggers is None:
-                indicator_triggers = (
-                    [str(narrative)]
-                    if narrative
-                    else ["Monitor scenario assumptions against incoming macro data"]
-                )
-            scenario_rows.append(
-                {
-                    "scenario": scenario_name,
-                    "assumptions": assumptions,
-                    "indicator_triggers": indicator_triggers,
-                    "confidence": raw_value.get("confidence") or raw_value.get("confidence_level") or "medium",
-                    "uncertainty_notes": _coerce_uncertainty_notes(raw_value)
-                    or "Compact scenario payload did not include explicit uncertainty notes.",
-                }
-            )
-        elif isinstance(raw_value, str) and raw_value.strip():
-            scenario_rows.append(
-                {
-                    "scenario": scenario_name,
-                    "assumptions": [raw_value.strip()],
-                    "indicator_triggers": ["Monitor scenario assumptions against incoming macro data"],
-                    "confidence": "medium",
-                    "uncertainty_notes": "Compact scenario payload did not include explicit uncertainty notes.",
-                }
-            )
-    return scenario_rows or None
-
-
-def _scenario_table_from_execution_summary(payload: dict[str, Any]) -> list[ScenarioRow] | None:
-    rows = payload.get("scenario_table")
-    if rows is None and isinstance(payload.get("scenario_stress_test"), dict):
-        rows = payload["scenario_stress_test"].get("scenario_table")
-    if rows is None and isinstance(payload.get("scenario_analysis"), dict):
-        rows = payload["scenario_analysis"].get("scenario_table")
-    if rows is None and isinstance(payload.get("statistical_summary"), dict):
-        rows = payload["statistical_summary"].get("scenarios")
-    if rows is None:
-        rows = payload.get("scenarios")
-    if rows is None and isinstance(payload.get("scenario_results"), dict):
-        scenario_results = payload["scenario_results"]
-        detail = scenario_results.get("detail")
-        rows = detail if isinstance(detail, dict) else scenario_results
-    if isinstance(rows, dict):
-        rows = _scenario_rows_from_mapping(rows)
-    if not isinstance(rows, list):
-        return None
-
-    scenario_rows: list[ScenarioRow] = []
-    for row in rows:
-        if not isinstance(row, dict):
-            return None
-        raw_scenario = _get_case_insensitive(row, "scenario", "scenario_name")
-        raw_assumptions = _get_case_insensitive(row, "assumptions", "key_assumptions")
-        raw_triggers = _get_case_insensitive(row, "indicator_triggers", "trigger_indicators", "triggers")
-        raw_confidence = (
-            _get_case_insensitive(row, "confidence", "confidence_level")
-            or _coerce_probability_confidence(
-                _get_case_insensitive(row, "probability_assignment", "probability", "prob")
-            )
-        )
-        normalized = {
-            "scenario": raw_scenario,
-            "assumptions": raw_assumptions,
-            "indicator_triggers": raw_triggers,
-            "confidence": raw_confidence,
-            "uncertainty_notes": _coerce_uncertainty_notes(row),
-        }
-        if normalized["scenario"] is not None:
-            normalized["scenario"] = _coerce_scenario_name(normalized["scenario"])
-        normalized["assumptions"] = _coerce_string_list(normalized["assumptions"])
-        if not normalized["assumptions"]:
-            normalized["assumptions"] = _fallback_scenario_assumptions(row)
-        normalized["indicator_triggers"] = _coerce_string_list(normalized["indicator_triggers"])
-        if not normalized["indicator_triggers"]:
-            normalized["indicator_triggers"] = [
-                "Monitor scenario assumptions against incoming macro and market data"
-            ]
-        normalized["confidence"] = _coerce_confidence(normalized["confidence"])
-        if not normalized["uncertainty_notes"]:
-            normalized["uncertainty_notes"] = (
-                "Compact scenario payload did not include explicit uncertainty notes."
-            )
-        try:
-            scenario_rows.append(ScenarioRow(**normalized))
-        except Exception:
-            return None
-    return scenario_rows
-
-
-def _split_markdown_table_cell(value: str) -> list[str]:
-    cleaned = (
-        value.replace("<br />", ";")
-        .replace("<br/>", ";")
-        .replace("<br>", ";")
-        .replace("•", ";")
-    )
-    parts = [part.strip(" -") for part in cleaned.split(";") if part.strip(" -")]
-    return parts or ([value.strip()] if value.strip() else [])
-
-
-def _scenario_table_from_markdown(markdown: str) -> list[ScenarioRow] | None:
-    """Recover ScenarioRow objects from a writer-rendered markdown table."""
-    lines = markdown.splitlines()
-    for i, line in enumerate(lines):
-        if "|" not in line:
-            continue
-        raw_headers = [cell.strip().lower() for cell in line.strip().strip("|").split("|")]
-        normalized_headers = [header.replace("_", " ").replace("-", " ") for header in raw_headers]
-        if "scenario" not in normalized_headers:
-            continue
-        rows: list[ScenarioRow] = []
-        for row_line in lines[i + 1 :]:
-            if "|" not in row_line:
-                if rows:
-                    break
-                continue
-            cells = [cell.strip() for cell in row_line.strip().strip("|").split("|")]
-            if cells and all(set(cell.replace(":", "").strip()) <= {"-"} for cell in cells):
-                continue
-            if len(cells) < len(normalized_headers):
-                continue
-            row = dict(zip(normalized_headers, cells, strict=False))
-            scenario = _coerce_scenario_name(row.get("scenario"))
-            if scenario not in {"base", "bull", "bear"}:
-                continue
-            assumption_cell = next((value for key, value in row.items() if "assumption" in key), "")
-            trigger_cell = next(
-                (value for key, value in row.items() if "trigger" in key or "indicator" in key),
-                "",
-            )
-            if not assumption_cell:
-                fallback_parts = []
-                for key, value in row.items():
-                    if key == "scenario" or "trigger" in key or "indicator" in key:
-                        continue
-                    if "confidence" in key or "uncertainty" in key or "note" in key or "caveat" in key:
-                        continue
-                    if str(value).strip():
-                        fallback_parts.append(f"{_labelize_key(key)}: {value.strip()}")
-                assumption_cell = "; ".join(fallback_parts)
-            confidence = _coerce_confidence(row.get("confidence"))
-            uncertainty = next(
-                (
-                    value
-                    for key, value in row.items()
-                    if "uncertainty" in key or "note" in key or "caveat" in key
-                ),
-                "",
-            ).strip()
-            try:
-                rows.append(
-                    ScenarioRow(
-                        scenario=scenario,
-                        assumptions=_split_markdown_table_cell(assumption_cell),
-                        indicator_triggers=_split_markdown_table_cell(trigger_cell)
-                        or ["Monitor the scenario table assumptions against incoming data"],
-                        confidence=confidence or "medium",
-                        uncertainty_notes=uncertainty
-                        or "Scenario uncertainty was described in the report narrative.",
-                    )
-                )
-            except Exception:
-                continue
-        if rows:
-            by_name = {row.scenario: row for row in rows}
-            if {"base", "bull", "bear"}.issubset(by_name):
-                return [by_name["base"], by_name["bull"], by_name["bear"]]
-    return None
-
-
 def _fmt_summary_number(value: Any) -> str | None:
     if isinstance(value, bool) or value is None:
         return None
@@ -1454,7 +1100,7 @@ def _compact_source_context_files(
     return (
         "Exact supplemental source-context values from saved public-data CSVs. "
         "Use these values when discussing international peers, regional consumers, "
-        "and Apple/Microsoft fundamentals; do not estimate replacements:\n"
+        "and company fundamentals; do not estimate replacements:\n"
         + "\n".join(dict.fromkeys(lines))
     )
 
@@ -1656,7 +1302,6 @@ def _compact_top_level_metric_table(parsed: dict, key: str, heading: str) -> str
 
 
 _HEADLINE_SCALAR_KEYS = (
-    "latest_unrate",
     "latest_unemployment_rate",
     "latest_cpi_yoy",
     "latest_core_pce_yoy",
@@ -1849,11 +1494,8 @@ def _compact_shallow_statistical_summary(stats_payload: dict[str, Any]) -> str |
     )
 
 
-def _compact_macro_cycle_chart_pack_payload(parsed: dict[str, Any]) -> str | None:
-    if parsed.get("analysis_type") != "macro_cycle_chart_pack":
-        return None
-
-    lines: list[str] = ["Exact macro-cycle chart-pack facts from execution_summary.json:"]
+def _compact_macro_evidence_payload(parsed: dict[str, Any]) -> str | None:
+    lines: list[str] = []
     snapshot = parsed.get("latest_snapshot")
     if isinstance(snapshot, dict) and snapshot:
         fields = [
@@ -1933,82 +1575,525 @@ def _compact_macro_cycle_chart_pack_payload(parsed: dict[str, Any]) -> str | Non
         if items:
             lines.append("- limitations: " + "; ".join(items))
 
+    if not lines:
+        return None
+    return (
+        "Structured macro evidence from execution_summary.json. Use these rows as "
+        "controlling computed facts:\n" + "\n".join(lines)
+    )
+
+
+def _numeric_facts_from_summary(parsed: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates: list[object] = [parsed.get("numeric_facts")]
+    facts: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not isinstance(candidate, list):
+            continue
+        for item in candidate:
+            if not isinstance(item, dict):
+                continue
+            fact_id = str(item.get("id") or item.get("source_key") or "")
+            if not fact_id or fact_id in seen:
+                continue
+            seen.add(fact_id)
+            facts.append(item)
+    return facts
+
+
+def _compact_numeric_facts_payload(parsed: dict[str, Any]) -> str | None:
+    facts = _numeric_facts_from_summary(parsed)
+    if not facts:
+        return None
+
+    rendered: list[str] = []
+    for fact in facts[:30]:
+        display = fact.get("display_value")
+        source_key = fact.get("source_key")
+        if not display or not source_key:
+            continue
+        fields = [
+            f"{fact.get('id') or source_key}={display}",
+            f"raw={fact.get('raw_value')}",
+            f"tolerance={fact.get('tolerance')}",
+            f"source_key={source_key}",
+        ]
+        if fact.get("as_of_date") is not None:
+            fields.append(f"as_of={fact.get('as_of_date')}")
+        rendered.append("(" + "; ".join(str(field) for field in fields) + ")")
+
+    if not rendered:
+        return None
+    return (
+        "Display-ready numeric facts from execution_summary.json. Use each "
+        "display_value verbatim for these facts; do not round differently or "
+        "substitute raw values unless the display_value is unavailable:\n- "
+        + "\n- ".join(rendered)
+    )
+
+
+_HELPER_TABLE_KEYS = (
+    "latest_fundamentals",
+    "company_history_rows",
+    "trend_diagnostics",
+    "macro_overlay",
+    "company_macro_sensitivity",
+    "scenario_score_rows",
+    "signal_score_rows",
+    "signal_event_rows",
+    "signal_false_positive_windows",
+    "lead_time_rows",
+    "replay_rows",
+    "forecast_rows",
+    "forecast_table",
+    "walk_forward_backtest_rows",
+    "model_validation_rows",
+    "model_comparison_by_horizon",
+    "model_comparison_rows",
+    "forecast_band_rows",
+    "historical_failure_episodes",
+    "predictor_contributions",
+    "historical_window_coverage",
+    "analog_similarity_ranking",
+    "analog_profiles",
+    "analog_profile_rows",
+    "composite_score_rows",
+    "regime_evidence_rows",
+    "regime_history_rows",
+    "regime_analog_rows",
+    "missing_indicator_rows",
+)
+_HELPER_DIAGNOSTIC_KEYS = (
+    "validation_diagnostics",
+    "event_backtest_metrics",
+    "signal_validation_metrics",
+    "latest_signal_observation",
+    "signal_design",
+    "forecast_origin",
+    "validation_window",
+    "diagnostics",
+    "comparison_design",
+    "replay_design",
+    "current_regime_row",
+    "regime_design",
+    "composite_current_row",
+    "composite_validation_metrics",
+    "composite_validation_design",
+    "feature_coverage",
+    "feature_transforms",
+    "normalization_stats",
+    "weights_or_model",
+    "thresholds",
+)
+
+
+def _is_non_empty_payload(value: Any) -> bool:
+    if isinstance(value, (dict, list)):
+        return bool(value)
+    return value is not None and value != ""
+
+
+def _helper_evidence_for_draft(parsed: dict[str, Any]) -> dict[str, Any]:
+    evidence: dict[str, Any] = {}
+    facts = _numeric_facts_from_summary(parsed)
+    if facts:
+        evidence["numeric_facts"] = facts
+
+    for key in ("source_coverage", "methods_used", "chart_ids", "limitations", "source_context_files"):
+        value = parsed.get(key)
+        if _is_non_empty_payload(value):
+            evidence[key] = value
+
+    tables = {
+        key: value
+        for key in _HELPER_TABLE_KEYS
+        if _is_non_empty_payload((value := parsed.get(key)))
+    }
+    diagnostics = {
+        key: value
+        for key in _HELPER_DIAGNOSTIC_KEYS
+        if _is_non_empty_payload((value := parsed.get(key)))
+    }
+    if tables:
+        evidence["tables"] = tables
+    if diagnostics:
+        evidence["diagnostics"] = diagnostics
+    return evidence
+
+
+def _render_mapping_fields(row: dict[str, Any], keys: tuple[str, ...]) -> list[str]:
+    fields: list[str] = []
+    for key in keys:
+        value = row.get(key)
+        if value is None:
+            continue
+        formatted = _fmt_summary_number(value)
+        fields.append(f"{key}={formatted if formatted is not None else value}")
+    return fields
+
+
+def _compact_helper_evidence_payload(parsed: dict[str, Any]) -> str | None:
+    evidence = _helper_evidence_for_draft(parsed)
+    if not evidence:
+        return None
+
+    lines = [
+        "Generic helper-produced evidence from execution_summary.json. Validate "
+        "draft claims against numeric_facts, source coverage, methods, chart IDs, "
+        "tables, diagnostics, and limitations; state unavailable evidence rather "
+        "than inventing values."
+    ]
+
+    numeric_facts_summary = _compact_numeric_facts_payload(parsed)
+    if numeric_facts_summary:
+        lines.append(numeric_facts_summary)
+
+    source_coverage = evidence.get("source_coverage")
+    if isinstance(source_coverage, dict):
+        rendered = []
+        for key, value in list(source_coverage.items())[:12]:
+            if not isinstance(value, dict):
+                continue
+            fields = _render_mapping_fields(value, ("status", "limitation"))
+            if fields:
+                rendered.append(f"{key}: " + "; ".join(fields))
+        if rendered:
+            lines.append("- source_coverage: " + " | ".join(rendered))
+
+    methods = evidence.get("methods_used")
+    if isinstance(methods, list) and methods:
+        lines.append("- methods_used: " + ", ".join(str(item) for item in methods[:12]))
+
+    chart_ids = evidence.get("chart_ids")
+    if isinstance(chart_ids, list) and chart_ids:
+        lines.append("- chart_ids: " + ", ".join(str(item) for item in chart_ids[:20]))
+
+    diagnostics = evidence.get("diagnostics")
+    if isinstance(diagnostics, dict):
+        for diagnostic_key, diagnostic in diagnostics.items():
+            if not isinstance(diagnostic, dict) or not diagnostic:
+                continue
+            diagnostic_keys = [
+                str(key) for key in list(diagnostic.keys())[:10] if key != "metrics"
+            ]
+            fields = _render_mapping_fields(
+                diagnostic,
+                tuple(diagnostic_keys),
+            )
+            metrics = diagnostic.get("metrics")
+            if isinstance(metrics, dict):
+                fields.extend(
+                    _render_mapping_fields(
+                        metrics,
+                        tuple(str(key) for key in list(metrics.keys())[:10]),
+                    )
+                )
+            if fields:
+                lines.append(f"- {diagnostic_key}: " + "; ".join(fields))
+
+    tables = evidence.get("tables")
+    if isinstance(tables, dict):
+        rendered_table_keys: set[str] = set()
+        coverage_rows = tables.get("historical_window_coverage")
+        if isinstance(coverage_rows, list) and coverage_rows:
+            rendered_table_keys.add("historical_window_coverage")
+            rendered = []
+            for row in coverage_rows[:12]:
+                if not isinstance(row, dict) or not row.get("label"):
+                    continue
+                fields = _render_mapping_fields(
+                    row,
+                    (
+                        "status",
+                        "requested",
+                        "observed_months",
+                        "expected_months",
+                        "coverage_ratio",
+                    ),
+                )
+                if row.get("requested_years"):
+                    fields.append(f"requested_years={row.get('requested_years')}")
+                if fields:
+                    rendered.append(f"{row.get('label')}: " + "; ".join(fields))
+            if rendered:
+                lines.append("- historical_window_coverage: " + " | ".join(rendered))
+
+        ranking_rows = tables.get("analog_similarity_ranking")
+        if isinstance(ranking_rows, list) and ranking_rows:
+            rendered_table_keys.add("analog_similarity_ranking")
+            rendered = []
+            for row in ranking_rows[:10]:
+                if not isinstance(row, dict) or not (row.get("label") or row.get("analog")):
+                    continue
+                label = row.get("label") or row.get("analog")
+                fields = _render_mapping_fields(
+                    row,
+                    (
+                        "raw_distance",
+                        "distance_score",
+                        "normalized_similarity",
+                        "status",
+                    ),
+                )
+                if fields:
+                    rendered.append(f"{label}: " + "; ".join(fields))
+            if rendered:
+                lines.append("- analog_similarity_ranking: " + " | ".join(rendered))
+
+        profile_rows = tables.get("analog_profiles")
+        if isinstance(profile_rows, dict) and profile_rows:
+            rendered_table_keys.add("analog_profiles")
+            rendered = []
+            for label, profile in list(profile_rows.items())[:8]:
+                if not isinstance(profile, dict):
+                    continue
+                fields = _render_mapping_fields(
+                    profile,
+                    tuple(str(key) for key in list(profile.keys())[:8]),
+                )
+                if fields:
+                    rendered.append(f"{label}: " + "; ".join(fields))
+            if rendered:
+                lines.append("- analog_profiles: " + " | ".join(rendered))
+
+        latest = tables.get("latest_fundamentals")
+        if isinstance(latest, dict):
+            rendered_table_keys.add("latest_fundamentals")
+            for ticker, facts in list(latest.items())[:8]:
+                if not isinstance(facts, dict):
+                    continue
+                fields = _render_mapping_fields(
+                    facts,
+                    (
+                        "fiscal_year",
+                        "revenue_b",
+                        "revenue_growth_pct",
+                        "revenue_cagr_pct",
+                        "gross_margin_pct",
+                        "operating_margin_pct",
+                        "net_margin_pct",
+                        "operating_cash_flow_b",
+                        "free_cash_flow_b",
+                        "cash_and_securities_b",
+                        "long_term_debt_b",
+                        "diluted_eps",
+                    ),
+                )
+                if fields:
+                    lines.append(f"- latest_fundamentals.{ticker}: " + "; ".join(fields))
+
+        for table_key in (
+            "trend_diagnostics",
+            "company_macro_sensitivity",
+            "scenario_score_rows",
+            "signal_score_rows",
+            "signal_event_rows",
+            "signal_false_positive_windows",
+            "lead_time_rows",
+            "replay_rows",
+            "analog_profile_rows",
+        ):
+            rows = tables.get(table_key)
+            if not isinstance(rows, list) or not rows:
+                continue
+            rendered_table_keys.add(table_key)
+            rendered = []
+            for row in rows[:10]:
+                if not isinstance(row, dict):
+                    continue
+                label = (
+                    row.get("ticker")
+                    or row.get("scenario")
+                    or row.get("regime")
+                    or row.get("indicator")
+                    or row.get("category")
+                    or row.get("event_label")
+                    or row.get("label")
+                    or row.get("window_label")
+                    or row.get("signal_date")
+                    or row.get("event_date")
+                    or row.get("date")
+                    or table_key
+                )
+                fields = _render_mapping_fields(
+                    row,
+                    (
+                        "start",
+                        "end",
+                        "date",
+                        "status",
+                        "score",
+                        "met_threshold",
+                        "above_threshold",
+                        "threshold_distance",
+                        "max_score_date",
+                        "components_triggered",
+                        "max_score",
+                        "components_at_peak",
+                        "window_label",
+                        "signal_date",
+                        "target_date",
+                        "signal_value",
+                        "threshold",
+                        "direction",
+                        "event_date",
+                        "prior_signal_date",
+                        "lead_periods",
+                        "periods",
+                        "unrate_change_pp",
+                        "indpro_change_pct",
+                        "real_pce_change_pct",
+                        "sentiment_decline_pts",
+                        "auc",
+                        "brier_score",
+                        "revenue_cagr_pct",
+                        "latest_revenue_growth_pct",
+                        "latest_fiscal_year",
+                        "latest_avg_fedfunds_pct",
+                        "latest_recession_months",
+                        "high_rate_fiscal_year_count",
+                        "net_margin_change_last_3y_pp",
+                        "delta_vs_current",
+                    ),
+                )
+                if label and fields:
+                    rendered.append(f"{label}: " + "; ".join(fields))
+            if rendered:
+                lines.append(f"- {table_key}: " + " | ".join(rendered))
+
+        for table_key, rows in tables.items():
+            if table_key in rendered_table_keys:
+                continue
+            rendered = []
+            if isinstance(rows, list):
+                for row in rows[:10]:
+                    if not isinstance(row, dict):
+                        continue
+                    label = (
+                        row.get("label")
+                        or row.get("scenario")
+                        or row.get("regime")
+                        or row.get("indicator")
+                        or row.get("category")
+                        or row.get("date")
+                        or row.get("start")
+                        or row.get("signal_date")
+                        or row.get("event_date")
+                        or row.get("target_date")
+                        or row.get("prediction_date")
+                        or row.get("horizon")
+                        or table_key
+                    )
+                    field_keys = tuple(str(key) for key in list(row.keys())[:8])
+                    fields = _render_mapping_fields(row, field_keys)
+                    if label and fields:
+                        rendered.append(f"{label}: " + "; ".join(fields))
+            elif isinstance(rows, dict):
+                fields = _render_mapping_fields(
+                    rows,
+                    tuple(str(key) for key in list(rows.keys())[:8]),
+                )
+                if fields:
+                    rendered.append("; ".join(fields))
+            if rendered:
+                lines.append(f"- {table_key}: " + " | ".join(rendered))
+
+    limitations = evidence.get("limitations")
+    if isinstance(limitations, list) and limitations:
+        lines.append("- limitations: " + "; ".join(str(item) for item in limitations[:10]))
+
     return "\n".join(lines)
+
+
+_NUMERIC_TOKEN_RE = re.compile(r"(?<![\w.])-?\$?\d[\d,]*(?:\.\d+)?%?(?![\w.])")
+
+
+def _numeric_candidates(text: str) -> list[float]:
+    values: list[float] = []
+    for match in _NUMERIC_TOKEN_RE.finditer(text):
+        token = match.group(0).replace("$", "").replace(",", "").replace("%", "")
+        try:
+            values.append(float(token))
+        except ValueError:
+            continue
+    return values
+
+
+def _contains_numeric_fact_value(text: str, fact: dict[str, Any]) -> bool:
+    display = str(fact.get("display_value") or "").strip()
+    if display:
+        if display in text:
+            return True
+        without_currency = display.replace("$", "").strip()
+        if without_currency and without_currency in text:
+            return True
+
+    try:
+        raw_value = float(fact.get("raw_value"))
+    except (TypeError, ValueError):
+        return False
+    try:
+        tolerance = abs(float(fact.get("tolerance", 0)))
+    except (TypeError, ValueError):
+        tolerance = 0.0
+    return any(abs(candidate - raw_value) <= tolerance for candidate in _numeric_candidates(text))
+
+
+def _metric_markers_for_fact(fact: dict[str, Any]) -> tuple[str, ...]:
+    metric = str(fact.get("metric") or "").lower()
+    label = str(fact.get("label") or "").lower()
+    marker_map = {
+        "revenue_b": ("revenue", "sales", "growth narrative"),
+        "net_income_b": ("net income", "profit", "earnings"),
+        "net_margin_pct": ("margin", "profitability"),
+        "gross_margin_pct": ("gross margin", "margin"),
+        "operating_margin_pct": ("operating margin", "margin"),
+        "operating_cash_flow_b": ("cash flow", "cash-flow"),
+        "free_cash_flow_b": ("free cash flow", "cash-flow"),
+        "cash_and_securities_b": ("balance sheet", "cash", "liquidity"),
+        "long_term_debt_b": ("balance sheet", "debt", "leverage"),
+        "diluted_eps": ("eps", "earnings per share"),
+    }
+    markers = list(marker_map.get(metric, ()))
+    markers.extend(token for token in re.split(r"[^a-z0-9]+", metric) if len(token) > 2)
+    markers.extend(token for token in re.split(r"[^a-z0-9]+", label) if len(token) > 2)
+    return tuple(dict.fromkeys(markers))
+
+
+def _numeric_fact_validation_blockers(
+    summary: dict[str, Any], markdown: str, original_query: str
+) -> list[str]:
+    facts = _numeric_facts_from_summary(summary)
+    if not facts:
+        return []
+
+    query_and_markdown = f"{original_query}\n{markdown}".lower()
+    missing: list[str] = []
+    markdown_lower = markdown.lower()
+    for fact in facts:
+        subject = str(fact.get("subject") or "").strip()
+        metric = str(fact.get("metric") or fact.get("id") or fact.get("source_key") or "").strip()
+        if subject and subject.lower() not in markdown_lower:
+            continue
+        markers = _metric_markers_for_fact(fact)
+        if markers and not any(marker in query_and_markdown for marker in markers):
+            continue
+        if not _contains_numeric_fact_value(markdown, fact):
+            label = " ".join(part for part in (subject, metric) if part)
+            missing.append(label or str(fact.get("id") or fact.get("source_key") or "numeric fact"))
+
+    if not missing:
+        return []
+    return [
+        "Report omits or contradicts helper-produced numeric_facts for "
+        f"{', '.join(missing[:8])}. Regenerate the relevant section from "
+        "the execution_summary display_value fields."
+    ]
 
 
 def _compact_feature_acceptance_payload(parsed: dict) -> str | None:
     """Summarize the full-research acceptance artifacts without long histories."""
     parts: list[str] = []
-    stats = parsed.get("statistical_summary")
-    stats_payload = stats if isinstance(stats, dict) else {}
-
-    risk = parsed.get("recession_risk_index")
-    if not isinstance(risk, dict):
-        risk = stats_payload.get("composite_indicator")
-    if not isinstance(risk, dict):
-        risk = parsed.get("composite_predictive_indicator")
-    if not isinstance(risk, dict):
-        risk = parsed.get("composite_indicator")
-    if isinstance(risk, dict):
-        lines = []
-        for key in (
-            "current_score",
-            "current_classification",
-            "latest_index_value",
-            "latest_percentile_0_100",
-            "latest_signal",
-        ):
-            if risk.get(key) is not None:
-                lines.append(f"- {key}: {_fmt_summary_number(risk.get(key))}")
-        composite = risk.get("composite_full")
-        if isinstance(composite, dict):
-            for key in ("latest_index_value", "latest_percentile_0_100", "latest_signal"):
-                if composite.get(key) is not None:
-                    lines.append(f"- {key}: {_fmt_summary_number(composite.get(key))}")
-            latest_features = composite.get("latest_feature_values")
-            if isinstance(latest_features, dict) and latest_features:
-                values = [
-                    f"{name}={_fmt_summary_number(value)}"
-                    for name, value in latest_features.items()
-                    if _fmt_summary_number(value) is not None
-                ]
-                if values:
-                    lines.append("- latest_feature_values: " + "; ".join(values))
-            backtest = composite.get("backtest_summary")
-            if isinstance(backtest, dict):
-                metrics = backtest.get("metrics")
-                if isinstance(metrics, dict):
-                    fields = [
-                        f"{name}={_fmt_summary_number(value)}"
-                        for name, value in metrics.items()
-                        if _fmt_summary_number(value) is not None
-                    ]
-                    if fields:
-                        lines.append("- backtest_metrics: " + "; ".join(fields[:8]))
-        backtest = risk.get("backtest_summary")
-        if isinstance(backtest, dict):
-            if backtest.get("status") is not None:
-                lines.append(f"- backtest_status: {backtest.get('status')}")
-            window = backtest.get("test_window")
-            if isinstance(window, dict) and (window.get("start") or window.get("end")):
-                lines.append(
-                    "- backtest_window: "
-                    + f"{window.get('start', 'unknown')} to {window.get('end', 'unknown')}"
-                )
-            metrics = backtest.get("metrics")
-            if isinstance(metrics, dict):
-                fields = [
-                    f"{name}={_fmt_summary_number(value)}"
-                    for name, value in metrics.items()
-                    if _fmt_summary_number(value) is not None
-                ]
-                if fields:
-                    lines.append("- backtest_metrics: " + "; ".join(fields[:8]))
-        if lines:
-            parts.append(
-                "Exact recession-risk framework values from execution_summary.json:\n"
-                + "\n".join(lines)
-            )
 
     latest_yoy = parsed.get("latest_yoy")
     if isinstance(latest_yoy, dict) and latest_yoy:
@@ -2033,73 +2118,6 @@ def _compact_feature_acceptance_payload(parsed: dict) -> str | None:
             + "- "
             + "; ".join(f"{key}={str(value).lower()}" for key, value in scenarios_active.items())
         )
-
-    forecast = parsed.get("unemployment_forecast")
-    if not isinstance(forecast, dict):
-        forecast = stats_payload.get("forecast_result")
-    if isinstance(forecast, dict):
-        lines = []
-        if forecast.get("current_unemployment") is not None:
-            lines.append(f"- current_unemployment: {_fmt_summary_number(forecast.get('current_unemployment'))}")
-        rows = forecast.get("forecast_months") or forecast.get("forecast_table")
-        if isinstance(rows, list) and rows:
-            rendered = []
-            for row in rows[:6]:
-                if not isinstance(row, dict):
-                    continue
-                pieces = []
-                for key in ("date", "month", "value", "forecast", "lower_ci", "upper_ci"):
-                    if row.get(key) is not None:
-                        pieces.append(f"{key}={_fmt_summary_number(row.get(key))}")
-                if pieces:
-                    rendered.append("; ".join(pieces))
-            if rendered:
-                lines.append("- forecast_months: " + " | ".join(rendered))
-        if forecast.get("model_spec"):
-            lines.append(f"- model_spec: {forecast.get('model_spec')}")
-        if lines:
-            parts.append(
-                "Exact short-term unemployment outlook from execution_summary.json:\n"
-                + "\n".join(lines)
-            )
-
-    regime = parsed.get("regime_classification")
-    if not isinstance(regime, dict):
-        regime = stats_payload.get("regime_result")
-    if isinstance(regime, dict):
-        lines = []
-        regime_label = regime.get("regime") or regime.get("regime_label")
-        if regime_label is not None:
-            lines.append(f"- regime: {regime_label}")
-        if regime.get("justification"):
-            lines.append(f"- justification: {regime.get('justification')}")
-        if regime.get("regime_score") is not None:
-            lines.append(f"- regime_score: {_fmt_summary_number(regime.get('regime_score'))}")
-        if regime.get("score_momentum") is not None:
-            lines.append(f"- score_momentum: {_fmt_summary_number(regime.get('score_momentum'))}")
-        category_scores = regime.get("category_scores")
-        if isinstance(category_scores, dict) and category_scores:
-            lines.append(
-                "- category_scores: "
-                + "; ".join(f"{key}={_fmt_summary_number(value)}" for key, value in category_scores.items())
-            )
-        evidence = regime.get("evidence_table")
-        if isinstance(evidence, list) and evidence:
-            lines.append("- evidence_table:")
-            for row in evidence[:8]:
-                if not isinstance(row, dict):
-                    continue
-                pieces = []
-                for key in ("category", "indicator", "value", "score", "signal"):
-                    if row.get(key) is not None:
-                        pieces.append(f"{key}={_fmt_summary_number(row.get(key))}")
-                if pieces:
-                    lines.append("  - " + ", ".join(pieces))
-        if lines:
-            parts.append(
-                "Exact regime-classification evidence from execution_summary.json:\n"
-                + "\n".join(lines)
-            )
 
     consumer = parsed.get("consumer_stress")
     if isinstance(consumer, dict):
@@ -2183,50 +2201,6 @@ def _compact_feature_acceptance_payload(parsed: dict) -> str | None:
                     + "\n".join(lines)
                 )
 
-    tech_earnings = parsed.get("tech_earnings")
-    if isinstance(tech_earnings, dict) and tech_earnings:
-        fields = []
-        for key in sorted(tech_earnings):
-            value = tech_earnings.get(key)
-            formatted = _fmt_summary_number(value)
-            if formatted is not None:
-                fields.append(f"- {key}: {formatted}")
-        if fields:
-            parts.append(
-                "Exact large-cap technology earnings values from execution_summary.json. "
-                "Use these SEC-derived values as controlling facts and do not substitute "
-                "newer public-memory fiscal-year figures:\n"
-                + "\n".join(fields[:16])
-            )
-
-    company_summaries = []
-    for label, key in (("AAPL", "apple_summary"), ("MSFT", "msft_summary")):
-        summary = parsed.get(key)
-        if not isinstance(summary, dict):
-            continue
-        fields = []
-        for field in (
-            "fiscal_year_start",
-            "fiscal_year_latest",
-            "revenue_cagr_pct",
-            "revenue_growth_pct",
-            "net_income_growth_pct",
-            "gross_margin_pct",
-            "net_margin_pct",
-            "debt_to_assets_pct",
-        ):
-            if summary.get(field) is not None:
-                fields.append(f"{field}={_fmt_summary_number(summary.get(field))}")
-        if fields:
-            company_summaries.append(f"- {label}: " + ", ".join(fields))
-    if company_summaries:
-        parts.append(
-            "Exact SEC EDGAR Apple/Microsoft summary values from execution_summary.json. "
-            "Use these company facts as controlling evidence; do not add segment mix, installed-base, "
-            "or sensitivity percentages unless execution_summary.json provides them:\n"
-            + "\n".join(company_summaries)
-        )
-
     intl = parsed.get("international_comparison")
     if isinstance(intl, dict):
         rows = intl.get("table")
@@ -2252,30 +2226,6 @@ def _compact_feature_acceptance_payload(parsed: dict) -> str | None:
                     + "\n".join(lines)
                 )
 
-    earnings = parsed.get("apple_msft_earnings")
-    if isinstance(earnings, dict):
-        lines = []
-        for ticker in ("AAPL", "MSFT"):
-            rows = earnings.get(ticker)
-            if not isinstance(rows, list) or not rows:
-                continue
-            latest = next((row for row in reversed(rows) if isinstance(row, dict)), None)
-            if not latest:
-                continue
-            fields = []
-            for key in ("fiscal_year", "revenue_growth_pct", "net_income_growth_pct", "margin_pct"):
-                if latest.get(key) is not None:
-                    fields.append(f"{key}={_fmt_summary_number(latest.get(key))}")
-            if fields:
-                lines.append(f"- {ticker} latest: " + ", ".join(fields))
-        if earnings.get("earnings_risk_assessment"):
-            lines.append("- earnings_risk_assessment: " + str(earnings.get("earnings_risk_assessment")))
-        if lines:
-            parts.append(
-                "Exact Apple/Microsoft earnings-risk values from execution_summary.json:\n"
-                + "\n".join(lines)
-            )
-
     downturn = parsed.get("prior_downturn_comparison")
     if isinstance(downturn, dict):
         lines = []
@@ -2299,572 +2249,85 @@ def _compact_feature_acceptance_payload(parsed: dict) -> str | None:
     return "\n\n".join(parts) if parts else None
 
 
-def _compact_regime_classifier_payload(parsed: dict) -> str | None:
-    """Preserve regime-classifier outputs without letting long history arrays dominate."""
-    regime_label = parsed.get("regime_label") or parsed.get("current_regime")
-    regime_score = parsed.get("regime_score")
-    if regime_score is None:
-        regime_score = parsed.get("composite_score")
-    category_scores = parsed.get("category_scores") or parsed.get("domain_scores")
-
-    has_regime_payload = any(
-        key in parsed
-        for key in (
-            "regime_label",
-            "current_regime",
-            "regime_score",
-            "composite_score",
-            "evidence_table",
-            "historical_analogs",
-            "false_positive_caveat",
-            "false_positive_caveats",
-        )
-    )
-    if not has_regime_payload:
-        return None
-
-    lines = [
-        "Required regime-classifier fields from execution_summary.json. "
-        "Render the regime label, evidence table, historical analogs, and false-positive caveat:"
-    ]
-    if parsed.get("current_month") is not None:
-        lines.append(f"- current_month: {parsed.get('current_month')}")
-    if regime_label is not None:
-        lines.append(f"- regime_label: {regime_label}")
-    if regime_score is not None:
-        lines.append(f"- regime_score: {regime_score}")
-
-    if isinstance(category_scores, dict) and category_scores:
-        scores = "; ".join(f"{key}={value}" for key, value in category_scores.items())
-        lines.append(f"- category_scores: {scores}")
-
-    methodology = parsed.get("scoring_methodology")
-    if isinstance(methodology, str) and methodology.strip():
-        lines.append("- scoring_methodology: " + methodology.strip())
-
-    stats = parsed.get("statistical_summary")
-    if isinstance(stats, dict) and stats:
-        stat_fields = []
-        for key, value in stats.items():
-            formatted = _fmt_summary_number(value)
-            if formatted is not None:
-                stat_fields.append(f"{key}={formatted}")
-        if stat_fields:
-            lines.append("- latest_statistical_summary: " + "; ".join(stat_fields[:12]))
-
-    evidence = parsed.get("evidence_table")
-    if isinstance(evidence, list) and evidence:
-        lines.append("- evidence_table:")
-        for row in evidence[:10]:
-            if not isinstance(row, dict):
-                continue
-            pieces = []
-            for key in (
-                "category",
-                "domain",
-                "indicator",
-                "value",
-                "score",
-                "domain_total_score",
-                "weight",
-                "contribution_to_composite",
-                "rationale",
-            ):
-                if row.get(key) is not None:
-                    pieces.append(f"{key}={row.get(key)}")
-            sub_indicators = row.get("sub_indicators_used")
-            if isinstance(sub_indicators, list) and sub_indicators:
-                pieces.append("sub_indicators_used=" + "|".join(str(item) for item in sub_indicators[:8]))
-            raw_values = row.get("raw_values_latest")
-            if isinstance(raw_values, dict) and raw_values:
-                raw_text = ";".join(
-                    f"{key}={_fmt_summary_number(value)}"
-                    for key, value in list(raw_values.items())[:8]
-                    if _fmt_summary_number(value) is not None
-                )
-                if raw_text:
-                    pieces.append("raw_values_latest=" + raw_text)
-            if pieces:
-                lines.append("  - " + ", ".join(pieces))
-
-    analogs = parsed.get("historical_analogs")
-    if isinstance(analogs, list):
-        if analogs:
-            lines.append("- historical_analogs:")
-            for analog in analogs[:5]:
-                if not isinstance(analog, dict):
-                    continue
-                pieces = []
-                for key in ("date", "label", "regime_label", "regime_score", "distance"):
-                    if analog.get(key) is not None:
-                        pieces.append(f"{key}={analog.get(key)}")
-                analog_scores = analog.get("domain_scores")
-                if isinstance(analog_scores, dict) and analog_scores:
-                    pieces.append(
-                        "domain_scores="
-                        + ";".join(f"{key}={value}" for key, value in analog_scores.items())
-                    )
-                if pieces:
-                    lines.append("  - " + ", ".join(pieces))
-        else:
-            lines.append("- historical_analogs: none available from the local fixture/window")
-
-    missing = parsed.get("missing_indicators")
-    if isinstance(missing, list) and missing:
-        missing_labels = []
-        for item in missing[:10]:
-            if isinstance(item, dict):
-                missing_labels.append(str(item.get("indicator") or item.get("column") or item))
-            else:
-                missing_labels.append(str(item))
-        lines.append("- missing_indicators: " + "; ".join(missing_labels))
-
-    caveats = parsed.get("false_positive_caveats")
-    if isinstance(caveats, list) and caveats:
-        lines.append("- false_positive_caveats: " + "; ".join(str(item) for item in caveats[:5]))
-    else:
-        caveat = parsed.get("false_positive_caveat")
-        if isinstance(caveat, str) and caveat.strip():
-            lines.append("- false_positive_caveat: " + caveat.strip())
-
-    if parsed.get("classification_boundary_margin") is not None:
-        lines.append(f"- classification_boundary_margin: {parsed.get('classification_boundary_margin')}")
-    transition_note = parsed.get("transition_note")
-    if isinstance(transition_note, str) and transition_note.strip():
-        lines.append("- transition_note: " + transition_note.strip())
-
-    return "\n".join(lines)
-
-
 def _compact_validation_and_simulation_payload(parsed: dict) -> str | None:
-    """Preserve econometric validation and historical replay fields for report drafting."""
+    """Render reusable validation and historical replay rows for report drafting."""
 
     lines: list[str] = []
 
-    def _signal_framework_from(payload: dict) -> dict | None:
-        summary = payload.get("signal_framework_summary")
-        if isinstance(summary, dict):
-            return summary
-        simulations = payload.get("historical_simulations")
-        if isinstance(simulations, dict):
-            nested = simulations.get("signal_framework_backtest")
-            if isinstance(nested, dict):
-                return nested
-        signal_backtest = payload.get("signal_backtest")
-        if isinstance(signal_backtest, dict):
-            nested_simulations = signal_backtest.get("historical_simulations")
-            if isinstance(nested_simulations, dict):
-                nested = nested_simulations.get("signal_framework_backtest")
-                if isinstance(nested, dict):
-                    return nested
-        return None
-
-    signal_framework = _signal_framework_from(parsed)
-    if isinstance(signal_framework, dict):
-        lines.append(
-            "Controlling signal-framework backtest values from execution_summary.json. "
-            "For signal-stack, false-positive, and prior-downturn claims, use these values "
-            "instead of unrelated composite-index percentile or z-score diagnostics. "
-            "`recession_count` is the total number of recessions tested; "
-            "`recession_calls_correct` is the number that reached the alert threshold. "
-            "Do not write that all recessions were correctly identified unless those two "
-            "counts are equal:"
-        )
-        scalar_fields = []
-        for key in (
-            "total_observations",
-            "observations",
-            "recession_count",
-            "recession_calls_correct",
-            "false_alarms",
-            "true_positive_rate",
-            "precision",
-            "threshold",
-            "lookback_periods",
-            "false_alarm_lookahead_periods",
-        ):
-            if signal_framework.get(key) is not None:
-                scalar_fields.append(f"{key}={signal_framework.get(key)}")
-        if scalar_fields:
-            lines.append("- signal_framework_backtest: " + "; ".join(scalar_fields))
-        current_signal = signal_framework.get("current_signal")
-        if isinstance(current_signal, dict) and current_signal:
-            fields = [
-                f"{key}={value}"
-                for key, value in current_signal.items()
-                if value is not None
-            ]
-            if fields:
-                lines.append("- current_signal: " + "; ".join(fields))
-        pre_scores = signal_framework.get("pre_recession_scores")
-        if isinstance(pre_scores, dict) and pre_scores:
-            rows = []
-            for label, row in list(pre_scores.items())[:20]:
-                if not isinstance(row, dict):
-                    continue
-                score = row.get("score")
-                triggered = row.get("components_triggered")
-                max_date = row.get("max_score_date")
-                parts = []
-                if score is not None:
-                    parts.append(f"score={score}")
-                if triggered:
-                    parts.append(f"components_triggered={triggered}")
-                if max_date is not None:
-                    parts.append(f"max_score_date={max_date}")
-                if parts:
-                    rows.append(f"{label}: " + ", ".join(parts))
-            if rows:
-                lines.append("- pre_recession_scores: " + " | ".join(rows))
-        false_alarm_episodes = signal_framework.get("false_alarm_episodes")
-        if isinstance(false_alarm_episodes, list) and false_alarm_episodes:
-            rows = []
-            for row in false_alarm_episodes[:8]:
-                if not isinstance(row, dict):
-                    continue
-                period = row.get("period")
-                max_score = row.get("max_score")
-                components = row.get("components_at_peak")
-                if period is not None:
-                    rows.append(
-                        f"{period}: max_score={max_score}, components_at_peak={components}"
-                    )
-            if rows:
-                lines.append("- false_alarm_episodes: " + " | ".join(rows))
-
-    def _append_numeric_mapping(label: str, values: object, *, limit: int = 16) -> None:
-        if not isinstance(values, dict) or not values:
+    def _append_row_group(label: str, rows: object, *, limit: int = 10) -> None:
+        if not isinstance(rows, list) or not rows:
             return
-        pieces = []
-        for key, value in list(values.items())[:limit]:
-            if isinstance(value, bool):
-                formatted = None
-            elif isinstance(value, int):
-                formatted = str(value)
-            elif isinstance(value, float):
-                formatted = None if value != value else f"{value:.4f}".rstrip("0").rstrip(".")
-            else:
+        rendered: list[str] = []
+        for row in rows[:limit]:
+            if not isinstance(row, dict):
+                continue
+            fields = []
+            for key, value in list(row.items())[:12]:
+                if value is None or isinstance(value, (dict, list)):
+                    continue
                 formatted = _fmt_summary_number(value)
-            if formatted is None:
-                if value is None:
-                    pieces.append(f"{key}=null")
-                continue
-            pieces.append(f"{key}={formatted}")
-        if pieces:
-            lines.append(f"- {label}: " + "; ".join(pieces))
+                fields.append(f"{key}={formatted if formatted is not None else value}")
+            if fields:
+                rendered.append("; ".join(fields))
+        if rendered:
+            lines.append(f"- {label}: " + " | ".join(rendered))
 
-    def _append_backtest_row(label: str, row: object, *, limit: int = 12) -> None:
-        if not isinstance(row, dict) or not row:
+    def _append_mapping(label: str, value: object, *, limit: int = 12) -> None:
+        if not isinstance(value, dict) or not value:
             return
-        pieces = [f"{key}={value}" for key, value in list(row.items())[:limit] if value is not None]
-        if pieces:
-            lines.append(f"  - {label}: " + "; ".join(pieces))
-
-    backtest = parsed.get("backtest_summary")
-    if isinstance(backtest, dict) and backtest:
-        lines.append(
-            "Required econometric validation from execution_summary.json. "
-            "Discuss out-of-sample performance, baseline comparison, and limitations:"
-        )
-        if backtest.get("status") is not None:
-            lines.append(f"- backtest_status: {backtest.get('status')}")
-        scalar_fields = []
-        for key in (
-            "average_auc",
-            "average_brier_score",
-            "auc",
-            "brier_score",
-            "accuracy",
-            "precision",
-            "recall",
-            "f1_score",
-            "method",
-        ):
-            if backtest.get(key) is not None:
-                scalar_fields.append(f"{key}={backtest.get(key)}")
-        if scalar_fields:
-            lines.append("- backtest_summary: " + "; ".join(scalar_fields))
-        for label, key in (
-            ("current_z_scores", "current_z_scores"),
-            ("pre_recession_avg_z_scores", "pre_recession_avg_z_scores"),
-            ("current_values", "current_values"),
-            ("historical_baseline_values", "historical_baseline_values"),
-            ("pre_recession_values", "pre_recession_values"),
-        ):
-            _append_numeric_mapping(label, backtest.get(key))
-        calibration = backtest.get("calibration")
-        if isinstance(calibration, dict):
-            calibration_text = "; ".join(
-                f"{key}={value}" for key, value in calibration.items() if value is not None
-            )
-            if calibration_text:
-                lines.append("- calibration: " + calibration_text)
-        years = backtest.get("years")
-        if isinstance(years, dict) and years:
-            year_lines = []
-            for year, metrics_for_year in list(years.items())[:30]:
-                if not isinstance(metrics_for_year, dict):
-                    continue
-                fields = [
-                    f"{metric}={value}"
-                    for metric, value in metrics_for_year.items()
-                    if value is not None
-                ]
-                if fields:
-                    year_lines.append(f"{year}: " + ", ".join(fields[:4]))
-            if year_lines:
-                lines.append("- annual_oos_metrics: " + " | ".join(year_lines))
-        horizon_results = backtest.get("horizon_results")
-        if isinstance(horizon_results, list) and horizon_results:
-            for row in horizon_results[:8]:
-                if not isinstance(row, dict):
-                    continue
-                pieces = []
-                for key in ("prediction_horizon", "test_observations", "best_model_by_mae"):
-                    if row.get(key) is not None:
-                        pieces.append(f"{key}={row.get(key)}")
-                metrics = row.get("metrics")
-                if isinstance(metrics, dict):
-                    for key in ("mae", "rmse", "bias", "directional_accuracy"):
-                        if metrics.get(key) is not None:
-                            pieces.append(f"{key}={metrics.get(key)}")
-                baseline = row.get("baseline_comparison")
-                if isinstance(baseline, dict):
-                    for label, values in list(baseline.items())[:2]:
-                        if isinstance(values, dict) and values.get("mae") is not None:
-                            pieces.append(f"{label}_mae={values.get('mae')}")
-                if pieces:
-                    lines.append("  - " + ", ".join(pieces))
-        else:
-            metrics = backtest.get("metrics")
-            if isinstance(metrics, dict):
-                metric_text = "; ".join(
-                    f"{key}={value}" for key, value in metrics.items() if value is not None
-                )
-                if metric_text:
-                    lines.append("- metrics: " + metric_text)
-            false_positive = backtest.get("false_positive_analysis")
-            if isinstance(false_positive, dict):
-                fp_text = "; ".join(
-                    f"{key}={value}" for key, value in false_positive.items() if value is not None
-                )
-                if fp_text:
-                    lines.append("- false_positive_analysis: " + fp_text)
-        nested_rows = {
-            key: value
-            for key, value in backtest.items()
-            if isinstance(value, dict)
-            and key
-            not in {
-                "calibration",
-                "current_values",
-                "current_z_scores",
-                "false_positive_analysis",
-                "historical_baseline_values",
-                "pre_recession_avg_z_scores",
-                "pre_recession_values",
-                "years",
-            }
-        }
-        if nested_rows:
-            lines.append(
-                "Exact nested backtest/model rows from execution_summary.json. "
-                "Use these exact values; if a row has error=..., state that the comparison failed "
-                "and do not fabricate RMSE, R², or baseline wins:"
-            )
-            for key, value in list(nested_rows.items())[:12]:
-                if key == "recession_backtest":
-                    lines.append("  - recession_backtest:")
-                    for period, row in list(value.items())[:12]:
-                        _append_backtest_row(str(period), row)
-                else:
-                    _append_backtest_row(str(key), value)
-    else:
-        false_positive = parsed.get("false_positive_analysis")
-        if isinstance(false_positive, dict) and false_positive:
-            fp_text = "; ".join(
-                f"{key}={value}" for key, value in false_positive.items() if value is not None
-            )
-            if fp_text:
-                lines.append(
-                    "Exact signal backtest false-positive analysis from execution_summary.json: "
-                    + fp_text
-                )
-
-    model_comparison = parsed.get("model_comparison")
-    if isinstance(model_comparison, dict) and model_comparison:
-        lines.append("Exact model comparison rows from execution_summary.json:")
-        for model, row in list(model_comparison.items())[:10]:
-            if not isinstance(row, dict):
-                if row is not None:
-                    lines.append(f"  - {model}: {row}")
+        fields = []
+        for key, item in list(value.items())[:limit]:
+            if isinstance(item, dict):
+                nested = []
+                for nested_key, nested_value in list(item.items())[:limit]:
+                    formatted = _fmt_summary_number(nested_value)
+                    if formatted is None:
+                        if nested_value is None:
+                            nested.append(f"{nested_key}=null")
+                        elif not isinstance(nested_value, (dict, list)):
+                            nested.append(f"{nested_key}={nested_value}")
+                    else:
+                        nested.append(f"{nested_key}={formatted}")
+                if nested:
+                    lines.append(f"- {label}.{key}: " + "; ".join(nested))
                 continue
-            pieces = [f"model={model}"]
-            for key in (
-                "horizon",
-                "mae",
-                "rmse",
-                "bias",
-                "directional_accuracy",
-                "accuracy",
-                "precision",
-                "recall",
-                "f1_score",
-                "auc",
-                "rmse_oos",
-                "r2_oos",
-                "n_obs",
-                "status",
-                "error",
-                "description",
-            ):
-                if row.get(key) is not None:
-                    pieces.append(f"{key}={row.get(key)}")
-            if pieces:
-                lines.append("  - " + ", ".join(pieces))
-    elif isinstance(model_comparison, list) and model_comparison:
-        lines.append("Exact model comparison rows from execution_summary.json:")
-        for row in model_comparison[:10]:
-            if not isinstance(row, dict):
+            if isinstance(item, list):
                 continue
-            pieces = []
-            for key in (
-                "horizon",
-                "model",
-                "mae",
-                "rmse",
-                "bias",
-                "directional_accuracy",
-                "accuracy",
-                "precision",
-                "recall",
-                "f1_score",
-                "auc",
-                "rmse_oos",
-                "r2_oos",
-                "n_obs",
-                "status",
-                "error",
-                "description",
-            ):
-                if row.get(key) is not None:
-                    pieces.append(f"{key}={row.get(key)}")
-            if pieces:
-                lines.append("  - " + ", ".join(pieces))
+            formatted = _fmt_summary_number(item)
+            fields.append(f"{key}={formatted if formatted is not None else item}")
+        if fields:
+            lines.append(f"- {label}: " + "; ".join(fields))
 
-    simulations = parsed.get("historical_simulations")
-    if isinstance(simulations, dict) and simulations:
-        lines.append(
-            "Required historical simulation/replay values from execution_summary.json. "
-            "Use these exact analog dates and forward outcomes; do not invent alternate replay metrics:"
-        )
-        for key in ("analog_count", "method"):
-            if simulations.get(key) is not None:
-                lines.append(f"- {key}: {simulations.get(key)}")
-        for label, key in (
-            ("simulation_current_values", "current_values"),
-            ("simulation_pre_recession_values", "pre_recession_values"),
-            ("simulation_historical_baseline_values", "historical_baseline_values"),
-        ):
-            _append_numeric_mapping(label, simulations.get(key))
-        analog_dates = simulations.get("analog_dates")
-        if isinstance(analog_dates, list) and analog_dates:
-            lines.append("- analog_dates: " + "; ".join(str(item) for item in analog_dates[:15]))
-        forward_horizons = simulations.get("forward_horizons")
-        if isinstance(forward_horizons, dict) and forward_horizons:
-            for horizon, row in forward_horizons.items():
-                if not isinstance(row, dict):
-                    continue
-                pieces = [f"horizon={horizon}"]
-                for key in (
-                    "mean_unrate_change",
-                    "median_unrate_change",
-                    "std_unrate_change",
-                    "pct_recession",
-                    "mean",
-                    "median",
-                    "std",
-                ):
-                    if row.get(key) is not None:
-                        pieces.append(f"{key}={row.get(key)}")
-                lines.append("  - " + ", ".join(pieces))
-    elif isinstance(simulations, list) and simulations:
-        lines.append(
-            "Required historical simulation/replay rows from execution_summary.json. "
-            "Use these as analog evidence, not causal proof:"
-        )
-        for row in simulations[:8]:
-            if not isinstance(row, dict):
-                continue
-            pieces = []
-            for key in ("label", "start", "end", "status"):
-                if row.get(key) is not None:
-                    pieces.append(f"{key}={row.get(key)}")
-            during = row.get("outcome_during_window")
-            if isinstance(during, dict):
-                for key in ("start", "end", "min", "max"):
-                    if during.get(key) is not None:
-                        pieces.append(f"outcome_{key}={during.get(key)}")
-            subsequent = row.get("subsequent_outcome")
-            if isinstance(subsequent, dict):
-                for key in ("periods", "end", "min", "max"):
-                    if subsequent.get(key) is not None:
-                        pieces.append(f"subsequent_{key}={subsequent.get(key)}")
-            if pieces:
-                lines.append("  - " + ", ".join(pieces))
+    for key in (
+        "walk_forward_backtest_rows",
+        "model_validation_rows",
+        "model_comparison_by_horizon",
+        "model_comparison_rows",
+        "historical_failure_episodes",
+        "signal_event_rows",
+        "signal_false_positive_windows",
+        "replay_rows",
+    ):
+        _append_row_group(key, parsed.get(key))
 
-    replay = parsed.get("what_happened_next")
-    if isinstance(replay, dict) and replay:
-        design = replay.get("simulation_design")
-        outcome_variable = None
-        if isinstance(design, dict):
-            outcome_variable = design.get("outcome_variable")
-            design_bits = []
-            for key in ("outcome_variable", "lookahead_periods"):
-                if design.get(key) is not None:
-                    design_bits.append(f"{key}={design.get(key)}")
-            signals = design.get("signal_variables")
-            if isinstance(signals, list) and signals:
-                design_bits.append("signal_variables=" + ", ".join(str(item) for item in signals[:8]))
-            if design_bits:
-                lines.append(
-                    "Exact what-happened-next replay design from execution_summary.json: "
-                    + "; ".join(design_bits)
-                    + ". Only describe forward outcomes for variables present in these replay rows; "
-                    "state unavailable outcomes explicitly instead of substituting external benchmarks."
-                )
-        replay_rows = replay.get("historical_simulations")
-        if isinstance(replay_rows, list) and replay_rows:
-            lines.append(
-                "Exact what-happened-next replay rows from execution_summary.json. "
-                "Do not invent S&P 500, unemployment, production, or other forward outcomes "
-                "unless those keys appear in the rows below:"
-            )
-            for row in replay_rows[:8]:
-                if not isinstance(row, dict):
-                    continue
-                pieces = []
-                for key in ("label", "start", "end", "status"):
-                    if row.get(key) is not None:
-                        pieces.append(f"{key}={row.get(key)}")
-                during = row.get("outcome_during_window")
-                if isinstance(during, dict):
-                    prefix = f"{outcome_variable}_during" if outcome_variable else "outcome_during"
-                    for key in ("start", "end", "min", "max", "mean"):
-                        if during.get(key) is not None:
-                            pieces.append(f"{prefix}_{key}={during.get(key)}")
-                subsequent = row.get("subsequent_outcome")
-                if isinstance(subsequent, dict):
-                    prefix = f"{outcome_variable}_subsequent" if outcome_variable else "subsequent"
-                    for key in ("periods", "end", "min", "max"):
-                        if subsequent.get(key) is not None:
-                            pieces.append(f"{prefix}_{key}={subsequent.get(key)}")
-                if pieces:
-                    lines.append("  - " + ", ".join(pieces))
+    for key in (
+        "event_backtest_metrics",
+        "signal_validation_metrics",
+        "validation_diagnostics",
+    ):
+        _append_mapping(key, parsed.get(key))
 
-    if lines:
-        return "\n".join(lines)
-    return None
+    diagnostics = parsed.get("diagnostics")
+    if isinstance(diagnostics, dict):
+        for key, value in list(diagnostics.items())[:12]:
+            _append_mapping(f"diagnostics.{key}", value)
+
+    if not lines:
+        return None
+    return (
+        "Reusable validation and simulation evidence from execution_summary.json:\n"
+        + "\n".join(lines)
+    )
 
 
 def _compact_execution_summary_payload(parsed: dict) -> str:
@@ -2873,23 +2336,24 @@ def _compact_execution_summary_payload(parsed: dict) -> str:
     stats = parsed.get("statistical_summary")
     stats_payload = stats if isinstance(stats, dict) else {}
 
+    helper_evidence_summary = _compact_helper_evidence_payload(parsed)
+    if helper_evidence_summary:
+        parts.append(helper_evidence_summary)
+        compact_limit = max(compact_limit, 9000)
+
     acceptance_summary = _compact_feature_acceptance_payload(parsed)
     if acceptance_summary:
         parts.append(acceptance_summary)
-        compact_limit = 8000
-
-    regime_summary = _compact_regime_classifier_payload(parsed)
-    if regime_summary:
-        parts.append(regime_summary)
+        compact_limit = max(compact_limit, 8000)
 
     validation_summary = _compact_validation_and_simulation_payload(parsed)
     if validation_summary:
         parts.append(validation_summary)
         compact_limit = max(compact_limit, 8000)
 
-    macro_cycle_summary = _compact_macro_cycle_chart_pack_payload(parsed)
-    if macro_cycle_summary:
-        parts.append(macro_cycle_summary)
+    macro_evidence_summary = _compact_macro_evidence_payload(parsed)
+    if macro_evidence_summary:
+        parts.append(macro_evidence_summary)
         compact_limit = max(compact_limit, 8000)
 
     scalar_summary = _compact_headline_scalar_metrics(parsed)
@@ -3121,21 +2585,6 @@ def _compact_execution_summary_payload(parsed: dict) -> str:
         if lines:
             parts.append("Real income contraction periods:\n" + "\n".join(lines))
 
-    scenario_rows = _scenario_table_from_execution_summary(parsed)
-    if scenario_rows:
-        lines = []
-        for row in scenario_rows:
-            lines.append(
-                f"- {row.scenario}: assumptions={'; '.join(row.assumptions)}; "
-                f"triggers={'; '.join(row.indicator_triggers)}; "
-                f"confidence={row.confidence}; uncertainty={row.uncertainty_notes}"
-            )
-        parts.append(
-            "Required scenario table from execution_summary.json. Render it as a markdown table "
-            "with Scenario, Assumptions, Indicator Triggers, Confidence, and Uncertainty Notes columns:\n"
-            + "\n".join(lines)
-        )
-
     lead_lag = parsed.get("lead_lag_analysis")
     if isinstance(lead_lag, dict):
         metric_lines = []
@@ -3221,10 +2670,13 @@ def plan_report_structure(
         - original_query: Echo of `original_query` (pass unchanged to `write_research_report`)
     """
     charts_json_path = _resolve_charts_json_path(runtime, charts_json_path)
+    execution_payload = _execution_summary_payload(runtime, execution_summary)
+    helper_evidence_for_draft = _helper_evidence_for_draft(execution_payload)
     _save_plan_context(
         runtime,
         charts_json_path=charts_json_path,
         original_query=original_query,
+        helper_evidence=helper_evidence_for_draft or None,
     )
 
     # Load chart IDs from disk — never from caller context
@@ -3275,15 +2727,11 @@ def plan_report_structure(
             if not execution_summary_for_draft
             else chart_facts_for_draft + "\n\n" + execution_summary_for_draft
         )
-    if _requires_scenario_table(original_query):
-        general_rules += (
-            " Because the query asks for scenarios or stress testing, you MUST include a "
-            "`## Scenario Table` section rendered as a markdown table with base, bull, and bear rows; "
-            "use scenario_table from execution_summary_for_draft when present. "
-            "Use exactly these parser-compatible headers and lowercase scenario row keys: "
-            "`| Scenario | Assumptions | Indicator Triggers | Confidence | Uncertainty Notes |`, "
-            "then rows beginning `| base |`, `| bull |`, and `| bear |`."
-        )
+    if (
+        len(execution_summary_for_draft) > 4000
+        and not helper_evidence_for_draft
+    ):
+        execution_summary_for_draft = execution_summary_for_draft[:4000]
 
     return json.dumps(
         {
@@ -3294,6 +2742,7 @@ def plan_report_structure(
             "charts_json_path": charts_json_path,
             "chart_facts_for_draft": chart_facts_for_draft,
             "execution_summary_for_draft": execution_summary_for_draft,
+            "helper_evidence_for_draft": helper_evidence_for_draft,
             "original_query": original_query,
             "echo_for_write_research_report": (
                 "Pass `charts_json_path` and `original_query` into `write_research_report` "
@@ -3342,8 +2791,8 @@ def write_research_report(
                        "sector_comparison", "macro_indicator",
                        "earnings_analysis", "custom"
         execution_summary: Optional inline JSON or job-local execution_summary.json path.
-            When it contains scenario_table, that structured table is embedded
-            into report.json for QA/frontend consumers.
+            Used for validation against helper-produced numeric facts and
+            reusable evidence rows.
 
     Returns:
         JSON string with:
@@ -3443,11 +2892,38 @@ def write_research_report(
         if not executive_summary.strip():
             executive_summary = f"Analysis of: {original_query}"
 
-    scenario_table = _scenario_table_from_execution_summary(
-        _execution_summary_payload(runtime, execution_summary)
+    execution_payload = _execution_summary_payload(runtime, execution_summary)
+    if plan_context.get("helper_evidence"):
+        execution_payload = dict(execution_payload)
+        helper_evidence = plan_context.get("helper_evidence")
+        if isinstance(helper_evidence, dict):
+            for key in (
+                "numeric_facts",
+                "source_coverage",
+                "methods_used",
+                "chart_ids",
+                "limitations",
+            ):
+                if helper_evidence.get(key):
+                    execution_payload.setdefault(key, helper_evidence[key])
+            for key, value in (helper_evidence.get("tables") or {}).items():
+                execution_payload.setdefault(key, value)
+            for key, value in (helper_evidence.get("diagnostics") or {}).items():
+                execution_payload.setdefault(key, value)
+    numeric_fact_blockers = _numeric_fact_validation_blockers(
+        execution_payload, markdown, original_query
     )
-    if scenario_table is None and _requires_scenario_table(original_query):
-        scenario_table = _scenario_table_from_markdown(markdown)
+    if numeric_fact_blockers:
+        return json.dumps(
+            {
+                "status": "error",
+                "error": "numeric_fact_mismatch",
+                "failure_category": "numeric_fact_mismatch",
+                "required_upstream": "technical-writer",
+                "blockers": numeric_fact_blockers,
+                "message": numeric_fact_blockers[0],
+            }
+        )
 
     # -------------------------------------------------------------------------
     # 5. Assemble and validate ResearchReport (Pydantic validates chart shapes)
@@ -3468,7 +2944,6 @@ def write_research_report(
         executive_summary=executive_summary,
         markdown=markdown,
         charts=charts_on_disk,
-        scenario_table=scenario_table,
         data_sources=ds_objects,
         metadata=metadata,
     )

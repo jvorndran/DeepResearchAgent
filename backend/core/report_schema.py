@@ -9,7 +9,7 @@ future PDF export pipeline.
 from __future__ import annotations
 
 from typing import Annotated, Literal, Union
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 # =============================================================================
 # CHART MODELS
@@ -212,35 +212,6 @@ class DataSource(BaseModel):
 
 
 # =============================================================================
-# SCENARIO TABLE
-# =============================================================================
-
-
-class ScenarioRow(BaseModel):
-    scenario: Literal["base", "bull", "bear"]
-    assumptions: list[str] = Field(min_length=1)
-    indicator_triggers: list[str] = Field(min_length=1)
-    confidence: Literal["low", "medium", "high"]
-    uncertainty_notes: str = Field(min_length=1)
-
-    @field_validator("assumptions", "indicator_triggers")
-    @classmethod
-    def _non_empty_items(cls, value: list[str]) -> list[str]:
-        cleaned = [item.strip() for item in value if item.strip()]
-        if not cleaned:
-            raise ValueError("must include at least one non-empty item")
-        return cleaned
-
-    @field_validator("uncertainty_notes")
-    @classmethod
-    def _non_empty_note(cls, value: str) -> str:
-        cleaned = value.strip()
-        if not cleaned:
-            raise ValueError("uncertainty_notes must be non-empty")
-        return cleaned
-
-
-# =============================================================================
 # REPORT METADATA
 # =============================================================================
 
@@ -265,7 +236,6 @@ class ResearchReport(BaseModel):
     executive_summary: str
     markdown: str
     charts: dict[str, ChartDef]
-    scenario_table: list[ScenarioRow] | None = None
     data_sources: list[DataSource]
     metadata: ReportMetadata
 
@@ -291,7 +261,6 @@ __all__ = [
     "SunburstChartDef",
     "ChartDef",
     "DataSource",
-    "ScenarioRow",
     "ReportMetadata",
     "ResearchReport",
 ]

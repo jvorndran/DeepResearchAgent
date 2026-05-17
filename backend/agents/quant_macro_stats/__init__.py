@@ -1,20 +1,184 @@
-"""Deterministic macro statistics helpers for quant-developer scripts."""
-# ruff: noqa: F401,F403
+"""Reusable macro, company, and artifact helpers for quant-developer scripts."""
 
-from .shared import *
-from .shared import _adfuller, _scipy_stats, _statsmodels_api
-from .charts import *
-from .normalization import *
-from .outputs import save_quant_outputs
-from .scenarios import *
-from .alignment import *
-from .forecasting import *
-from .correlations import *
-from .recession_dashboard import *
-from .inflation_policy import *
-from .consumer_stress import *
-from .historical_replay import *
-from .unemployment_forecast import *
-from .macro_cycle import *
+from __future__ import annotations
 
-__all__ = [name for name in globals() if not name.startswith("__")]
+from .artifacts import (
+    display_value,
+    normalize_quant_execution_summary,
+    normalize_quant_report_charts,
+    numeric_fact,
+    save_quant_outputs,
+)
+from .catalog import (
+    QUANT_HELPER_CATALOG,
+    QuantHelperCategory,
+    QuantHelperSpec,
+    format_quant_helper_catalog_for_prompt,
+    iter_quant_helper_specs,
+)
+from .company import (
+    is_sec_company_facts_file,
+    requested_company_tickers,
+    resolve_company_fact_sources,
+    sec_company_facts_evidence,
+    sec_ticker_from_source,
+    summarize_sec_company_facts,
+)
+from .method_ids import (
+    DEFAULT_REGIME_CATEGORIES,
+    DEFAULT_REGIME_WEIGHTS,
+    METHOD_ANALOG_WINDOW_COMPARISON,
+    METHOD_COMPOSITE_PREDICTIVE_INDICATOR,
+    METHOD_DIRECT_OLS_FORECAST,
+    METHOD_EVENT_SIGNAL_BACKTEST,
+    METHOD_HISTORICAL_SCENARIO_REPLAY,
+    METHOD_LEAD_LAG_CORRELATION,
+    METHOD_OLS_REGRESSION,
+    METHOD_PERIOD_KEY_ALIGNMENT,
+    METHOD_RECESSION_REGIME_CLASSIFIER,
+    METHOD_RECESSION_WINDOW_SUMMARY,
+    METHOD_ROLLING_CORRELATION,
+    METHOD_SEC_COMPANY_FACTS_SUMMARY,
+    METHOD_SIGNAL_FRAMEWORK_BACKTEST,
+    METHOD_STATIONARITY_CHECK,
+    METHOD_WALK_FORWARD_OLS_BACKTEST,
+)
+from ._utils import (
+    _adfuller as _adfuller,
+    _scipy_stats as _scipy_stats,
+    _statsmodels_api as _statsmodels_api,
+    chart_records,
+    expected_month_count,
+    find_data_file_key,
+    finite_number,
+    latest_finite_observation,
+    latest_finite_value,
+    month_label,
+    read_monthly_series,
+    read_value_series,
+    recession_bands,
+    rounded_number,
+    stress_score_series,
+    to_json_safe,
+    window_coverage,
+)
+from .data import (
+    ArtifactInputPanel,
+    ArtifactInputResolution,
+    ResolvedSeries,
+    SeriesSpec,
+    align_period_features,
+    load_monthly_panel,
+    resolve_series_sources,
+)
+from .evidence import (
+    forecast_band_rows,
+    forecast_failure_episodes,
+    forecast_false_alarm_episodes,
+    forecast_model_comparison_rows,
+    forecast_uncertainty_decomposition,
+    normalize_forecast_table,
+    predictor_contribution_rows,
+)
+from .stats import (
+    analog_window_profile,
+    attach_methods_used,
+    attach_summary_methods,
+    build_analog_evidence,
+    build_composite_predictive_indicator,
+    classify_recession_regime,
+    compare_analog_windows,
+    direct_ols_forecast,
+    event_signal_backtest,
+    historical_scenario_replay,
+    lead_lag_correlations,
+    normalize_analog_ranking,
+    normalize_scenario_evidence_rows,
+    ols_regression,
+    recession_window_summary,
+    rolling_correlation,
+    signal_framework_backtest,
+    walk_forward_ols_backtest,
+)
+
+__all__ = [
+    "ArtifactInputPanel",
+    "ArtifactInputResolution",
+    "DEFAULT_REGIME_CATEGORIES",
+    "DEFAULT_REGIME_WEIGHTS",
+    "METHOD_ANALOG_WINDOW_COMPARISON",
+    "METHOD_COMPOSITE_PREDICTIVE_INDICATOR",
+    "METHOD_DIRECT_OLS_FORECAST",
+    "METHOD_EVENT_SIGNAL_BACKTEST",
+    "METHOD_HISTORICAL_SCENARIO_REPLAY",
+    "METHOD_LEAD_LAG_CORRELATION",
+    "METHOD_OLS_REGRESSION",
+    "METHOD_PERIOD_KEY_ALIGNMENT",
+    "METHOD_RECESSION_REGIME_CLASSIFIER",
+    "METHOD_RECESSION_WINDOW_SUMMARY",
+    "METHOD_ROLLING_CORRELATION",
+    "METHOD_SEC_COMPANY_FACTS_SUMMARY",
+    "METHOD_SIGNAL_FRAMEWORK_BACKTEST",
+    "METHOD_STATIONARITY_CHECK",
+    "METHOD_WALK_FORWARD_OLS_BACKTEST",
+    "QUANT_HELPER_CATALOG",
+    "QuantHelperCategory",
+    "QuantHelperSpec",
+    "ResolvedSeries",
+    "SeriesSpec",
+    "align_period_features",
+    "analog_window_profile",
+    "attach_methods_used",
+    "attach_summary_methods",
+    "build_analog_evidence",
+    "build_composite_predictive_indicator",
+    "chart_records",
+    "classify_recession_regime",
+    "compare_analog_windows",
+    "direct_ols_forecast",
+    "display_value",
+    "event_signal_backtest",
+    "expected_month_count",
+    "find_data_file_key",
+    "finite_number",
+    "format_quant_helper_catalog_for_prompt",
+    "forecast_band_rows",
+    "forecast_failure_episodes",
+    "forecast_false_alarm_episodes",
+    "forecast_model_comparison_rows",
+    "forecast_uncertainty_decomposition",
+    "historical_scenario_replay",
+    "is_sec_company_facts_file",
+    "iter_quant_helper_specs",
+    "latest_finite_observation",
+    "latest_finite_value",
+    "lead_lag_correlations",
+    "load_monthly_panel",
+    "month_label",
+    "normalize_analog_ranking",
+    "normalize_scenario_evidence_rows",
+    "normalize_forecast_table",
+    "normalize_quant_execution_summary",
+    "normalize_quant_report_charts",
+    "numeric_fact",
+    "ols_regression",
+    "predictor_contribution_rows",
+    "read_monthly_series",
+    "read_value_series",
+    "recession_bands",
+    "recession_window_summary",
+    "requested_company_tickers",
+    "resolve_company_fact_sources",
+    "resolve_series_sources",
+    "rolling_correlation",
+    "rounded_number",
+    "save_quant_outputs",
+    "sec_company_facts_evidence",
+    "sec_ticker_from_source",
+    "signal_framework_backtest",
+    "stress_score_series",
+    "summarize_sec_company_facts",
+    "to_json_safe",
+    "walk_forward_ols_backtest",
+    "window_coverage",
+]

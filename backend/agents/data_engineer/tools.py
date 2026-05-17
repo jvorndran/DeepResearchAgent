@@ -18,6 +18,11 @@ from mcp_clients.census_client import CensusDataError, CensusPublicDataClient
 from mcp_clients.sec_edgar_client import SECEdgarClient, SECEdgarError
 from mcp_clients.worldbank_client import WorldBankDataError, WorldBankIndicatorsClient
 
+from .provider_retry import (
+    bls_error_response,
+    census_error_response,
+    normalize_bls_no_key_year_window,
+)
 from .storage import _run_async, _save_data_to_storage
 from .paths import DATA_STORAGE_DIR
 
@@ -251,48 +256,6 @@ def _parse_bls_series_ids(series_ids: str | list[str]) -> list[str]:
     return [str(item) for item in series_ids]
 
 
-def _bls_error_response(message: str) -> dict[str, Any]:
-    normalized = message.lower()
-    quota_exhausted = any(
-        token in normalized
-        for token in (
-            "daily threshold",
-            "allocated to the user",
-            "registration key",
-        )
-    )
-    retryable = (
-        not quota_exhausted
-        and any(
-            token in normalized
-            for token in ("timed out", "request failed", "rate", "limit", "too many")
-        )
-    )
-    if quota_exhausted:
-        hint = (
-            "BLS daily no-key quota is exhausted. Do not retry BLS in this run; "
-            "preserve this error in metadata.fetch_errors and continue with FRED or other public sources."
-        )
-    elif retryable:
-        hint = (
-            "Retry only with a corrected BLS ID, a 10-year-or-smaller window, "
-            "or after a transient request failure."
-        )
-    else:
-        hint = (
-            "Use valid BLS IDs from bls_search_known_series or report BLS unavailable; "
-            "do not switch to paid providers."
-        )
-
-    return {
-        "status": "error",
-        "provider": "BLS Public Data",
-        "error": message,
-        "retryable": retryable,
-        "hint": hint,
-    }
-
-
 @tool
 def bls_search_known_series(query: str, limit: int = 8) -> str:
     """
@@ -348,18 +311,24 @@ def bls_get_series(
 
     Args:
         series_ids: A BLS series ID, comma-separated IDs, or JSON list of IDs.
-        start_year: Optional inclusive start year. Must be paired with end_year.
-        end_year: Optional inclusive end year. Must be paired with start_year.
+        start_year: Optional inclusive start year. Partial or over-wide windows
+            are normalized to a 10-year-or-smaller no-key direct-source check.
+        end_year: Optional inclusive end year. Partial or over-wide windows
+            are normalized to a 10-year-or-smaller no-key direct-source check.
 
     Returns:
         JSON string with saved CSV paths, row counts, BLS metadata, or compact errors.
     """
     try:
         parsed_ids = _parse_bls_series_ids(series_ids)
+        applied_start_year, applied_end_year, window_metadata = normalize_bls_no_key_year_window(
+            start_year,
+            end_year,
+        )
         result = BLSPublicDataClient().get_series(
             parsed_ids,
-            start_year=start_year,
-            end_year=end_year,
+            start_year=applied_start_year,
+            end_year=applied_end_year,
         )
         if result.get("status") != "success":
             return json.dumps(result)
@@ -373,12 +342,14 @@ def bls_get_series(
             "requires_api_key": False,
             "series": {},
         }
+        if window_metadata:
+            metadata.update(window_metadata)
 
         for series in result["series"]:
             series_id = series["series_id"]
             window_suffix = ""
-            if start_year is not None and end_year is not None:
-                window_suffix = f"_{int(start_year)}_{int(end_year)}"
+            if applied_start_year is not None and applied_end_year is not None:
+                window_suffix = f"_{int(applied_start_year)}_{int(applied_end_year)}"
             file_path = (
                 DATA_STORAGE_DIR
                 / job_id
@@ -407,7 +378,7 @@ def bls_get_series(
             }
         )
     except BLSPublicDataError as e:
-        return json.dumps(_bls_error_response(str(e)))
+        return json.dumps(bls_error_response(str(e)))
     except Exception as e:
         return json.dumps(
             {
@@ -481,22 +452,7 @@ def census_get_table(
             }
         )
     except CensusDataError as e:
-        message = str(e)
-        return json.dumps(
-            {
-                "status": "error",
-                "provider": "Census Data API",
-                "error": message,
-                "retryable": any(
-                    token in message.lower()
-                    for token in ("timed out", "request failed", "rate", "limit", "too many")
-                ),
-                "hint": (
-                    "Use dataset 2023/acs/acs5/profile, geography state or county, "
-                    "and allowlisted variables such as population, median_income, or housing_units."
-                ),
-            }
-        )
+        return json.dumps(census_error_response(str(e)))
     except Exception as e:
         return json.dumps(
             {

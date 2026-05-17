@@ -28,10 +28,19 @@ from .common import (
     _SENSITIVE_DIR_PARTS,
     _SENSITIVE_PATH_PARTS,
 )
+from .qa_recovery import (
+    description_requests_qa_quant_fix,
+    latest_quality_decision,
+    latest_pipeline_status,
+    latest_required_upstream,
+    qa_repair_budget_exhausted,
+)
 from ..quantitative_developer.handoff import (
     _job_id_from_runtime,
     _prewrite_failure_handoff,
 )
+from ..quantitative_developer.constants import get_output_base_dir
+from ..quantitative_developer.path_helpers import _job_id_from_text
 from ..tool_utils import (
     state_messages,
     tool_call_args,
@@ -138,18 +147,12 @@ class OrchestratorToolBoundaryMiddleware(AgentMiddleware):
         return ToolMessage(
             content=(
                 "Blocked repeat quant-developer delegation. The prior quant-developer "
-                "task already returned a failed guardrail handoff after exhausting its "
-                "script-write retry budget. Do not restart the same quant task. Proceed "
-                "to technical-writer with the returned charts_json and "
-                "execution_summary_json paths, and require explicit caveats about the "
-                "missing local quantitative artifacts only if QA has not already "
-                "rejected the report for missing computed artifacts. A QA-driven "
-                "quant-developer recovery is allowed only when the delegation "
-                "description names the QA rejection and the missing, stale, or invalid "
-                "computed artifacts. If QA has already rejected for computed artifacts "
-                "and this repeat quant delegation is blocked, stop the pipeline with a "
-                "concise QA-rejected status instead of cycling through writer and QA "
-                "again."
+                "task already returned a failed guardrail handoff. Proceed to "
+                "technical-writer with the returned paths unless the latest QA "
+                "required_fixes name missing, stale, or invalid computed artifacts. "
+                "A QA-driven quant-developer recovery must be grounded in structured "
+                "QA required_fixes; if it is still blocked, stop with a concise "
+                "QA-rejected status instead of cycling writer and QA again."
             ),
             name="task",
             tool_call_id=self._tool_call_id(request.tool_call),
@@ -161,12 +164,10 @@ class OrchestratorToolBoundaryMiddleware(AgentMiddleware):
             content=(
                 "Blocked repeat quant-developer delegation. A prior quant-developer "
                 "task already returned a usable artifact handoff with charts_json, "
-                "execution_summary_json, and chart_ids. Do not restart quant merely "
-                "to inspect or verify artifacts. Proceed to technical-writer with "
-                "those paths. If QA rejected a report-vs-execution_summary "
-                "contradiction, route the exact reason and required_fixes to "
-                "technical-writer; do not reinterpret that as a quant recalculation "
-                "request unless QA explicitly says computed artifacts are missing, "
+                "execution_summary_json, and chart_ids. Proceed to technical-writer "
+                "with those paths for inspection, verification, or a "
+                "report-vs-execution_summary contradiction. Re-run quant only when "
+                "structured QA required_fixes say computed artifacts are missing, "
                 "stale, invalid, or require new analysis."
             ),
             name="task",
@@ -205,6 +206,38 @@ class OrchestratorToolBoundaryMiddleware(AgentMiddleware):
                 "report and include the rejection reason."
             ),
             name="emit_chat_message",
+            tool_call_id=self._tool_call_id(request.tool_call),
+            status="error",
+        )
+
+    def _blocked_qa_repair_budget_message(self, request: ToolCallRequest) -> ToolMessage:
+        return ToolMessage(
+            content=(
+                "Blocked recovery task because the QA repair budget is exhausted. "
+                "Stop the pipeline with a concise QA-rejected status that includes "
+                "the latest rejection reason and required_fixes; do not call another "
+                "specialist on the same rejected report."
+            ),
+            name="task",
+            tool_call_id=self._tool_call_id(request.tool_call),
+            status="error",
+        )
+
+    def _blocked_wrong_qa_repair_owner_message(
+        self,
+        request: ToolCallRequest,
+        subagent_type: str,
+        required_upstream: str,
+    ) -> ToolMessage:
+        return ToolMessage(
+            content=(
+                f"Blocked QA recovery delegation to `{subagent_type}`. The latest "
+                f"structured quality-analyst decision sets required_upstream="
+                f"`{required_upstream}`. Re-delegate exactly once to "
+                f"`{required_upstream}` with the QA reason, required_fixes, and "
+                "artifact paths; do not inspect artifacts with another specialist."
+            ),
+            name="task",
             tool_call_id=self._tool_call_id(request.tool_call),
             status="error",
         )
@@ -258,220 +291,18 @@ class OrchestratorToolBoundaryMiddleware(AgentMiddleware):
         return False
 
     @staticmethod
-    def _is_explicit_qa_quant_fix(description: str) -> bool:
-        text = description.lower()
-        if not (
-            "qa rejected" in text
-            or "qa rejection" in text
-            or "quality-analyst rejected" in text
-            or "quality-analyst rejection" in text
-            or "quality analyst rejected" in text
-            or "quality analyst rejection" in text
-            or "qa says" in text
-            or "qa flagged" in text
-            or "qa asked" in text
-            or "qa is asking" in text
-            or "qa analyst says" in text
-            or "qa analyst flagged" in text
-            or "qa analyst asked" in text
-            or "qa analyst is asking" in text
-            or "quality analyst says" in text
-            or "quality analyst flagged" in text
-            or "quality analyst asked" in text
-            or "quality analyst is asking" in text
-            or "quality-analyst says" in text
-            or "quality-analyst flagged" in text
-            or "quality-analyst asked" in text
-            or "quality-analyst is asking" in text
-            or "required_fixes" in text
-            or "required fixes" in text
-        ):
-            return False
-        if OrchestratorToolBoundaryMiddleware._is_report_fidelity_quant_misdirection(text):
-            return False
-        quant_fix_markers = (
-            "computed artifacts are missing",
-            "quantitative artifacts are missing",
-            "computed artifacts are stale",
-            "quantitative artifacts are stale",
-            "computed artifacts are invalid",
-            "quantitative artifacts are invalid",
-            "computed artifact failures",
-            "computed artifact failure",
-            "computed charts are missing",
-            "computed charts are stale",
-            "computed charts are invalid",
-            "chart data rendering",
-            "chart rendering",
-            "chart render",
-            "chart data issue",
-            "charts.json data",
-            "charts.json still has",
-            "stale charts",
-            "invalid charts",
-            "missing charts",
-            "missing chart family",
-            "missing chart families",
-            "missing chart marker",
-            "missing chart markers",
-            "missing chart definition",
-            "missing chart definitions",
-            "new chart definition",
-            "new chart definitions",
-            "chart definition needed",
-            "chart definitions needed",
-            "chart artifact missing",
-            "chart artifacts missing",
-            "non-finite",
-            "no finite numeric values",
-            "nan/inf",
-            "nan or inf",
-            "nan values",
-            "infinite values",
-            "chart markers are missing",
-            "chart definitions are missing",
-            "charts.json has zero",
-            "charts.json has no",
-            "chart_count:0",
-            "chart_count=0",
-            "chart_ids are empty",
-            "chart ids are empty",
-            "required quantitative artifacts are missing or failed",
-            "execution_summary lacks",
-            "execution_summary.json lacks",
-            "execution_summary packet must include",
-            "execution_summary metadata",
-            "execution_summary.json metadata",
-            "backtest_summary",
-            "model_comparison",
-            "historical_simulations",
-            "structured json keys",
-            "structured keys",
-            "enrichment keys",
-            "need recalculation",
-            "needs recalculation",
-            "require recalculation",
-            "requires recalculation",
-            "requires new analysis",
-            "need new analysis",
-            "rerun quant",
-            "rerun quant-developer",
-            "regenerate the analysis",
-            "regenerate analysis",
-        )
-        return any(marker in text for marker in quant_fix_markers)
-
-    @staticmethod
-    def _is_report_fidelity_quant_misdirection(description: str) -> bool:
-        """Detect QA report-fidelity repairs that should go back to writer.
-
-        The orchestrator may be tempted to treat a report-vs-summary mismatch as
-        stale quant output. The pipeline contract says those fixes belong to
-        technical-writer unless QA explicitly names computed artifacts as the
-        broken item.
-        """
-
-        text = description.lower()
-        writer_repair_markers = (
-            "report-vs-execution_summary",
-            "report vs execution_summary",
-            "report's composite",
-            "report prose",
-            "writer used",
-            "report writer used",
-            "narrative wording",
-            "numerical discrepancies between report",
-            "discrepancies between report",
-            "fundamentally disagrees with the execution_summary",
-            "disagrees with the execution_summary",
-            "contradiction between report",
-            "report fidelity",
-        )
-        if not any(marker in text for marker in writer_repair_markers):
-            return False
-
-        explicit_artifact_markers = (
-            "computed artifacts are missing",
-            "quantitative artifacts are missing",
-            "computed artifacts are stale",
-            "quantitative artifacts are stale",
-            "computed artifacts are invalid",
-            "quantitative artifacts are invalid",
-            "computed artifact failures",
-            "computed artifact failure",
-            "computed charts are missing",
-            "computed charts are stale",
-            "computed charts are invalid",
-            "chart rendering",
-            "chart render",
-            "missing chart family",
-            "missing chart families",
-            "missing chart marker",
-            "missing chart markers",
-            "missing chart definition",
-            "missing chart definitions",
-            "new chart definition",
-            "new chart definitions",
-            "charts.json data",
-            "non-finite",
-            "no finite numeric values",
-            "execution_summary lacks",
-            "execution_summary.json lacks",
-            "backtest_summary",
-            "model_comparison",
-            "historical_simulations",
-            "chart_ids are empty",
-            "chart ids are empty",
-        )
-        return not any(marker in text for marker in explicit_artifact_markers)
-
-    @staticmethod
     def _state_messages(state: Any) -> list[Any]:
         return state_messages(state)
-
-    @staticmethod
-    def _latest_structured_pipeline_status(messages: list[Any]) -> str | None:
-        latest: str | None = None
-        for message in messages:
-            content = getattr(message, "content", None)
-            if not isinstance(content, str):
-                continue
-            try:
-                payload = json.loads(content)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(payload, dict):
-                continue
-            status = payload.get("status")
-            if status in {"approved", "rejected"}:
-                if "report_path" not in payload:
-                    continue
-                if status == "rejected" and "required_fixes" not in payload:
-                    continue
-                latest = status
-                continue
-            if status != "failed":
-                continue
-            report_path = payload.get("report_path") or payload.get("report_json")
-            if not isinstance(report_path, str) or not report_path.endswith("/report.json"):
-                continue
-            if not (
-                "required_fixes" in payload
-                or "required_upstream" in payload
-                or "reason" in payload
-            ):
-                continue
-            latest = status
-        return latest
 
     def _is_blocked_terminal_approval_emit(self, request: ToolCallRequest) -> bool:
         args = self._tool_call_args(request.tool_call)
         markdown = args.get("markdown") if isinstance(args, dict) else None
         if not (isinstance(markdown, str) and markdown.startswith("Report approved:")):
             return False
-        return self._latest_structured_pipeline_status(
-            self._state_messages(getattr(request, "state", None))
-        ) in {"rejected", "failed"}
+        return latest_pipeline_status(self._state_messages(getattr(request, "state", None))) in {
+            "rejected",
+            "failed",
+        }
 
     def _enforce_tool_boundary(self, request: ToolCallRequest) -> ToolMessage | None:
         tool_name = _tool_call_name(request.tool_call)
@@ -488,33 +319,146 @@ class OrchestratorToolBoundaryMiddleware(AgentMiddleware):
         description = str(args.get("description") or "")
         if subagent_type and subagent_type not in self._PIPELINE_SUBAGENTS:
             return self._blocked_task_message(request, subagent_type)
+        messages = self._state_messages(getattr(request, "state", None))
+        if qa_repair_budget_exhausted(messages):
+            return self._blocked_qa_repair_budget_message(request)
+        required_upstream = latest_required_upstream(messages)
+        if (
+            required_upstream
+            and subagent_type
+            and subagent_type not in {required_upstream, "quality-analyst"}
+        ):
+            return self._blocked_wrong_qa_repair_owner_message(
+                request,
+                subagent_type,
+                required_upstream,
+            )
         if (
             subagent_type == "quant-developer"
-            and self._has_failed_quant_guardrail_handoff(
-                self._state_messages(getattr(request, "state", None))
-            )
-            and not self._is_explicit_qa_quant_fix(description)
+            and self._has_failed_quant_guardrail_handoff(messages)
+            and not description_requests_qa_quant_fix(description, messages)
         ):
             return self._blocked_repeat_quant_failure_message(request)
         if (
             subagent_type == "quant-developer"
-            and self._has_successful_quant_artifact_handoff(
-                self._state_messages(getattr(request, "state", None))
-            )
-            and not self._is_explicit_qa_quant_fix(description)
+            and self._has_successful_quant_artifact_handoff(messages)
+            and not description_requests_qa_quant_fix(description, messages)
         ):
             return self._blocked_repeat_quant_success_message(request)
         return None
 
     @classmethod
-    def _has_quant_handoff_fields(cls, content: str) -> bool:
-        try:
-            payload = json.loads(content)
-        except json.JSONDecodeError:
-            return False
+    def _is_quant_handoff_payload(cls, payload: Any) -> bool:
         if not isinstance(payload, dict):
             return False
-        return all(field in payload for field in cls._QUANT_HANDOFF_FIELDS)
+        if not all(field in payload for field in cls._QUANT_HANDOFF_FIELDS):
+            return False
+        return (
+            isinstance(payload.get("charts_json"), str)
+            and isinstance(payload.get("execution_summary_json"), str)
+            and isinstance(payload.get("chart_ids"), list)
+        )
+
+    @classmethod
+    def _quant_handoff_payload_from_content(cls, content: str) -> dict[str, Any] | None:
+        decoder = json.JSONDecoder()
+        for index, char in enumerate(content):
+            if char != "{":
+                continue
+            try:
+                payload, _ = decoder.raw_decode(content, index)
+            except json.JSONDecodeError:
+                continue
+            if cls._is_quant_handoff_payload(payload):
+                return payload
+        return None
+
+    @classmethod
+    def _has_quant_handoff_fields(cls, content: str) -> bool:
+        return cls._quant_handoff_payload_from_content(content) is not None
+
+    @staticmethod
+    def _load_json_file(path: Path) -> Any:
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+
+    @staticmethod
+    def _chart_ids_from_payload(payload: Any) -> list[str]:
+        if isinstance(payload, dict):
+            return [str(chart_id) for chart_id, chart in payload.items() if chart_id and chart]
+        if isinstance(payload, list):
+            return [
+                str(chart["id"])
+                for chart in payload
+                if isinstance(chart, dict) and chart.get("id")
+            ]
+        return []
+
+    def _candidate_quant_output_dirs(
+        self,
+        request: ToolCallRequest,
+        result_content: str,
+    ) -> list[Path]:
+        output_base = Path(get_output_base_dir())
+        candidates: list[Path] = []
+
+        def add_job_id(job_id: str | None) -> None:
+            if not job_id:
+                return
+            path = output_base / job_id
+            if path not in candidates:
+                candidates.append(path)
+
+        add_job_id(_job_id_from_runtime(getattr(request, "runtime", None)))
+        args = self._tool_call_args(request.tool_call)
+        add_job_id(_job_id_from_text(str(args.get("description") or "")))
+        add_job_id(_job_id_from_text(result_content))
+        for message in reversed(self._state_messages(getattr(request, "state", None))):
+            add_job_id(_job_id_from_text(str(getattr(message, "content", "") or "")))
+        return candidates
+
+    def _quant_artifact_handoff_from_files(
+        self,
+        request: ToolCallRequest,
+        result_content: str,
+    ) -> dict[str, Any] | None:
+        for output_dir in self._candidate_quant_output_dirs(request, result_content):
+            charts_path = output_dir / "charts.json"
+            summary_path = output_dir / "execution_summary.json"
+            summary = self._load_json_file(summary_path)
+            if not isinstance(summary, dict) or summary.get("status") == "failed":
+                continue
+            charts_payload = self._load_json_file(charts_path)
+            available_chart_ids = self._chart_ids_from_payload(charts_payload)
+            if not available_chart_ids:
+                continue
+            available_chart_id_set = set(available_chart_ids)
+            chart_ids = [
+                str(chart_id)
+                for chart_id in summary.get("chart_ids", [])
+                if isinstance(chart_id, str) and chart_id
+            ]
+            if not chart_ids:
+                chart_ids = available_chart_ids
+            if any(chart_id not in available_chart_id_set for chart_id in chart_ids):
+                continue
+            handoff: dict[str, Any] = {
+                "charts_json": str(charts_path),
+                "execution_summary_json": str(summary_path),
+                "chart_ids": chart_ids,
+            }
+            dropped_chart_ids = summary.get("dropped_chart_ids")
+            if isinstance(dropped_chart_ids, list):
+                handoff["dropped_chart_ids"] = [
+                    str(chart_id) for chart_id in dropped_chart_ids if chart_id
+                ]
+            statistical_summary = summary.get("statistical_summary")
+            if isinstance(statistical_summary, str) and statistical_summary.strip():
+                handoff["statistical_summary_excerpt"] = statistical_summary[:600]
+            return handoff
+        return None
 
     def _quant_task_failure_handoff_message(
         self,
@@ -555,8 +499,20 @@ class OrchestratorToolBoundaryMiddleware(AgentMiddleware):
         if getattr(result, "status", None) == "error":
             return result
         content = str(getattr(result, "content", "") or "")
-        if self._has_quant_handoff_fields(content):
-            return result
+        if payload := self._quant_handoff_payload_from_content(content):
+            return ToolMessage(
+                content=json.dumps(payload, sort_keys=True),
+                name="task",
+                tool_call_id=self._tool_call_id(request.tool_call),
+                status="success",
+            )
+        if payload := self._quant_artifact_handoff_from_files(request, content):
+            return ToolMessage(
+                content=json.dumps(payload, sort_keys=True),
+                name="task",
+                tool_call_id=self._tool_call_id(request.tool_call),
+                status="success",
+            )
         return self._quant_task_failure_handoff_message(request, result)
 
     def _postprocess_task_result(
@@ -699,6 +655,9 @@ class StripToolCallContentMiddleware(AgentMiddleware):
         messages = getattr(request, "messages", None)
         if not messages:
             return False
+        latest_decision = latest_quality_decision(messages)
+        if latest_decision is not None:
+            return latest_decision.status == "approved"
         return any(cls._is_terminal_approval_result(message) for message in messages)
 
     @staticmethod
@@ -706,6 +665,11 @@ class StripToolCallContentMiddleware(AgentMiddleware):
         messages = getattr(request, "messages", None)
         if not messages:
             return None
+        latest_decision = latest_quality_decision(messages)
+        if latest_decision is not None:
+            if latest_decision.status != "approved":
+                return None
+            return latest_decision.report_path
         latest: str | None = None
         for message in messages:
             content = getattr(message, "content", None)
@@ -739,6 +703,29 @@ class StripToolCallContentMiddleware(AgentMiddleware):
         return cls._terminal_approval_chat_emitted(
             request
         ) or cls._terminal_approval_result_seen(request)
+
+    @staticmethod
+    def _terminal_qa_failure_response(request: ModelRequest) -> ModelResponse | None:
+        messages = getattr(request, "messages", None)
+        if not messages or not qa_repair_budget_exhausted(messages):
+            return None
+        decision = latest_quality_decision(messages)
+        if decision is None or decision.status not in {"rejected", "failed"}:
+            return None
+        payload = {
+            "status": decision.status,
+            "report_path": decision.report_path,
+            "reason": decision.reason,
+            "required_fixes": list(decision.required_fixes),
+            "ready_for_upload": False,
+        }
+        if decision.required_upstream:
+            payload["required_upstream"] = decision.required_upstream
+        if decision.failure_category:
+            payload["failure_category"] = decision.failure_category
+        return ModelResponse(
+            result=[AIMessage(content=json.dumps(payload, sort_keys=True))],
+        )
 
     @staticmethod
     def _empty_response(response: ModelResponse | None = None) -> ModelResponse:
@@ -837,6 +824,8 @@ class StripToolCallContentMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse:
+        if qa_failure := self._terminal_qa_failure_response(request):
+            return qa_failure
         if self._terminal_approval_chat_emitted(request):
             return self._empty_response()
         response = handler(request)
@@ -849,6 +838,8 @@ class StripToolCallContentMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
+        if qa_failure := self._terminal_qa_failure_response(request):
+            return qa_failure
         if self._terminal_approval_chat_emitted(request):
             return self._empty_response()
         response = await handler(request)

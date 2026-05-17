@@ -1,5 +1,4 @@
 """Compiled quality analyst subagent."""
-from functools import lru_cache
 
 from langchain.agents import create_agent
 from langchain_core.runnables import RunnableLambda

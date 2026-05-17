@@ -129,6 +129,83 @@ def test_orchestrator_tool_boundary_blocks_approval_emit_after_failed_report_gat
     assert "Do not tell the user the report is approved" in response.content
 
 
+def test_orchestrator_tool_boundary_routes_qa_repair_by_required_upstream(tmp_path):
+    middleware = OrchestratorToolBoundaryMiddleware()
+    report_path = tmp_path / "report.json"
+    report_path.write_text("{}", encoding="utf-8")
+    messages = [
+        AIMessage(
+            content=json.dumps(
+                {
+                    "status": "rejected",
+                    "report_path": str(report_path),
+                    "reason": "Report numeric claims do not match execution_summary.json numeric_facts.",
+                    "required_fixes": [
+                        "Revise the markdown so numeric claims use helper-produced numeric_facts."
+                    ],
+                    "failure_category": "numeric_fact_mismatch",
+                    "required_upstream": "technical-writer",
+                }
+            )
+        )
+    ]
+    wrong_request = SimpleNamespace(
+        tool_call={
+            "name": "task",
+            "id": "wrong-owner",
+            "args": {
+                "subagent_type": "data-engineer",
+                "description": "Inspect scenario evidence after QA rejection.",
+            },
+        },
+        state={"messages": messages},
+    )
+
+    blocked = middleware.wrap_tool_call(
+        wrong_request,
+        lambda req: SimpleNamespace(content="delegated", status="success"),
+    )
+
+    assert "Blocked QA recovery delegation to `data-engineer`" in blocked.content
+    assert "required_upstream=`technical-writer`" in blocked.content
+
+    qa_request = SimpleNamespace(
+        tool_call={
+            "name": "task",
+            "id": "qa-owner",
+            "args": {
+                "subagent_type": "quality-analyst",
+                "description": "Review the repaired report after the writer fix.",
+            },
+        },
+        state={"messages": messages},
+    )
+    qa_allowed = middleware.wrap_tool_call(
+        qa_request,
+        lambda req: SimpleNamespace(content="delegated", status="success"),
+    )
+
+    assert qa_allowed.content == "delegated"
+
+    writer_request = SimpleNamespace(
+        tool_call={
+            "name": "task",
+            "id": "right-owner",
+            "args": {
+                "subagent_type": "technical-writer",
+                "description": "Repair the report from the QA numeric fact rejection.",
+            },
+        },
+        state={"messages": messages},
+    )
+    allowed = middleware.wrap_tool_call(
+        writer_request,
+        lambda req: SimpleNamespace(content="delegated", status="success"),
+    )
+
+    assert allowed.content == "delegated"
+
+
 def test_orchestrator_tool_boundary_allows_approval_emit_after_quality_approval():
     middleware = OrchestratorToolBoundaryMiddleware()
     request = SimpleNamespace(
@@ -315,6 +392,159 @@ def test_orchestrator_tool_boundary_normalizes_invalid_quant_task_result(
     assert json.loads((output_dir / "charts.json").read_text(encoding="utf-8")) == []
     summary = json.loads((output_dir / "execution_summary.json").read_text())
     assert summary["failure_stage"] == "quant_invalid_task_handoff"
+
+
+def test_orchestrator_tool_boundary_recovers_quant_task_result_from_saved_artifacts(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(quant_dev, "OUTPUT_BASE_DIR", str(tmp_path))
+    output_dir = tmp_path / "improver-artifacts"
+    output_dir.mkdir()
+    (output_dir / "charts.json").write_text(
+        json.dumps(
+            {
+                "macro_signal": {
+                    "id": "macro_signal",
+                    "type": "line",
+                    "xAxisKey": "date",
+                    "series": [{"dataKey": "risk"}],
+                    "data": [{"date": "2026-04-01", "risk": 0.42}],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (output_dir / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "chart_ids": ["macro_signal"],
+                "statistical_summary": "Computed macro signal chart data.",
+            }
+        ),
+        encoding="utf-8",
+    )
+    middleware = OrchestratorToolBoundaryMiddleware()
+    request = SimpleNamespace(
+        tool_call={
+            "name": "task",
+            "id": "call-artifact-quant-result",
+            "args": {
+                "subagent_type": "quant-developer",
+                "description": "Run the current job and return compact quant artifacts.",
+            },
+        },
+        state={"messages": []},
+        runtime=SimpleNamespace(context=SimpleNamespace(job_id="improver-artifacts")),
+    )
+
+    response = middleware.wrap_tool_call(
+        request,
+        lambda req: ToolMessage(
+            content="Completed analysis and wrote artifacts, but omitted compact JSON.",
+            name="task",
+            tool_call_id=req.tool_call["id"],
+            status="success",
+        ),
+    )
+
+    handoff = json.loads(response.content)
+    assert response.tool_call_id == "call-artifact-quant-result"
+    assert response.status == "success"
+    assert handoff == {
+        "chart_ids": ["macro_signal"],
+        "charts_json": str(output_dir / "charts.json"),
+        "execution_summary_json": str(output_dir / "execution_summary.json"),
+        "statistical_summary_excerpt": "Computed macro signal chart data.",
+    }
+    assert not (output_dir / "quant_failure_summary.json").exists()
+
+
+def test_orchestrator_quant_artifact_recovery_requires_valid_matching_charts_json(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(quant_dev, "OUTPUT_BASE_DIR", str(tmp_path))
+    middleware = OrchestratorToolBoundaryMiddleware()
+    cases = {
+        "missing-charts": None,
+        "bad-charts": "{not valid json",
+        "mismatched-charts": json.dumps(
+            {
+                "other_signal": {
+                    "id": "other_signal",
+                    "type": "line",
+                    "xAxisKey": "date",
+                    "series": [{"dataKey": "risk"}],
+                    "data": [{"date": "2026-04-01", "risk": 0.42}],
+                }
+            }
+        ),
+    }
+    for job_id, charts_content in cases.items():
+        output_dir = tmp_path / job_id
+        output_dir.mkdir()
+        if charts_content is not None:
+            (output_dir / "charts.json").write_text(charts_content, encoding="utf-8")
+        (output_dir / "execution_summary.json").write_text(
+            json.dumps(
+                {
+                    "chart_ids": ["macro_signal"],
+                    "statistical_summary": "Computed macro signal chart data.",
+                }
+            ),
+            encoding="utf-8",
+        )
+        request = SimpleNamespace(
+            tool_call={
+                "name": "task",
+                "id": f"call-{job_id}",
+                "args": {
+                    "subagent_type": "quant-developer",
+                    "description": "Run the current job and return compact quant artifacts.",
+                },
+            },
+            state={"messages": []},
+            runtime=SimpleNamespace(context=SimpleNamespace(job_id=job_id)),
+        )
+
+        assert (
+            middleware._quant_artifact_handoff_from_files(
+                request,
+                "Completed analysis and wrote artifacts, but omitted compact JSON.",
+            )
+            is None
+        )
+
+
+def test_orchestrator_tool_boundary_normalizes_fenced_quant_task_handoff():
+    middleware = OrchestratorToolBoundaryMiddleware()
+    payload = {
+        "chart_ids": ["macro_signal"],
+        "charts_json": "/tmp/outputs/job/charts.json",
+        "execution_summary_json": "/tmp/outputs/job/execution_summary.json",
+    }
+    request = SimpleNamespace(
+        tool_call={
+            "name": "task",
+            "id": "call-fenced-quant-result",
+            "args": {
+                "subagent_type": "quant-developer",
+                "description": "Run the current job and return compact quant artifacts.",
+            },
+        },
+        state={"messages": []},
+    )
+
+    response = middleware.wrap_tool_call(
+        request,
+        lambda req: ToolMessage(
+            content=f"```json\n{json.dumps(payload)}\n```",
+            name="task",
+            tool_call_id=req.tool_call["id"],
+            status="success",
+        ),
+    )
+
+    assert json.loads(response.content) == payload
 
 
 def test_orchestrator_quant_failure_handoff_uses_runtime_job_id_over_prompt_examples(
@@ -657,6 +887,59 @@ def test_orchestrator_tool_boundary_allows_qa_requested_quant_fix_after_handoff(
     assert response.content == "delegated"
 
 
+def test_orchestrator_tool_boundary_uses_structured_qa_fixes_for_quant_repair(tmp_path):
+    middleware = OrchestratorToolBoundaryMiddleware()
+    summary_path = tmp_path / "execution_summary.json"
+    charts_path = tmp_path / "charts.json"
+    report_path = tmp_path / "report.json"
+    summary_path.write_text("{}", encoding="utf-8")
+    charts_path.write_text('{"charts":[]}', encoding="utf-8")
+    report_path.write_text("{}", encoding="utf-8")
+    request = SimpleNamespace(
+        tool_call={
+            "name": "task",
+            "id": "call-structured-qa-quant-fix",
+            "args": {
+                "subagent_type": "quant-developer",
+                "description": "Add the 1995 comparison window and refresh the handoff.",
+            },
+        },
+        state={
+            "messages": [
+                AIMessage(
+                    content=(
+                        f'{{"execution_summary_json":"{summary_path}",'
+                        f'"charts_json":"{charts_path}",'
+                        '"chart_ids":["analog_distance_bubble"]}'
+                    )
+                ),
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "status": "rejected",
+                            "report_path": str(report_path),
+                            "reason": (
+                                "execution_summary.json lacks requested historical "
+                                "analog window(s) for 1995."
+                            ),
+                            "required_fixes": [
+                                "Rerun quant-developer to add computed analog window coverage for 1995."
+                            ],
+                        }
+                    )
+                ),
+            ]
+        },
+    )
+
+    response = middleware.wrap_tool_call(
+        request,
+        lambda req: SimpleNamespace(content="delegated", status="success"),
+    )
+
+    assert response.content == "delegated"
+
+
 def test_orchestrator_tool_boundary_allows_qa_quant_fix_for_missing_summary_enrichment(tmp_path):
     middleware = OrchestratorToolBoundaryMiddleware()
     summary_path = tmp_path / "execution_summary.json"
@@ -671,7 +954,7 @@ def test_orchestrator_tool_boundary_allows_qa_quant_fix_for_missing_summary_enri
                 "subagent_type": "quant-developer",
                 "description": (
                     "QA rejection: execution_summary.json lacks structured "
-                    "backtest_summary, model_comparison, and historical_simulations "
+                    "validation diagnostics, model_validation_rows, and replay_rows "
                     "enrichment keys required for this forecast/backtest report."
                 ),
             },
@@ -922,9 +1205,9 @@ def test_orchestrator_tool_boundary_allows_qa_worded_quant_artifact_fix(tmp_path
             "args": {
                 "subagent_type": "quant-developer",
                 "description": (
-                    "QA says execution_summary.json lacks backtest_summary and "
-                    "historical_simulations. Required fixes: add structured replay "
-                    "rows and preserve the computed false-positive metrics."
+                    "QA says execution_summary.json lacks generic validation diagnostics and "
+                    "replay_rows. Required fixes: add structured replay "
+                    "rows and preserve the computed signal metrics."
                 ),
             },
         },
@@ -950,6 +1233,38 @@ def test_orchestrator_tool_boundary_allows_qa_worded_quant_artifact_fix(tmp_path
 
     assert response.tool_call_id == "call-qa-artifact-fix"
     assert response.status == "success"
+
+
+def test_orchestrator_tool_boundary_blocks_after_qa_repair_budget_exhausted(tmp_path):
+    middleware = OrchestratorToolBoundaryMiddleware()
+    report_path = tmp_path / "report.json"
+    report_path.write_text("{}", encoding="utf-8")
+    rejected = {
+        "status": "rejected",
+        "report_path": str(report_path),
+        "reason": "execution_summary.json lacks requested historical analog window(s).",
+        "required_fixes": ["Rerun quant-developer to add computed analog windows."],
+    }
+    request = SimpleNamespace(
+        tool_call={
+            "name": "task",
+            "id": "call-budget-exhausted",
+            "args": {
+                "subagent_type": "technical-writer",
+                "description": "Try one more rewrite after QA rejection.",
+            },
+        },
+        state={"messages": [AIMessage(content=json.dumps(rejected)) for _ in range(3)]},
+    )
+
+    response = middleware.wrap_tool_call(
+        request,
+        lambda req: (_ for _ in ()).throw(AssertionError("handler should not run")),
+    )
+
+    assert response.tool_call_id == "call-budget-exhausted"
+    assert response.status == "error"
+    assert "QA repair budget is exhausted" in response.content
 
 
 def test_strip_tool_call_content_middleware_preserves_tool_calls():
@@ -1127,3 +1442,79 @@ def test_strip_tool_call_content_middleware_replaces_post_approval_task_with_ter
         "markdown": "Report approved: outputs/improver-456/report.json"
     }
     assert response.result[0].tool_calls[0]["id"] == "terminal-approval-emit"
+
+
+def test_strip_tool_call_content_middleware_forces_failure_after_qa_budget_exhausted(
+    tmp_path,
+):
+    middleware = StripToolCallContentMiddleware()
+    report_path = tmp_path / "report.json"
+    report_path.write_text("{}", encoding="utf-8")
+    rejected = {
+        "status": "rejected",
+        "report_path": str(report_path),
+        "reason": "Report contradicts execution_summary signal-framework results.",
+        "required_fixes": [
+            "Rewrite the report from execution_summary.json; do not approve it."
+        ],
+        "required_upstream": "technical-writer",
+    }
+    request = SimpleNamespace(
+        messages=[AIMessage(content=json.dumps(rejected)) for _ in range(3)]
+    )
+
+    response = middleware.wrap_model_call(
+        request=request,
+        handler=lambda _: (_ for _ in ()).throw(AssertionError("handler should not run")),
+    )
+
+    payload = json.loads(response.result[0].content)
+    assert payload == {
+        "ready_for_upload": False,
+        "reason": "Report contradicts execution_summary signal-framework results.",
+        "report_path": str(report_path),
+        "required_fixes": [
+            "Rewrite the report from execution_summary.json; do not approve it."
+        ],
+        "required_upstream": "technical-writer",
+        "status": "rejected",
+    }
+    assert response.result[0].tool_calls == []
+
+
+def test_strip_tool_call_content_middleware_does_not_force_stale_approval_after_rejection(
+    tmp_path,
+):
+    middleware = StripToolCallContentMiddleware()
+    report_path = tmp_path / "report.json"
+    report_path.write_text("{}", encoding="utf-8")
+    approved = {
+        "status": "approved",
+        "report_path": str(report_path),
+    }
+    rejected = {
+        "status": "rejected",
+        "report_path": str(report_path),
+        "reason": "Latest QA result rejected the report.",
+        "required_fixes": ["Do not upload."],
+    }
+    request = SimpleNamespace(
+        messages=[
+            AIMessage(content=json.dumps(approved)),
+            AIMessage(content=json.dumps(rejected)),
+            AIMessage(content=json.dumps(rejected)),
+            AIMessage(content=json.dumps(rejected)),
+        ]
+    )
+
+    response = middleware.wrap_model_call(
+        request=request,
+        handler=lambda _: ModelResponse(
+            result=[AIMessage(content="Report approved: outputs/job/report.json")]
+        ),
+    )
+
+    payload = json.loads(response.result[0].content)
+    assert payload["status"] == "rejected"
+    assert payload["reason"] == "Latest QA result rejected the report."
+    assert not response.result[0].tool_calls

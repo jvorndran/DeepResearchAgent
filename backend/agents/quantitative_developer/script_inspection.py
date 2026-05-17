@@ -3,7 +3,6 @@ import ast
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
 
 from langgraph.prebuilt.tool_node import ToolCallRequest
 
@@ -16,12 +15,8 @@ from .constants import (
 )
 from .tool_utils import _tool_call_args
 
-def _extract_data_files_manifest(content: str) -> dict[str, str] | None:
-    try:
-        tree = ast.parse(content)
-    except SyntaxError:
-        return None
 
+def _extract_data_files_manifest_from_tree(tree: ast.Module) -> dict[str, str] | None:
     for node in ast.walk(tree):
         if not isinstance(node, ast.Assign):
             continue
@@ -42,6 +37,14 @@ def _extract_data_files_manifest(content: str) -> dict[str, str] | None:
             }
         return None
     return None
+
+
+def _extract_data_files_manifest(content: str) -> dict[str, str] | None:
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return None
+    return _extract_data_files_manifest_from_tree(tree)
 
 
 def _unique_existing_sibling_data_path(path_text: str) -> str | None:
@@ -279,122 +282,6 @@ def _uses_runtime_installer(tree: ast.Module) -> bool:
             if any(marker in joined for marker in shell_install_markers):
                 return True
 
-    return False
-
-
-def _direct_forecast_result_names(tree: ast.Module) -> set[str]:
-    names: set[str] = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
-            continue
-        value = getattr(node, "value", None)
-        if not isinstance(value, ast.Call):
-            continue
-        func = value.func
-        called = (
-            func.id
-            if isinstance(func, ast.Name)
-            else func.attr if isinstance(func, ast.Attribute) else None
-        )
-        if called != "direct_ols_forecast":
-            continue
-        targets = [node.target] if isinstance(node, (ast.AnnAssign, ast.NamedExpr)) else node.targets
-        for target in targets:
-            if isinstance(target, ast.Name):
-                names.add(target.id)
-    return names
-
-
-def _dict_literal_has_keys(node: ast.Dict, required: set[str]) -> bool:
-    found: set[str] = set()
-    for key in node.keys:
-        if isinstance(key, ast.Constant) and isinstance(key.value, str):
-            found.add(key.value)
-    return required.issubset(found)
-
-
-def _forecast_handoff_preserved(tree: ast.Module) -> bool:
-    """Return True when direct forecast validation reaches execution_summary."""
-
-    forecast_names = _direct_forecast_result_names(tree)
-    if not forecast_names:
-        return False
-    required = {"backtest_summary", "model_comparison"}
-    preserved_summary_names: set[str] = set()
-
-    def _dict_preserves_forecast_packet(value: ast.Dict) -> bool:
-        if _dict_literal_has_keys(value, required):
-            return True
-        for dict_value in value.values:
-            if isinstance(dict_value, ast.Name) and (
-                dict_value.id in forecast_names
-                or dict_value.id in preserved_summary_names
-            ):
-                return True
-        return False
-
-    def _target_names(node: ast.Assign | ast.AnnAssign) -> list[str]:
-        targets = [node.target] if isinstance(node, ast.AnnAssign) else node.targets
-        return [target.id for target in targets if isinstance(target, ast.Name)]
-
-    changed = True
-    while changed:
-        changed = False
-        for node in ast.walk(tree):
-            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
-                continue
-            value = getattr(node, "value", None)
-            names = _target_names(node)
-            preserves_packet = (
-                isinstance(value, ast.Name)
-                and (value.id in forecast_names or value.id in preserved_summary_names)
-            ) or (
-                isinstance(value, ast.Dict) and _dict_preserves_forecast_packet(value)
-            )
-            if not preserves_packet:
-                continue
-            if "execution_summary" in names:
-                return True
-            new_names = set(names) - preserved_summary_names
-            if new_names:
-                preserved_summary_names.update(new_names)
-                changed = True
-
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.Assign, ast.AnnAssign)) and isinstance(
-            getattr(node, "value", None), ast.Name
-        ):
-            if (
-                node.value.id in forecast_names
-                or node.value.id in preserved_summary_names
-            ) and "execution_summary" in _target_names(node):
-                return True
-        if isinstance(node, (ast.Assign, ast.AnnAssign)) and isinstance(
-            getattr(node, "value", None), ast.Dict
-        ):
-            if "execution_summary" not in _target_names(node):
-                continue
-            if _dict_preserves_forecast_packet(node.value):
-                return True
-        elif isinstance(node, ast.Call):
-            func = node.func
-            called = (
-                func.id
-                if isinstance(func, ast.Name)
-                else func.attr if isinstance(func, ast.Attribute) else None
-            )
-            if called != "save_quant_outputs" or len(node.args) < 3:
-                continue
-            summary_arg = node.args[2]
-            if isinstance(summary_arg, ast.Name) and (
-                summary_arg.id in forecast_names
-                or summary_arg.id in preserved_summary_names
-            ):
-                return True
-            if isinstance(summary_arg, ast.Dict) and _dict_preserves_forecast_packet(
-                summary_arg
-            ):
-                return True
     return False
 
 

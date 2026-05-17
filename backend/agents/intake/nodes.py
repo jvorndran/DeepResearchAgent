@@ -1,5 +1,4 @@
 """LangGraph nodes for intake chat, evaluation, and approval emission."""
-import json
 import logging
 from uuid import uuid4
 
@@ -10,7 +9,6 @@ from ..chat_surface_tool import emit_chat_message
 from .heuristics import (
     _actionable_fred_macro_summary,
     _actionable_macro_scenario_summary,
-    _extract_research_query,
     _is_actionable_fred_macro_request,
     _is_actionable_macro_scenario_request,
 )

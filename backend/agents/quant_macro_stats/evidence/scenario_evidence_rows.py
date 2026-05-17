@@ -1,16 +1,19 @@
-"""Scenario-table and recession-regime helper functions."""
-from .shared import *
-from .shared import (
-    _adfuller,
-    _as_ordered_frame,
-    _clean_regression_frame,
-    _direction_multiplier,
+"""Scenario evidence and recession-regime helper functions."""
+from collections.abc import Iterable
+from typing import Any
+
+import numpy as np
+import pandas as pd
+
+from .._utils import (
+    DEFAULT_REGIME_CATEGORIES,
+    DEFAULT_REGIME_WEIGHTS,
+    METHOD_RECESSION_REGIME_CLASSIFIER,
     _finite_float,
     _iso_date,
     _require_columns,
-    _scipy_stats,
-    _statsmodels_api,
 )
+
 
 def _finite_dict(values: dict[str, Any]) -> dict[str, float]:
     cleaned: dict[str, float] = {}
@@ -21,214 +24,85 @@ def _finite_dict(values: dict[str, Any]) -> dict[str, float]:
     return cleaned
 
 
-def _non_empty_strings(value: Any, field: str, scenario: str) -> list[str]:
+def _string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
     if isinstance(value, str):
-        items = [value]
-    elif isinstance(value, list):
-        items = value
+        candidates = [value]
+    elif isinstance(value, Iterable) and not isinstance(value, dict):
+        candidates = [str(item) for item in value]
     else:
-        raise ValueError(f"{scenario}.{field} must be a non-empty string list")
-    cleaned = [str(item).strip() for item in items if str(item).strip()]
-    if not cleaned:
-        raise ValueError(f"{scenario}.{field} must include at least one non-empty item")
-    return cleaned
+        candidates = [str(value)]
+    return [item.strip() for item in candidates if item.strip()]
 
 
-def _non_empty_text(value: Any, field: str, scenario: str) -> str:
-    if isinstance(value, list):
-        value = "; ".join(str(item).strip() for item in value if str(item).strip())
-    text = str(value or "").strip()
-    if not text:
-        raise ValueError(f"{scenario}.{field} must be non-empty")
-    return text
-
-
-def _normalize_scenario_confidence(raw: dict[str, Any], scenario: str) -> str:
-    """Accept common generated confidence shapes without repair loops."""
-
-    value = raw.get("confidence")
-    if isinstance(value, str):
-        cleaned = value.strip().lower()
-        if cleaned in {"moderate", "moderately confident"}:
-            return "medium"
-        tokens = {
-            token
-            for token in cleaned.replace("/", "-").replace("_", "-").split("-")
-            if token
-        }
-        for label in ("low", "medium", "high"):
-            if cleaned == label or label in tokens:
-                return label
-
-    probability = raw.get("probability")
-    if probability is not None:
-        if isinstance(probability, str):
-            probability = probability.strip().rstrip("%")
-        numeric = _finite_float(probability)
-        if numeric is not None:
-            if numeric > 1:
-                numeric = numeric / 100
-            if numeric >= 0.6:
-                return "high"
-            if numeric >= 0.3:
-                return "medium"
-            if numeric >= 0:
-                return "low"
-
-    raise ValueError(f"{scenario}.confidence must be low, medium, or high")
-
-
-def validate_scenario_table(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+def normalize_scenario_evidence_rows(
+    rows: Iterable[dict[str, Any]],
+) -> list[dict[str, Any]]:
     """
-    Validate and normalize base/bull/bear scenario rows for report handoff.
+    Normalize caller-composed scenario evidence rows without choosing report shape.
 
-    This helper performs no data retrieval. Quant scripts should derive the row
-    content from local computations, then save the normalized list under the
-    top-level ``scenario_table`` key in ``execution_summary.json``.
+    The helper validates local evidence rows only. It does not require base,
+    bull, and bear rows, does not choose table columns, and does not create a
+    top-level report contract. ``analysis.py`` owns any report-facing scenario
+    labels, prose, and table layout.
     """
 
     if rows is None:
-        raise ValueError("scenario_table rows are required")
-    normalized_by_name: dict[str, dict[str, Any]] = {}
+        raise ValueError("scenario evidence rows are required")
+    normalized: list[dict[str, Any]] = []
+    text_fields = (
+        "metric",
+        "indicator",
+        "source_key",
+        "direction",
+        "basis",
+        "confidence",
+        "note",
+        "notes",
+    )
+    list_fields = ("evidence", "drivers", "inputs")
+    numeric_fields = (
+        "score",
+        "value",
+        "current_value",
+        "baseline_value",
+        "delta",
+        "threshold_value",
+        "reference_value",
+        "weight",
+    )
     for raw in rows:
         if not isinstance(raw, dict):
-            raise ValueError("each scenario row must be a JSON object")
-        raw_scenario = raw.get("scenario", raw.get("name", ""))
-        scenario = SCENARIO_ALIASES.get(
-            str(raw_scenario).strip().lower(),
-            str(raw_scenario).strip().lower(),
-        )
-        if scenario not in REQUIRED_SCENARIOS:
+            raise ValueError("each scenario evidence row must be a JSON object")
+        scenario = str(raw.get("scenario", raw.get("name", ""))).strip()
+        if not scenario:
+            raise ValueError("each scenario evidence row requires `scenario` or `name`")
+
+        row: dict[str, Any] = {"scenario": scenario}
+        for field in text_fields:
+            value = raw.get(field)
+            if value is not None and str(value).strip():
+                row[field] = str(value).strip()
+        for field in list_fields:
+            values = _string_list(raw.get(field))
+            if values:
+                row[field] = values
+        for field in numeric_fields:
+            numeric = _finite_float(raw.get(field))
+            if numeric is not None:
+                row[field] = numeric
+
+        if len(row) == 1:
             raise ValueError(
-                "scenario row must include `scenario` (or legacy `name`) as one "
-                "of: base, bull/bear, or natural aliases such as upside/downside"
+                "each scenario evidence row needs at least one metric, score, "
+                "value, note, driver, or evidence field"
             )
-        if scenario in normalized_by_name:
-            raise ValueError(f"duplicate scenario row: {scenario}")
-        confidence = _normalize_scenario_confidence(raw, scenario)
-        uncertainty_notes = _non_empty_text(
-            raw.get("uncertainty_notes"), "uncertainty_notes", scenario
-        )
-        normalized_by_name[scenario] = {
-            "scenario": scenario,
-            "assumptions": _non_empty_strings(raw.get("assumptions"), "assumptions", scenario),
-            "indicator_triggers": _non_empty_strings(
-                raw.get("indicator_triggers"), "indicator_triggers", scenario
-            ),
-            "confidence": confidence,
-            "uncertainty_notes": uncertainty_notes,
-        }
+        normalized.append(row)
 
-    missing = [scenario for scenario in REQUIRED_SCENARIOS if scenario not in normalized_by_name]
-    if missing:
-        raise ValueError(f"scenario_table missing required row(s): {', '.join(missing)}")
-    return [normalized_by_name[scenario] for scenario in REQUIRED_SCENARIOS]
-
-
-def _summarize_latest_frame_row(data: pd.DataFrame) -> tuple[str | None, list[str]]:
-    """Extract compact, JSON-safe signal labels from a local analysis panel."""
-
-    if data.empty:
-        return None, []
-    frame = data.copy()
-    latest = frame.iloc[-1]
-    latest_date = _iso_date(latest.get("date")) if "date" in frame.columns else None
-    signals: list[str] = []
-    for column in frame.columns:
-        if column == "date":
-            continue
-        value = _finite_float(latest.get(column))
-        if value is None:
-            continue
-        signals.append(f"{column}={value:.3g}")
-        if len(signals) >= 5:
-            break
-    return latest_date, signals
-
-
-def _default_scenario_rows_from_panel(data: pd.DataFrame) -> list[dict[str, Any]]:
-    latest_date, signals = _summarize_latest_frame_row(data)
-    signal_text = ", ".join(signals) if signals else "latest available local indicators"
-    as_of = f" as of {latest_date}" if latest_date else ""
-    return [
-        {
-            "scenario": "base",
-            "assumptions": [
-                f"Mixed macro conditions persist{as_of}; use {signal_text} as the baseline signal set.",
-            ],
-            "indicator_triggers": [
-                "Labor, inflation, credit, production, and consumption signals remain directionally mixed rather than jointly recessionary.",
-            ],
-            "confidence": "medium",
-            "uncertainty_notes": "Base case is a deterministic stress row derived from the local analysis panel, not a probability estimate.",
-        },
-        {
-            "scenario": "bull",
-            "assumptions": [
-                "Inflation cools while employment and production stay resilient.",
-            ],
-            "indicator_triggers": [
-                "Claims and unemployment remain contained, real activity improves, and credit stress does not broaden.",
-            ],
-            "confidence": "low",
-            "uncertainty_notes": "Upside requires policy lags and data revisions not to reveal delayed demand weakness.",
-        },
-        {
-            "scenario": "bear",
-            "assumptions": [
-                "Policy, credit, and consumer stress reinforce a downturn path.",
-            ],
-            "indicator_triggers": [
-                "Unemployment or claims rise, production/consumption weaken, and credit stress confirms the slowdown.",
-            ],
-            "confidence": "medium",
-            "uncertainty_notes": "Downside timing is uncertain because macro data are revised and released with different lags.",
-        },
-    ]
-
-
-def build_scenario_stress_test(
-    rows: Iterable[dict[str, Any]] | pd.DataFrame,
-    *legacy_args: Any,
-    topic: str = "macro_risk",
-    **legacy_kwargs: Any,
-) -> dict[str, Any]:
-    """Return a JSON-safe scenario stress-test payload for execution_summary.json.
-
-    ``rows`` is normally the canonical list of base/bull/bear scenario dicts.
-    Generated quant scripts sometimes pass their local analysis panel plus
-    forecast/model keyword arguments. Treat that legacy shape as a request to
-    create a compact deterministic scenario table from the latest panel row
-    instead of raising a signature error and entering a repair loop.
-    """
-
-    if legacy_args:
-        first_arg = legacy_args[0]
-        if isinstance(first_arg, str) and topic == "macro_risk":
-            topic = first_arg
-        elif isinstance(first_arg, (list, tuple)) and isinstance(rows, pd.DataFrame):
-            rows = first_arg
-
-    cleaned_topic = str(topic or "macro_risk").strip() or "macro_risk"
-    scenario_rows: Iterable[dict[str, Any]]
-    if isinstance(rows, pd.DataFrame):
-        scenario_rows = _default_scenario_rows_from_panel(rows)
-    else:
-        scenario_rows = rows
-    limitations = [
-        "Scenario rows are deterministic stress cases, not probabilities or guaranteed forecasts.",
-        "Indicator triggers should be revisited when input data revisions or new releases arrive.",
-    ]
-    if legacy_args or legacy_kwargs:
-        limitations.append(
-            "Legacy scenario helper arguments were ignored; scenario rows were normalized from the provided local analysis inputs."
-        )
-    return {
-        "topic": cleaned_topic,
-        "scenario_table": validate_scenario_table(scenario_rows),
-        "methods_used": [METHOD_SCENARIO_STRESS_TEST],
-        "limitations": limitations,
-    }
+    if not normalized:
+        raise ValueError("scenario evidence rows must include at least one row")
+    return normalized
 
 
 def _score_indicator_value(
@@ -339,7 +213,7 @@ def _weighted_regime_score(
     return _finite_float(score), normalized
 
 
-def _classify_regime_label(
+def _classify_regime(
     score: float,
     momentum: float | None,
     *,
@@ -357,7 +231,7 @@ def _classify_regime_label(
     return "expansion"
 
 
-def _historical_analogs(
+def _regime_analog_rows(
     scored: pd.DataFrame,
     *,
     date_col: str,
@@ -379,12 +253,42 @@ def _historical_analogs(
                 "date": _iso_date(row[date_col]),
                 "distance": _finite_float(distance),
                 "regime_score": _finite_float(row["_regime_score"]),
-                "label": row.get("_regime_label"),
+                "regime": row.get("_regime"),
             }
         )
     return sorted(
         analogs, key=lambda item: item["distance"] if item["distance"] is not None else np.inf
     )[:limit]
+
+
+def _regime_summary_row(payload: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "date",
+        "status",
+        "regime",
+        "regime_score",
+        "score_momentum",
+        "category_scores",
+        "category_weights",
+        "weak_categories",
+        "recession_indicator",
+        "recession_indicator_active",
+        "available_categories",
+    )
+    return {key: payload[key] for key in keys if key in payload}
+
+
+def _missing_indicator_rows(payloads: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for payload in payloads:
+        date = payload.get("date")
+        missing = payload.get("missing_indicator_rows")
+        if not isinstance(missing, list):
+            continue
+        for item in missing:
+            if isinstance(item, dict):
+                rows.append({"date": date, **item})
+    return rows
 
 
 def classify_recession_regime(
@@ -445,17 +349,17 @@ def classify_recession_regime(
     scored_rows: list[dict[str, Any]] = []
     payloads: list[dict[str, Any]] = []
     for row_index, row in frame.iterrows():
-        category_scores, evidence, missing = _category_scores_from_row(row, specs)
+        category_scores, evidence_rows, missing_rows = _category_scores_from_row(row, specs)
         score, normalized_weights = _weighted_regime_score(category_scores, weights)
         if score is None or len(category_scores) < min_categories:
             payload = {
                 "date": _iso_date(row[date_col]),
                 "status": "insufficient_categories",
-                "regime_label": "unclassified",
+                "regime": "unclassified",
                 "regime_score": score,
                 "available_categories": sorted(category_scores),
-                "missing_indicators": missing,
-                "evidence_table": evidence,
+                "missing_indicator_rows": missing_rows,
+                "regime_evidence_rows": evidence_rows,
             }
         else:
             prior_position = row_index - momentum_periods
@@ -473,7 +377,7 @@ def classify_recession_regime(
                 recession_col and recession_value is not None and recession_value > 0
             )
             weak_categories = sum(1 for value in category_scores.values() if value <= -0.25)
-            label = _classify_regime_label(
+            regime = _classify_regime(
                 score,
                 momentum,
                 recession_flag=recession_flag,
@@ -482,7 +386,7 @@ def classify_recession_regime(
             payload = {
                 "date": _iso_date(row[date_col]),
                 "status": "ok",
-                "regime_label": label,
+                "regime": regime,
                 "regime_score": score,
                 "score_momentum": momentum,
                 "category_scores": {
@@ -493,14 +397,14 @@ def classify_recession_regime(
                 "recession_indicator": recession_col if recession_col else None,
                 "recession_indicator_active": recession_flag if recession_col else None,
                 "available_categories": sorted(category_scores),
-                "missing_indicators": missing,
-                "evidence_table": evidence,
+                "missing_indicator_rows": missing_rows,
+                "regime_evidence_rows": evidence_rows,
             }
 
         scored_row = {
             date_col: row[date_col],
             "_regime_score": payload["regime_score"],
-            "_regime_label": payload["regime_label"],
+            "_regime": payload["regime"],
             **{f"_category_{key}": value for key, value in category_scores.items()},
         }
         scored_rows.append(scored_row)
@@ -520,8 +424,8 @@ def classify_recession_regime(
         for column in scored.columns
         if column.startswith("_category_") and pd.notna(scored[column].iloc[selected_index])
     ]
-    analogs = (
-        _historical_analogs(
+    analog_rows = (
+        _regime_analog_rows(
             scored,
             date_col=date_col,
             category_columns=category_columns,
@@ -533,18 +437,23 @@ def classify_recession_regime(
     )
 
     return {
-        **latest_payload,
-        "historical_analogs": analogs,
+        "current_regime_row": _regime_summary_row(latest_payload),
+        "regime_evidence_rows": latest_payload.get("regime_evidence_rows", []),
+        "regime_history_rows": [_regime_summary_row(payload) for payload in payloads],
+        "regime_analog_rows": analog_rows,
+        "missing_indicator_rows": _missing_indicator_rows(payloads),
+        "regime_design": {
+            "method": METHOD_RECESSION_REGIME_CLASSIFIER,
+            "indicator_count": len(specs),
+            "min_categories": min_categories,
+            "momentum_periods": momentum_periods,
+            "analog_count": analog_count,
+            "category_weights": latest_payload.get("category_weights", {}),
+            "selected_date": latest_payload.get("date"),
+            "selected_row_status": latest_payload.get("status"),
+            "latest_observation_date": payloads[-1].get("date"),
+            "latest_observation_status": payloads[-1].get("status"),
+            "used_latest_usable_row": selected_index != len(payloads) - 1,
+        },
         "methods_used": [METHOD_RECESSION_REGIME_CLASSIFIER],
-        "false_positive_caveat": (
-            "Regime classification is a transparent deterministic score, not a black-box model "
-            "or recession call. False positives can occur when noisy, revised, or lagging macro "
-            "series briefly resemble prior downturns."
-        ),
-        "fallback_behavior": (
-            f"Returns status='insufficient_categories' unless at least {min_categories} "
-            "categories have usable local observations. When trailing partial rows from "
-            "mixed-frequency data are insufficient, the latest usable row is classified "
-            "instead of letting a high-frequency-only period erase the regime."
-        ),
     }

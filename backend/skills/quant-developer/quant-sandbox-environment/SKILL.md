@@ -181,6 +181,9 @@ print(json.dumps(handoff))
 This avoids repeated retries from `Timestamp`, `Period`, `NaN`, numpy scalar
 serialization failures, and stale `chart_ids` inside the final handoff. Never
 import `agents.quant_utils`; that module does not exist.
+Each script run owns the saved artifacts. Do not reuse old `charts.json`, read
+an existing `report.json` to choose chart IDs, or merge an earlier
+`execution_summary.json` into the current output.
 
 **SEC EDGAR company-facts data**:
 ```python

@@ -125,12 +125,15 @@ temp/
 *.tmp
 artifacts/
 workspace/
+!backend/agents/quant_macro_stats/artifacts/
+!backend/agents/quant_macro_stats/artifacts/**
 
 # ==========================================
 # DATA STORAGE
 # ==========================================
 backend/data/
-data/
+!backend/agents/quant_macro_stats/data/
+!backend/agents/quant_macro_stats/data/**
 tmpclaude*
 outputs
 .pytest-tmp*

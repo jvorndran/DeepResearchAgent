@@ -6,7 +6,8 @@ Blocking gate (``passes_gate``):
       For chart-requested reports, unknown markers are blockers rather than
       being stripped by auto-patch.
     - Axis charts satisfy deterministic render and data semantics checks.
-    - Scenario/stress prompts include a valid base/bull/bear ``scenario_table``.
+    - Generic chart and numeric-fact fidelity checks guard against invented
+      quantitative evidence.
 
 Canonical disclaimer text is injected by ``inject_auto_report_footer`` on every
 ``write_research_report`` save (and reapplied here when ``auto_patch`` runs) — the LLM
@@ -30,17 +31,6 @@ from core.report_schema import ResearchReport
 
 from ..report_artifacts import chart_marker_ids, inject_auto_report_footer, load_report_json
 from .chart_audit import chart_render_dict, chart_semantics_dict, query_requests_charts
-
-_SCENARIO_QUERY_KEYWORDS = (
-    "scenario",
-    "scenarios",
-    "stress test",
-    "stress testing",
-    "base case",
-    "bull case",
-    "bear case",
-)
-
 
 def content_warnings(report: ResearchReport) -> list[str]:
     """Non-blocking hints for the writer / QA (never used for ``passes_gate``)."""
@@ -74,22 +64,13 @@ def charts_dict(report: ResearchReport) -> dict:
     }
 
 
-def requires_scenario_table(report: ResearchReport) -> bool:
-    query = report.query.lower()
-    return any(keyword in query for keyword in _SCENARIO_QUERY_KEYWORDS)
-
-
 def scenario_dict(report: ResearchReport) -> dict:
-    rows = report.scenario_table or []
-    row_names = [row.scenario for row in rows]
-    missing = [name for name in ("base", "bull", "bear") if name not in row_names]
-    required = requires_scenario_table(report)
     return {
-        "required": required,
-        "valid": (not required) or not missing,
-        "row_count": len(rows),
-        "scenarios": row_names,
-        "missing_required_rows": missing if required else [],
+        "required": False,
+        "valid": True,
+        "row_count": 0,
+        "scenarios": [],
+        "missing_required_rows": [],
     }
 
 
@@ -106,11 +87,6 @@ def structural_blockers(
     chart_required: bool = False,
 ) -> list[str]:
     blockers: list[str] = []
-    if scenarios is not None and not scenarios["valid"]:
-        blockers.append(
-            "missing required scenario_table rows for scenario/stress query: "
-            f"{scenarios['missing_required_rows']}"
-        )
     if chart_required and not charts.get("defined_charts"):
         blockers.append(
             "query requested charts but report.json contains zero chart definitions"

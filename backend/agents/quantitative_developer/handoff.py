@@ -4,7 +4,6 @@ from pathlib import Path
 from typing import Any
 
 from .constants import (
-    _DETERMINISTIC_ARTIFACT_TOOL_NAMES,
     _HANDOFF_FIELDS,
     _MAX_PREWRITE_BLOCKS,
     get_output_base_dir,
@@ -22,7 +21,7 @@ _NON_HANDOFF_TOOL_NAMES = {
     "read_file",
     "write_file",
 }
-_HANDOFF_TOOL_NAMES = {"execute", *_DETERMINISTIC_ARTIFACT_TOOL_NAMES}
+_HANDOFF_TOOL_NAMES = {"execute"}
 
 def _has_written_analysis_script(messages: list[Any]) -> bool:
     for message in messages:
@@ -94,7 +93,6 @@ def _prewrite_failure_handoff(
 
     charts_path = output_dir / "charts.json"
     summary_path = output_dir / "execution_summary.json"
-    failure_path = output_dir / "quant_failure_summary.json"
     methods = methods_used or ["quant_prewrite_retry_budget_guard"]
     summary = {
         "status": "failed",
@@ -113,57 +111,6 @@ def _prewrite_failure_handoff(
             "Downstream report synthesis must explicitly caveat the missing local quant analysis.",
         ],
     }
-
-    preserved_chart_ids: list[str] = []
-    preserved_prior_artifacts = False
-    try:
-        existing_summary = json.loads(summary_path.read_text(encoding="utf-8"))
-        if isinstance(existing_summary, dict) and existing_summary.get("status") != "failed":
-            existing_ids = existing_summary.get("chart_ids")
-            if isinstance(existing_ids, list):
-                preserved_chart_ids = [str(value) for value in existing_ids if value]
-            preserved_prior_artifacts = True
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        existing_summary = None
-
-    try:
-        existing_charts = json.loads(charts_path.read_text(encoding="utf-8"))
-        if isinstance(existing_charts, dict) and existing_charts:
-            preserved_chart_ids = list(existing_charts.keys())
-            preserved_prior_artifacts = True
-        elif isinstance(existing_charts, list) and existing_charts:
-            preserved_chart_ids = [
-                str(chart.get("id"))
-                for chart in existing_charts
-                if isinstance(chart, dict) and chart.get("id")
-            ]
-            preserved_prior_artifacts = True
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        existing_charts = None
-
-    if preserved_prior_artifacts:
-        summary["preserved_prior_artifacts"] = True
-        summary["preserved_execution_summary_json"] = str(summary_path)
-        summary["preserved_charts_json"] = str(charts_path)
-        summary["chart_ids"] = preserved_chart_ids
-        failure_path.write_text(
-            json.dumps(summary, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        return json.dumps(
-            {
-                "status": "failed",
-                "charts_json": str(charts_path),
-                "execution_summary_json": str(summary_path),
-                "failure_summary_json": str(failure_path),
-                "chart_ids": preserved_chart_ids,
-                "failure_stage": failure_stage,
-                "error": summary["error"],
-                "methods_used": methods,
-                "preserved_prior_artifacts": True,
-            },
-            sort_keys=True,
-        )
 
     charts_path.write_text("[]\n", encoding="utf-8")
     summary_path.write_text(

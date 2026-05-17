@@ -1,18 +1,20 @@
 """Correlation, recession-window, and method-label helpers."""
 import sys
+from copy import deepcopy
+from typing import Any, Iterable
 
-from .shared import *
-from .shared import (
-    _adfuller,
+import numpy as np
+import pandas as pd
+
+from .._utils import (
+    METHOD_LEAD_LAG_CORRELATION,
+    METHOD_RECESSION_WINDOW_SUMMARY,
+    METHOD_ROLLING_CORRELATION,
     _as_ordered_frame,
-    _clean_regression_frame,
-    _direction_multiplier,
     _finite_float,
-    _iso_date,
-    _require_columns,
     _scipy_stats,
-    _statsmodels_api,
 )
+
 
 def rolling_correlation(
     data: pd.DataFrame,
@@ -256,133 +258,6 @@ def attach_methods_used(charts: dict[str, Any], methods: str | Iterable[str]) ->
             existing = []
         chart["methods_used"] = list(dict.fromkeys([*existing, *method_list]))
     return annotated
-
-
-def summarize_sec_company_facts(
-    data: pd.DataFrame | str | Path,
-    *,
-    periods: int = 5,
-    scale: float = 1_000_000_000,
-) -> dict[str, Any]:
-    """Summarize SEC EDGAR company-facts CSVs using named financial columns.
-
-    The SEC client emits many numeric columns, including shares and balance-sheet
-    items. Generated scripts should not infer revenue or margins from numeric
-    column position; this helper keeps issuer fundamentals tied to explicit SEC
-    fields.
-    """
-
-    if isinstance(data, str | Path):
-        frame = pd.read_csv(data)
-    else:
-        frame = data.copy()
-    _require_columns(frame, ["fiscal_year", "revenue", "net_income"])
-    frame["fiscal_year"] = pd.to_numeric(frame["fiscal_year"], errors="coerce")
-    for column in (
-        "revenue",
-        "net_income",
-        "gross_profit",
-        "operating_income",
-        "operating_cash_flow",
-        "capital_expenditures",
-        "research_and_development",
-        "selling_general_and_admin",
-        "diluted_eps",
-        "assets",
-        "liabilities",
-        "long_term_debt",
-        "shares",
-    ):
-        if column in frame.columns:
-            frame[column] = pd.to_numeric(frame[column], errors="coerce")
-    frame = (
-        frame.dropna(subset=["fiscal_year"])
-        .sort_values("fiscal_year")
-        .tail(max(int(periods), 1))
-        .reset_index(drop=True)
-    )
-    if frame.empty:
-        raise ValueError("SEC company facts summary requires at least one fiscal-year row")
-
-    latest = frame.iloc[-1]
-    first = frame.iloc[0]
-
-    def value(column: str, row: pd.Series = latest) -> float | None:
-        if column not in frame.columns:
-            return None
-        return _finite_float(row.get(column))
-
-    def scaled(column: str) -> float | None:
-        raw = value(column)
-        return None if raw is None else raw / scale
-
-    def growth_pct(column: str) -> float | None:
-        start = value(column, first)
-        end = value(column, latest)
-        if start in (None, 0) or end is None:
-            return None
-        return ((end / start) - 1.0) * 100.0
-
-    def cagr_pct(column: str) -> float | None:
-        start = value(column, first)
-        end = value(column, latest)
-        start_year = _finite_float(first.get("fiscal_year"))
-        end_year = _finite_float(latest.get("fiscal_year"))
-        if start in (None, 0) or end is None or start_year is None or end_year is None:
-            return None
-        span = end_year - start_year
-        if span <= 0:
-            return None
-        return ((end / start) ** (1.0 / span) - 1.0) * 100.0
-
-    def ratio_pct(numerator: str, denominator: str, row: pd.Series = latest) -> float | None:
-        num = value(numerator, row)
-        den = value(denominator, row)
-        if num is None or den in (None, 0):
-            return None
-        return (num / den) * 100.0
-
-    latest_year = _finite_float(latest.get("fiscal_year"))
-    first_year = _finite_float(first.get("fiscal_year"))
-    return {
-        "fiscal_year_latest": int(latest_year) if latest_year is not None else None,
-        "fiscal_year_start": int(first_year) if first_year is not None else None,
-        "periods": int(len(frame)),
-        "revenue_latest": scaled("revenue"),
-        "net_income_latest": scaled("net_income"),
-        "revenue_growth_pct": growth_pct("revenue"),
-        "net_income_growth_pct": growth_pct("net_income"),
-        "revenue_cagr_pct": cagr_pct("revenue"),
-        "net_income_cagr_pct": cagr_pct("net_income"),
-        "net_margin_pct": ratio_pct("net_income", "revenue"),
-        "gross_margin_pct": ratio_pct("gross_profit", "revenue"),
-        "operating_margin_pct": ratio_pct("operating_income", "revenue"),
-        "operating_cash_flow_latest": scaled("operating_cash_flow"),
-        "capital_expenditures_latest": scaled("capital_expenditures"),
-        "free_cash_flow_latest": (
-            None
-            if value("operating_cash_flow") is None
-            or value("capital_expenditures") is None
-            else (value("operating_cash_flow") - value("capital_expenditures")) / scale
-        ),
-        "research_and_development_latest": scaled("research_and_development"),
-        "selling_general_and_admin_latest": scaled("selling_general_and_admin"),
-        "diluted_eps_latest": value("diluted_eps"),
-        "research_and_development_pct_revenue": ratio_pct(
-            "research_and_development", "revenue"
-        ),
-        "selling_general_and_admin_pct_revenue": ratio_pct(
-            "selling_general_and_admin", "revenue"
-        ),
-        "assets_latest": scaled("assets"),
-        "liabilities_latest": scaled("liabilities"),
-        "debt_to_assets_pct": ratio_pct("long_term_debt", "assets"),
-        "methods_used": [METHOD_SEC_COMPANY_FACTS_SUMMARY],
-        "method_notes": [
-            "SEC EDGAR company facts are summarized from named columns such as revenue and net_income, never numeric column position.",
-            f"Monetary latest values are scaled by {scale:g}. Growth metrics compare the first and latest fiscal-year rows in the selected window.",
-        ],
-    }
 
 
 def attach_summary_methods(summary: dict[str, Any], methods: str | Iterable[str]) -> dict[str, Any]:

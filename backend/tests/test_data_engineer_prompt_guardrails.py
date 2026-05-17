@@ -166,7 +166,10 @@ def test_data_engineer_prompt_allows_direct_bls_source_checks():
     assert "`bls_search_known_series`, `bls_get_series`" in prompt
     assert "reconciliation against FRED" in prompt
     assert "requires no key" in prompt
-    assert "10-year-or-smaller window" in prompt
+    assert "10-year-or-smaller direct-source check" in prompt
+    assert "normalizes partial or over-wide no-key year windows" in prompt
+    assert "versus applied window" in prompt
+    assert "Do not retry the same BLS objective" in prompt
     assert "do not call `save_data` afterward" in prompt
 
 
@@ -177,7 +180,7 @@ def test_data_engineer_prompt_includes_unemployment_forecast_fetch_set():
     for series_id in ("UNRATE", "PAYEMS", "ICSA", "U6RATE", "DGS10", "FEDFUNDS", "NROU"):
         assert f"`{series_id}`" in prompt
     assert "forecast-band" in prompt
-    assert "chart-pack" in prompt
+    assert "historical miss" in prompt
 
 
 def test_data_engineer_prompt_allows_census_regional_context():
@@ -196,6 +199,9 @@ def test_data_engineer_prompt_allows_census_regional_context():
     assert "sections and fetched files" in prompt
     assert "never" in prompt
     assert "name inactive providers" in prompt
+    assert "error_type:provider_payload_unusable" in prompt
+    assert "terminal for the current data objective" in prompt
+    assert "do not retry with a narrower variable set" in prompt
     assert "do not switch to paid providers" in prompt
 
 

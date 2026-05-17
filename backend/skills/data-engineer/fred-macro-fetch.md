@@ -63,7 +63,7 @@ for credit-card or household delinquency analysis.
 
 ## Common unemployment-forecast IDs
 
-For unemployment forecast-overlay, forecast-band, false-alarm, or chart-pack
+For unemployment forecast, forecast-band, false-alarm, or historical miss
 requests, include `UNRATE` and `PAYEMS` plus useful predictor evidence when the
 query does not name exact series: `ICSA` initial claims, `U6RATE` broad labor
 underutilization, `DGS10` and `FEDFUNDS` for rate-spread context, `NROU` for

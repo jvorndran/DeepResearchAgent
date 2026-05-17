@@ -41,7 +41,6 @@ def test_quality_analyst_prompt_is_compact_resident_contract():
         "since 2000",
         "derived metric such as YoY growth after lookback loss",
         "backtest_summary",
-        "historical_simulations",
         "assumptions, indicator triggers, and confidence/uncertainty notes",
     ]
     for detail in migrated_details:
@@ -124,7 +123,6 @@ def test_load_report_for_review_keeps_missing_execution_summary_minimal(tmp_path
         "note": "No sibling execution_summary.json was found.",
     }
     assert "backtest_summary" not in summary
-    assert "historical_simulations" not in summary
     assert "similarity_scores" not in summary
 
 
@@ -205,13 +203,22 @@ def test_load_report_for_review_preserves_conditional_fidelity_fields(tmp_path):
         json.dumps(
             {
                 "status": "success",
-                "top_analog": "2008",
-                "similarity_scores": {"1995": 17.4, "2008": 23.7},
+                "analog_similarity_ranking": [
+                    {"label": "1995", "normalized_similarity": 17.4, "status": "included"},
+                    {"label": "2008", "normalized_similarity": 23.7, "status": "included"},
+                ],
                 "composite_recession_risk": {"current": 91.3},
-                "backtest_summary": {"metrics": {"precision": 0.058}},
-                "model_comparison": {"naive": {"rmse": 1.2}},
-                "historical_simulations": [{"label": "2008", "status": "ok"}],
-                "aapl_msft_metrics": {"AAPL_rev_b": 365.82},
+                "diagnostics": {"validation_metrics": {"precision": 0.058}},
+                "model_comparison_by_horizon": [{"horizon": 1, "naive_rmse": 1.2}],
+                "replay_rows": [{"label": "2008", "status": "ok"}],
+                "numeric_facts": [
+                    {
+                        "id": "sec_company_facts.AAPL.revenue_b",
+                        "display_value": "$365.82B",
+                        "raw_value": 365.82,
+                        "source_key": "sec_company_facts.latest_fundamentals.AAPL.revenue_b",
+                    }
+                ],
             }
         ),
         encoding="utf-8",
@@ -234,13 +241,13 @@ def test_load_report_for_review_preserves_conditional_fidelity_fields(tmp_path):
     payload = json.loads(load_report_for_review.invoke({"report_path": str(report_path)}))
     summary = payload["execution_summary"]
 
-    assert summary["top_analog"] == "2008"
-    assert "23.7" in summary["similarity_scores"]
+    assert "2008" in summary["analog_similarity_ranking"]
+    assert "23.7" in summary["analog_similarity_ranking"]
     assert "91.3" in summary["composite_recession_risk"]
-    assert "precision" in summary["backtest_summary"]
-    assert "naive" in summary["model_comparison"]
-    assert "2008" in summary["historical_simulations"]
-    assert "AAPL_rev_b" in summary["aapl_msft_metrics"]
+    assert "precision" in summary["diagnostics"]
+    assert "naive_rmse" in summary["model_comparison_by_horizon"]
+    assert "2008" in summary["replay_rows"]
+    assert "$365.82B" in summary["numeric_facts"]
 
 
 def test_quality_analyst_prompt_uses_embedded_execution_summary_packet():
@@ -385,15 +392,13 @@ def test_submit_quality_decision_rejects_stale_analog_prose_vs_execution_summary
     (tmp_path / "execution_summary.json").write_text(
         json.dumps(
             {
-                "top_analog": "2008",
-                "similarity_scores": {
-                    "1995": 17.4,
-                    "2001": 18.7,
-                    "2008": 23.7,
-                    "2020": 19.7,
-                },
+                "analog_similarity_ranking": [
+                    {"label": "2008", "normalized_similarity": 23.7, "status": "included"},
+                    {"label": "2020", "normalized_similarity": 19.7, "status": "included"},
+                    {"label": "2001", "normalized_similarity": 18.7, "status": "included"},
+                    {"label": "1995", "normalized_similarity": 17.4, "status": "included"},
+                ],
                 "composite_recession_risk": {"current": 91.3},
-                "backtest_summary": {"metrics": {"precision": 0.058}},
                 "chart_ids": ["cycle_analog"],
             }
         ),
@@ -429,8 +434,328 @@ def test_submit_quality_decision_rejects_stale_analog_prose_vs_execution_summary
     )
 
     assert payload["status"] == "rejected"
-    assert "top_analog is 2008" in payload["reason"]
+    assert "analog_similarity_ranking is led by 2008" in payload["reason"]
     assert any("current value from execution_summary.json (91.3)" in fix for fix in payload["required_fixes"])
+
+
+def test_submit_quality_decision_accepts_year_shorthand_for_ranked_analog(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "analog_similarity_ranking": [
+                    {
+                        "label": "2001 recession",
+                        "normalized_similarity": 23.7,
+                        "status": "included",
+                    },
+                    {
+                        "label": "2008 financial crisis",
+                        "normalized_similarity": 12.1,
+                        "status": "included",
+                    },
+                ],
+                "comparison_design": {
+                    "named_windows": [
+                        {"label": "2001 recession"},
+                        {"label": "2008 financial crisis"},
+                    ]
+                },
+                "chart_ids": ["cycle_analog"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Which analog is closest, 2001 or 2008? Include charts.",
+                "title": "Cycle Analog Report",
+                "executive_summary": "Closest analog is 2001.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "The closest historical analog is 2001, with a similarity score of 23.7."
+                ),
+                "charts": [{"id": "cycle_analog"}],
+                "data_sources": [],
+                "metadata": {"word_count": 18},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks aligned.",
+            }
+        )
+    )
+
+    assert payload["status"] == "approved"
+
+
+def test_submit_quality_decision_accepts_ranked_analog_not_phrase(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "analog_similarity_ranking": [
+                    {
+                        "label": "2001 recession",
+                        "normalized_similarity": 19.8,
+                        "status": "included",
+                    },
+                    {
+                        "label": "2008 financial crisis",
+                        "normalized_similarity": 12.1,
+                        "status": "included",
+                    },
+                ],
+                "comparison_design": {
+                    "named_windows": [
+                        {"label": "2001 recession"},
+                        {"label": "2008 financial crisis"},
+                    ]
+                },
+                "chart_ids": ["cycle_analog"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Compare the current cycle with prior downturns and include charts.",
+                "title": "Cycle Analog Report",
+                "executive_summary": "Closest analog is 2001, not 2008.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "The closest historical analog is 2001, not the 2008 financial crisis, "
+                    "with a similarity score of 19.8."
+                ),
+                "charts": [{"id": "cycle_analog"}],
+                "data_sources": [],
+                "metadata": {"word_count": 24},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Structured analog evidence is aligned.",
+            }
+        )
+    )
+
+    assert payload["status"] == "approved"
+
+
+def test_submit_quality_decision_accepts_requested_analog_evidence_rows(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "chart_ids": ["analog_similarity"],
+                "historical_window_coverage": [
+                    {"label": "1995 soft landing", "status": "covered", "requested": True},
+                    {"label": "2001 recession", "status": "covered", "requested": True},
+                    {
+                        "label": "2008 financial crisis",
+                        "status": "covered",
+                        "requested": True,
+                    },
+                    {"label": "2020 covid shock", "status": "covered", "requested": True},
+                ],
+                "analog_similarity_ranking": [
+                    {
+                        "label": "1995 soft landing",
+                        "raw_distance": 1.2,
+                        "normalized_similarity": 45.5,
+                        "status": "ok",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": (
+                    "Test whether the current cycle looks more like 1995, 2001, "
+                    "2008, 2020, or something different. Include charts."
+                ),
+                "title": "Cycle Analog Report",
+                "executive_summary": "Closest analog is 1995.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "The closest historical analog is 1995 with a similarity score of 45.5; "
+                    "2001, 2008, and 2020 are also covered requested windows.\n"
+                    "<!-- CHART:analog_similarity -->"
+                ),
+                "charts": [{"id": "analog_similarity"}],
+                "data_sources": [],
+                "metadata": {"word_count": 28},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Structured analog evidence is complete.",
+            }
+        )
+    )
+
+    assert payload["status"] == "approved"
+
+
+def test_submit_quality_decision_rejects_claimed_analog_window_without_evidence(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "analog_similarity_ranking": [
+                    {"label": "2001 recession", "status": "included"},
+                    {"label": "2008 financial crisis", "status": "included"},
+                    {"label": "2020 covid shock", "status": "included"},
+                ],
+                "comparison_design": {
+                    "named_windows": [
+                        {"label": "2001 recession"},
+                        {"label": "2008 financial crisis"},
+                        {"label": "2020 covid shock"},
+                    ]
+                },
+                "analog_profile_rows": [
+                    {"label": "2001 recession"},
+                    {"label": "2008 financial crisis"},
+                    {"label": "2020 covid shock"},
+                ],
+                "chart_ids": ["cycle_analog"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Compare the current cycle with prior downturns. Include charts.",
+                "title": "Cycle Analog Report",
+                "executive_summary": "The closest historical analog is 1995.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "The closest historical analog is 1995, with a softer landing "
+                    "profile than 2001."
+                ),
+                "charts": [{"id": "cycle_analog"}],
+                "data_sources": [],
+                "metadata": {"word_count": 24},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks aligned.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert "historical analog evidence" in payload["reason"]
+    assert "missing from execution_summary.json" in payload["reason"]
+    assert "1995" in payload["reason"]
+    assert payload["failure_category"] == "unsupported_historical_analog_claim"
+    assert payload["required_upstream"] == "technical-writer"
+    assert any("computed analog windows" in fix for fix in payload["required_fixes"])
+
+
+def test_submit_quality_decision_counts_ranking_rows_as_window_coverage(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "analog_similarity_ranking": [
+                    {
+                        "label": "2020 (COVID)",
+                        "normalized_similarity": 0.39,
+                        "status": "included",
+                    },
+                    {
+                        "label": "1995 (soft-landing)",
+                        "normalized_similarity": 0.25,
+                        "status": "included",
+                    },
+                    {
+                        "label": "2001 (dot-com bust)",
+                        "normalized_similarity": 0.22,
+                        "status": "included",
+                    },
+                    {
+                        "label": "2008 (GFC)",
+                        "normalized_similarity": 0.18,
+                        "status": "included",
+                    },
+                ],
+                "chart_ids": ["cycle_analog"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": (
+                    "Test whether the current cycle looks more like 1995, 2001, "
+                    "2008, 2020, or something different. Include charts."
+                ),
+                "title": "Cycle Analog Report",
+                "executive_summary": "Closest analog is 2020.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "The closest historical analog is 2020, with computed scores "
+                    "for 1995, 2001, 2008, and 2020."
+                ),
+                "charts": [{"id": "cycle_analog"}],
+                "data_sources": [],
+                "metadata": {"word_count": 22},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Structured analog coverage is present.",
+            }
+        )
+    )
+
+    assert payload["status"] == "approved"
 
 
 def test_quality_decision_normalizer_makes_tool_rejection_authoritative():
@@ -489,32 +814,7 @@ def test_load_report_for_review_reads_chart_ids_from_report_dict(tmp_path):
     assert payload["chart_ids"] == ["chart_unrate"]
 
 
-def test_load_report_for_review_flags_missing_scenario_table_for_scenario_query(tmp_path):
-    report_path = tmp_path / "report.json"
-    report_path.write_text(
-        json.dumps(
-            {
-                "query": "Build a recession risk dashboard with base, bull, and bear scenarios.",
-                "title": "Recession Risk Scenario Dashboard",
-                "executive_summary": "Scenario summary.",
-                "markdown": "## Executive Summary\nScenario summary.",
-                "charts": {},
-                "data_sources": [],
-                "metadata": {"word_count": 5},
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    payload = json.loads(load_report_for_review.invoke({"report_path": str(report_path)}))
-
-    assert payload["status"] == "success"
-    assert payload["scenario_requirement"]["required"] is True
-    assert payload["scenario_requirement"]["valid"] is False
-    assert payload["scenario_requirement"]["missing_required_rows"] == ["base", "bull", "bear"]
-
-
-def test_load_report_for_review_flags_missing_upside_downside_scenario_table(tmp_path):
+def test_load_report_for_review_omits_report_level_scenario_payload(tmp_path):
     report_path = tmp_path / "report.json"
     report_path.write_text(
         json.dumps(
@@ -533,92 +833,15 @@ def test_load_report_for_review_flags_missing_upside_downside_scenario_table(tmp
 
     payload = json.loads(load_report_for_review.invoke({"report_path": str(report_path)}))
 
-    assert payload["scenario_requirement"]["required"] is True
-    assert payload["scenario_requirement"]["valid"] is False
-    assert payload["scenario_requirement"]["missing_required_rows"] == [
-        "base",
-        "upside",
-        "downside",
-    ]
+    assert "scenario_score_rows" not in payload
+    assert "scenario_requirement" not in payload
 
 
-def test_load_report_for_review_accepts_canonical_bull_bear_for_upside_downside_query(tmp_path):
-    report_path = tmp_path / "report.json"
-    report_path.write_text(
-        json.dumps(
-            {
-                "query": "Show how the conclusion changes under base, upside, and downside cases.",
-                "title": "Recession Risk Scenario Dashboard",
-                "executive_summary": "Scenario summary.",
-                "markdown": "## Executive Summary\nScenario summary.",
-                "charts": {},
-                "scenario_table": [
-                    {"scenario": "base"},
-                    {"scenario": "bull"},
-                    {"scenario": "bear"},
-                ],
-                "data_sources": [],
-                "metadata": {"word_count": 5},
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    payload = json.loads(load_report_for_review.invoke({"report_path": str(report_path)}))
-
-    assert payload["scenario_requirement"]["required"] is True
-    assert payload["scenario_requirement"]["valid"] is True
-    assert payload["scenario_requirement"]["scenarios"] == ["base", "bull", "bear"]
-    assert payload["scenario_requirement"]["missing_required_rows"] == []
-
-
-def test_submit_quality_decision_rejects_missing_upside_downside_scenario_table(tmp_path):
-    report_path = tmp_path / "report.json"
-    (tmp_path / "execution_summary.json").write_text(
-        json.dumps(
-            {
-                "status": "success",
-                "chart_ids": ["scenario_chart"],
-                "backtest_summary": {"precision": 0.5},
-            }
-        ),
-        encoding="utf-8",
-    )
-    report_path.write_text(
-        json.dumps(
-            {
-                "query": "Show how recession risk changes under base, upside, and downside cases.",
-                "title": "Scenario Report",
-                "executive_summary": "Scenario summary.",
-                "markdown": "## Executive Summary\nScenario summary with backtest.",
-                "charts": [{"id": "scenario_chart"}],
-                "data_sources": [],
-                "metadata": {"word_count": 6},
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    payload = json.loads(
-        submit_quality_decision.invoke(
-            {
-                "decision": "approve",
-                "report_path": str(report_path),
-                "notes": "Looks acceptable.",
-            }
-        )
-    )
-
-    assert payload["status"] == "rejected"
-    assert "scenario_table" in payload["reason"]
-    assert "upside" in payload["reason"]
-
-
-def test_quality_analyst_prompt_rejects_missing_required_scenario_table():
+def test_quality_analyst_prompt_uses_generic_evidence_validation():
     prompt = _compact_text(QUALITY_ANALYST_SYSTEM_PROMPT)
 
-    assert "`scenario_requirement`" in prompt
-    assert "missing requested scenario or stress coverage" in prompt
+    assert "`scenario_requirement`" not in prompt
+    assert "missing requested evidence coverage" in prompt
     assert "assumptions, indicator triggers, and confidence/uncertainty notes" not in (
         prompt
     )
@@ -665,8 +888,8 @@ def test_submit_quality_decision_rejects_econometric_report_without_validation(t
     )
 
     assert payload["status"] == "rejected"
-    assert "out-of-sample validation" in payload["reason"]
-    assert any("historical_simulations" in fix for fix in payload["required_fixes"])
+    assert "generic helper validation evidence" in payload["reason"]
+    assert any("replay rows" in fix for fix in payload["required_fixes"])
 
 
 def test_submit_quality_decision_rejects_earlier_downturn_report_without_replay(tmp_path):
@@ -701,36 +924,48 @@ def test_submit_quality_decision_rejects_earlier_downturn_report_without_replay(
     )
 
     assert payload["status"] == "rejected"
-    assert "out-of-sample validation" in payload["reason"]
-    assert any("historical_simulations" in fix for fix in payload["required_fixes"])
+    assert "generic helper validation evidence" in payload["reason"]
+    assert any("replay rows" in fix for fix in payload["required_fixes"])
 
 
-def test_submit_quality_decision_rejects_unsupported_forward_outcome_claims(tmp_path):
+def test_submit_quality_decision_accepts_generic_helper_replay(tmp_path):
     report_path = tmp_path / "report.json"
     (tmp_path / "execution_summary.json").write_text(
         json.dumps(
             {
                 "status": "success",
                 "chart_ids": ["risk_chart"],
-                "backtest_summary": {"status": "ok", "metrics": {"accuracy": 0.7}},
-                "historical_simulations": [
-                    {"label": "2008", "status": "ok", "outcome_during_window": {"max": 1.0}}
-                ],
-                "what_happened_next": {
-                    "simulation_design": {
-                        "outcome_variable": "USREC",
-                        "signal_variables": ["yield_slope"],
-                        "lookahead_periods": 12,
-                    },
-                    "historical_simulations": [
-                        {
-                            "label": "global financial crisis",
-                            "status": "ok",
-                            "outcome_during_window": {"max": 1.0},
-                            "subsequent_outcome": {"periods": 12, "max": 0.0},
-                        }
-                    ],
+                "signal_validation_metrics": {
+                    "status": "ok",
+                    "event_count": 5,
+                    "events_met_threshold": 3,
+                    "events_below_threshold": 2,
+                    "false_positive_windows": 4,
+                    "true_positive_rate": 0.6,
+                    "precision": 0.428571,
+                    "threshold": 2,
                 },
+                "signal_event_rows": [
+                    {"event_label": "1990 recession", "met_threshold": True},
+                    {"event_label": "2001 recession", "met_threshold": False},
+                    {"event_label": "2008 recession", "met_threshold": True},
+                    {"event_label": "2020 recession", "met_threshold": False},
+                    {"event_label": "2022 slowdown", "met_threshold": True},
+                ],
+                "signal_false_positive_windows": [
+                    {"window_label": "1995"},
+                    {"window_label": "1998"},
+                    {"window_label": "2011"},
+                    {"window_label": "2018"},
+                ],
+                "replay_rows": [
+                    {"label": "2008", "status": "ok", "classification": "hit"}
+                ],
+                "scenario_score_rows": [
+                    {"scenario": "base", "score": 1},
+                    {"scenario": "bull", "score": 0},
+                    {"scenario": "bear", "score": 3},
+                ],
             }
         ),
         encoding="utf-8",
@@ -738,19 +973,84 @@ def test_submit_quality_decision_rejects_unsupported_forward_outcome_claims(tmp_
     report_path.write_text(
         json.dumps(
             {
-                "query": "Compare prior cycle windows and explain what happened next.",
-                "title": "Cycle Replay",
-                "executive_summary": "Replay with unsupported market outcomes.",
+                "query": "Explain what a simple signal stack would have said before earlier downturns and how often it cried wolf.",
+                "title": "Recession Risk Report",
+                "executive_summary": "Backtest found 3 hits and 4 false alarms.",
                 "markdown": (
-                    "## Executive Summary\nBacktest included.\n\n"
-                    "## What Happened Next\n"
-                    "| Analog | 12m Forward S&P 500 Return | 12m Forward UNRATE Delta |\n"
-                    "|---|---:|---:|\n"
-                    "| 2008 | -38.5% | +3.5 pp |\n"
+                    "## Executive Summary\n"
+                    "The signal-stack backtest found 3 hits, 2 misses, and 4 false alarms.\n"
+                    "<!-- CHART:risk_chart -->\n"
                 ),
                 "charts": [{"id": "risk_chart"}],
                 "data_sources": [],
-                "metadata": {"word_count": 30},
+                "metadata": {"word_count": 20},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Structured signal-stack replay is present.",
+            }
+        )
+    )
+
+    assert payload["status"] == "approved"
+
+
+def test_submit_quality_decision_rejects_signal_validation_metric_row_mismatch(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "chart_ids": ["risk_chart"],
+                "signal_validation_metrics": {
+                    "status": "ok",
+                    "event_count": 5,
+                    "events_met_threshold": 5,
+                    "events_below_threshold": 0,
+                    "false_positive_windows": 0,
+                    "true_positive_rate": 1.0,
+                    "precision": 1.0,
+                    "threshold": 2,
+                },
+                "signal_event_rows": [
+                    {"event_label": "1990 recession", "met_threshold": True},
+                    {"event_label": "2001 recession", "met_threshold": False},
+                    {"event_label": "2008 recession", "met_threshold": True},
+                    {"event_label": "2020 recession", "met_threshold": False},
+                    {"event_label": "2022 slowdown", "met_threshold": True},
+                ],
+                "signal_false_positive_windows": [
+                    {"window_label": "1995"},
+                    {"window_label": "1998"},
+                    {"window_label": "2011"},
+                    {"window_label": "2018"},
+                ],
+                "scenario_score_rows": [
+                    {"scenario": "base", "score": 1},
+                    {"scenario": "bull", "score": 0},
+                    {"scenario": "bear", "score": 3},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Explain what a simple signal stack would have said before earlier downturns and how often it cried wolf.",
+                "title": "Recession Risk Report",
+                "executive_summary": "Backtest found no false alarms.",
+                "markdown": "## Executive Summary\nBacktest found no false alarms.\n<!-- CHART:risk_chart -->\n",
+                "charts": [{"id": "risk_chart"}],
+                "data_sources": [],
+                "metadata": {"word_count": 15},
             }
         ),
         encoding="utf-8",
@@ -767,9 +1067,65 @@ def test_submit_quality_decision_rejects_unsupported_forward_outcome_claims(tmp_
     )
 
     assert payload["status"] == "rejected"
-    assert "forward what-happened-next outcomes" in payload["reason"]
-    assert "SP500" in payload["reason"]
-    assert "UNRATE" in payload["reason"]
+    assert payload["failure_category"] == "helper_diagnostic_mismatch"
+    assert payload["required_upstream"] == "quantitative-developer"
+    assert "signal_validation_metrics contradict reusable signal evidence rows" in payload["reason"]
+
+
+def test_submit_quality_decision_rejects_forecast_claim_without_reusable_evidence(
+    tmp_path,
+):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "chart_ids": ["labor_cycle_breadth"],
+                "latest_snapshot": {"unemployment_rate": 4.3},
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Include a short-term unemployment outlook and charts.",
+                "title": "Unemployment Outlook",
+                "executive_summary": "The OLS model projects unemployment at 4.5%.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "The OLS model projects the unemployment rate rising to 4.5% over six months, "
+                    "with a low band of 4.0% and high band of 5.0%.\n"
+                    "| Scenario | Assumptions | Indicator Triggers | Confidence | Uncertainty Notes |\n"
+                    "|---|---|---|---|---|\n"
+                    "| base | Cooling | Payrolls slow | medium | Revisions |\n"
+                    "| bull | Reacceleration | Inflation slows | low | Data lag |\n"
+                    "| bear | Recession | Payrolls contract | medium | Shock risk |\n"
+                    "<!-- CHART:labor_cycle_breadth -->"
+                ),
+                "charts": [{"id": "labor_cycle_breadth"}],
+                "data_sources": [],
+                "metadata": {"word_count": 90},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert "Report makes model, projection, or forecast claims" in payload["reason"]
+    assert any("generic helper evidence" in fix for fix in payload["required_fixes"])
+    assert payload["failure_category"] == "missing_helper_evidence"
+    assert payload["required_upstream"] == "quantitative-developer"
 
 
 def test_submit_quality_decision_allows_supported_forecast_and_current_production_language(tmp_path):
@@ -779,29 +1135,16 @@ def test_submit_quality_decision_allows_supported_forecast_and_current_productio
             {
                 "status": "success",
                 "chart_ids": ["risk_chart", "unemployment_forecast"],
-                "backtest_summary": {"status": "ok", "metrics": {"rmse": 0.4}},
-                "model_comparison": {"naive_last_value": {"rmse": 0.6}},
+                "diagnostics": {"walk_forward_backtest": {"status": "ok", "rmse": 0.4}},
+                "model_comparison_by_horizon": [
+                    {"horizon": 6, "last_value_rmse": 0.6}
+                ],
                 "forecast_table": [
                     {"horizon": 6, "forecast": 4.64, "lower_95": 2.58, "upper_95": 6.70}
                 ],
-                "historical_simulations": [
+                "replay_rows": [
                     {"label": "2008", "status": "ok", "outcome_during_window": {"max": 1.0}}
                 ],
-                "historical_replay": {
-                    "simulation_design": {
-                        "outcome_variable": "USREC",
-                        "signal_variables": ["composite_index"],
-                        "lookahead_periods": 12,
-                    },
-                    "historical_simulations": [
-                        {
-                            "label": "global financial crisis",
-                            "status": "ok",
-                            "outcome_during_window": {"max": 1.0},
-                            "subsequent_outcome": {"periods": 12, "max": 0.0},
-                        }
-                    ],
-                },
             }
         ),
         encoding="utf-8",
@@ -834,29 +1177,6 @@ def test_submit_quality_decision_allows_supported_forecast_and_current_productio
                     "<!-- CHART:risk_chart -->\n<!-- CHART:unemployment_forecast -->\n"
                 ),
                 "charts": [{"id": "risk_chart"}, {"id": "unemployment_forecast"}],
-                "scenario_table": [
-                    {
-                        "scenario": "base",
-                        "assumptions": ["Soft landing"],
-                        "indicator_triggers": ["Claims stable"],
-                        "confidence": "medium",
-                        "uncertainty_notes": "Data revisions",
-                    },
-                    {
-                        "scenario": "bull",
-                        "assumptions": ["Reacceleration"],
-                        "indicator_triggers": ["Productivity improves"],
-                        "confidence": "low",
-                        "uncertainty_notes": "Inflation risk",
-                    },
-                    {
-                        "scenario": "bear",
-                        "assumptions": ["Recession"],
-                        "indicator_triggers": ["Claims rise"],
-                        "confidence": "medium",
-                        "uncertainty_notes": "Shock risk",
-                    },
-                ],
                 "data_sources": [],
                 "metadata": {"word_count": 120},
             }
@@ -877,20 +1197,152 @@ def test_submit_quality_decision_allows_supported_forecast_and_current_productio
     assert payload["status"] == "approved"
 
 
-def test_submit_quality_decision_rejects_stale_current_signal_stack(tmp_path):
+def test_submit_quality_decision_accepts_reusable_forecast_rows_replay(tmp_path):
+    report_path = tmp_path / "report.json"
+    forecast_rows = {
+        "status": "covered",
+        "forecast_table": [
+            {"horizon": 6, "date": "2026-07-01", "forecast": 4.64, "lower": 4.1, "upper": 5.2}
+        ],
+        "model_comparison_by_horizon": [
+            {
+                "horizon": 6,
+                "direct_ols_mae": 0.712,
+                "last_value_mae": 0.635,
+                "train_mean_mae": 2.373,
+            }
+        ],
+        "historical_failure_episodes": [
+            {
+                "target_date": "2020-10-01",
+                "prediction_date": "2020-04-01",
+                "classification": "large_overprediction",
+                "actual": 6.9,
+                "forecast": 22.758,
+                "absolute_error": 15.858,
+            }
+        ],
+    }
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "chart_ids": ["forecast_chart"],
+                **forecast_rows,
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": (
+                    "Give a skeptical unemployment forecast review, where it failed "
+                    "historically, and whether it beats baselines."
+                ),
+                "title": "Forecast Review",
+                "executive_summary": "The forecast reaches 4.64% in 2026-07.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "The unemployment forecast reaches 4.64% in 2026-07, with a 4.1% "
+                    "to 5.2% interval.\n\n"
+                    "| Horizon | OLS MAE | Last-Value MAE | Train-Mean MAE |\n"
+                    "|---|---|---|---|\n"
+                    "| H6 | 0.712 | 0.635 | 2.373 |\n\n"
+                    "## Historical Failures\n"
+                    "The typed replay includes 2020-10 as a large overprediction episode.\n"
+                    "<!-- CHART:forecast_chart -->\n"
+                ),
+                "charts": [{"id": "forecast_chart"}],
+                "data_sources": [],
+                "metadata": {"word_count": 80},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Reusable forecast evidence is present.",
+            }
+        )
+    )
+
+    assert payload["status"] == "approved"
+
+
+def test_submit_quality_decision_accepts_forecast_rows_without_exact_value_gate(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "chart_ids": ["forecast_chart"],
+                "forecast_table": [
+                    {"horizon": 6, "date": "2026-07-01", "forecast": 4.64, "lower": 4.1, "upper": 5.2}
+                ],
+                "model_comparison_by_horizon": [
+                    {
+                        "horizon": 6,
+                        "direct_ols_mae": 0.712,
+                        "last_value_mae": 0.635,
+                        "train_mean_mae": 2.373,
+                    }
+                ],
+                "historical_failure_episodes": [{"target_date": "2020-10-01"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Give a skeptical unemployment forecast review.",
+                "title": "Forecast Review",
+                "executive_summary": "The forecast reaches 4.0% in mid-2025.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "The unemployment forecast reaches 4.0% in mid-2025, with a 3.8% "
+                    "to 4.4% interval.\n"
+                    "<!-- CHART:forecast_chart -->\n"
+                ),
+                "charts": [{"id": "forecast_chart"}],
+                "data_sources": [],
+                "metadata": {"word_count": 40},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "approved"
+
+
+def test_submit_quality_decision_rejects_stale_current_helper_evidence(tmp_path):
     report_path = tmp_path / "report.json"
     (tmp_path / "execution_summary.json").write_text(
         json.dumps(
             {
                 "status": "success",
                 "chart_ids": ["risk_chart"],
-                "statistical_summary": {
-                    "current_signal_stack": {
-                        "as_of_date": "2024-12-01",
-                        "composite_score": 0,
-                    }
+                "composite_current_row": {
+                    "date": "2024-12-01",
+                    "composite_percentile_0_100": 42.0,
+                    "classification": "moderate",
                 },
-                "backtest_summary": {"precision": 1.0},
+                "composite_validation_metrics": {"status": "ok", "event_count": 4},
             }
         ),
         encoding="utf-8",
@@ -899,10 +1351,10 @@ def test_submit_quality_decision_rejects_stale_current_signal_stack(tmp_path):
         json.dumps(
             {
                 "created_at": "2026-05-02T17:00:00+00:00",
-                "query": "Which current signals confirm or contradict recession risk?",
-                "title": "Current Recession Risk Report",
-                "executive_summary": "Current signal summary.",
-                "markdown": "## Executive Summary\nCurrent signal summary with backtest.",
+                "query": "Assess macro signals with charts.",
+                "title": "Macro Signal Report",
+                "executive_summary": "Signal summary.",
+                "markdown": "## Executive Summary\nSignal summary with backtest.",
                 "charts": [{"id": "risk_chart"}],
                 "data_sources": [],
                 "metadata": {"word_count": 7},
@@ -922,7 +1374,7 @@ def test_submit_quality_decision_rejects_stale_current_signal_stack(tmp_path):
     )
 
     assert payload["status"] == "rejected"
-    assert "stale quantitative" in payload["reason"]
+    assert "stale current helper evidence" in payload["reason"]
     assert "2024-12-01" in payload["reason"]
 
 
@@ -977,19 +1429,243 @@ def test_submit_quality_decision_rejects_state_comparison_numeric_drift(tmp_path
     assert "California" in payload["reason"]
 
 
-def test_submit_quality_decision_rejects_tech_earnings_numeric_drift(tmp_path):
+def test_submit_quality_decision_accepts_state_income_display_values_with_tolerance(tmp_path):
+    report_path = tmp_path / "report.json"
+    numeric_facts = [
+        {
+            "id": "state_comparison.CA.per_capita_personal_income",
+            "label": "California per-capita personal income",
+            "subject": "California",
+            "metric": "per_capita_personal_income",
+            "raw_value": 91116,
+            "display_value": "$91,120",
+            "unit": "usd_per_person",
+            "precision": -1,
+            "tolerance": 5,
+            "source_key": "state_comparison[CA].income",
+            "as_of_date": "2025-01",
+        },
+        {
+            "id": "state_comparison.NY.per_capita_personal_income",
+            "label": "New York per-capita personal income",
+            "subject": "New York",
+            "metric": "per_capita_personal_income",
+            "raw_value": 88847,
+            "display_value": "$88,850",
+            "unit": "usd_per_person",
+            "precision": -1,
+            "tolerance": 5,
+            "source_key": "state_comparison[NY].income",
+            "as_of_date": "2025-01",
+        },
+        {
+            "id": "state_comparison.TX.per_capita_personal_income",
+            "label": "Texas per-capita personal income",
+            "subject": "Texas",
+            "metric": "per_capita_personal_income",
+            "raw_value": 72364,
+            "display_value": "$72,360",
+            "unit": "usd_per_person",
+            "precision": -1,
+            "tolerance": 5,
+            "source_key": "state_comparison[TX].income",
+            "as_of_date": "2025-01",
+        },
+    ]
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "chart_ids": ["state_income"],
+                "state_comparison": [
+                    {"state": "California", "state_code": "CA", "income": 91116},
+                    {"state": "New York", "state_code": "NY", "income": 88847},
+                    {"state": "Texas", "state_code": "TX", "income": 72364},
+                ],
+                "numeric_facts": numeric_facts,
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Compare consumer stress across large states with charts.",
+                "title": "State Consumer Stress",
+                "executive_summary": "Large states diverge.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "California per-capita personal income is $91,120, "
+                    "New York is $88,850, and Texas is $72,360.\n"
+                    "<!-- CHART:state_income -->"
+                ),
+                "charts": [{"id": "state_income"}],
+                "data_sources": [],
+                "metadata": {"word_count": 32},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "approved"
+
+
+def test_submit_quality_decision_rejects_uncovered_historical_analog_claim(tmp_path):
     report_path = tmp_path / "report.json"
     (tmp_path / "execution_summary.json").write_text(
         json.dumps(
             {
                 "status": "success",
-                "chart_ids": ["tech_earnings"],
-                "tech_earnings": {
-                    "AAPL_rev_b": 365.82,
-                    "AAPL_nm_pct": 25.9,
-                    "MSFT_rev_b": 168.09,
-                    "MSFT_nm_pct": 36.5,
-                },
+                "chart_ids": ["historical_analog_distance"],
+                "analog_similarity_ranking": [
+                    {"label": "2020 covid shock", "status": "included"}
+                ],
+                "historical_window_coverage": [
+                    {
+                        "label": "2001 recession",
+                        "status": "not_available",
+                        "observed_months": 0,
+                        "expected_months": 30,
+                    },
+                    {
+                        "label": "2020 covid shock",
+                        "status": "covered",
+                        "observed_months": 29,
+                        "expected_months": 29,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Build a historical analog comparison with charts.",
+                "title": "Macro Analogs",
+                "executive_summary": "Analog evidence.",
+                "markdown": (
+                    "## Historical Analog\n"
+                    "The 2001 recession is the closest historical analog by distance score.\n"
+                    "<!-- CHART:historical_analog_distance -->"
+                ),
+                "charts": [{"id": "historical_analog_distance"}],
+                "data_sources": [],
+                "metadata": {"word_count": 20},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert "without covered source history" in payload["reason"]
+    assert "2001 recession" in payload["reason"]
+
+
+def test_submit_quality_decision_allows_generic_scenario_score_rows(tmp_path):
+    report_path = tmp_path / "report.json"
+    scenario_score_rows = [
+        {"scenario": "base", "score": 0.0, "note": "Soft landing continues"},
+        {"scenario": "bull", "score": 1.0, "note": "Inflation cools"},
+        {"scenario": "bear", "score": -1.0, "note": "Consumer stress broadens"},
+    ]
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "chart_ids": ["scenario_flow"],
+                "scenario_score_rows": scenario_score_rows,
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Include scenario triggers and charts.",
+                "title": "Scenarios",
+                "executive_summary": "Scenario triggers.",
+                "markdown": (
+                    "## Scenario Table\n"
+                    "| Scenario | Assumptions | Indicator Triggers | Confidence | Uncertainty Notes |\n"
+                    "|---|---|---|---|---|\n"
+                    "| base | Soft landing continues | Unemployment 4.3-4.5%; CPI 2.3-2.7% | medium | Data revisions |\n"
+                    "| bull | Inflation cools | Consumer stress below 60 | low | Policy lag |\n"
+                    "| bear | Consumer stress broadens | Unemployment above 5.0% | medium | Timing risk |\n"
+                    "<!-- CHART:scenario_flow -->"
+                ),
+                "charts": [{"id": "scenario_flow"}],
+                "data_sources": [],
+                "metadata": {"word_count": 58},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "approved"
+    assert payload["ready_for_upload"] is True
+    assert "failure_category" not in payload
+
+
+def test_submit_quality_decision_rejects_generic_numeric_fact_drift(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "chart_ids": ["company_metrics"],
+                "numeric_facts": [
+                    {
+                        "id": "sec_company_facts.AAPL.revenue_b",
+                        "label": "AAPL latest revenue",
+                        "display_value": "$365.82B",
+                        "raw_value": 365.82,
+                        "tolerance": 0.005,
+                        "source_key": "sec_company_facts.latest_fundamentals.AAPL.revenue_b",
+                        "subject": "AAPL",
+                        "metric": "revenue_b",
+                    },
+                    {
+                        "id": "sec_company_facts.MSFT.revenue_b",
+                        "label": "MSFT latest revenue",
+                        "display_value": "$168.09B",
+                        "raw_value": 168.09,
+                        "tolerance": 0.005,
+                        "source_key": "sec_company_facts.latest_fundamentals.MSFT.revenue_b",
+                        "subject": "MSFT",
+                        "metric": "revenue_b",
+                    },
+                ],
             }
         ),
         encoding="utf-8",
@@ -1002,11 +1678,10 @@ def test_submit_quality_decision_rejects_tech_earnings_numeric_drift(tmp_path):
                 "executive_summary": "Apple is more consumer exposed.",
                 "markdown": (
                     "## Executive Summary\n"
-                    "Apple revenue is about $391B and Microsoft revenue is about $227B. "
-                    "AAPL net margin is 25.9% and MSFT net margin is 36.5%.\n"
-                    "<!-- CHART:tech_earnings -->"
+                    "AAPL revenue is about $391B and MSFT revenue is about $227B. "
+                    "<!-- CHART:company_metrics -->"
                 ),
-                "charts": [{"id": "tech_earnings"}],
+                "charts": [{"id": "company_metrics"}],
                 "data_sources": [],
                 "metadata": {"word_count": 25},
             }
@@ -1025,9 +1700,188 @@ def test_submit_quality_decision_rejects_tech_earnings_numeric_drift(tmp_path):
     )
 
     assert payload["status"] == "rejected"
-    assert "tech_earnings" in payload["reason"]
-    assert "AAPL revenue" in payload["reason"]
-    assert "MSFT revenue" in payload["reason"]
+    assert payload["failure_category"] == "numeric_fact_mismatch"
+    assert "AAPL revenue_b" in payload["reason"]
+    assert "MSFT revenue_b" in payload["reason"]
+
+
+def test_submit_quality_decision_rejects_missing_helper_evidence_after_sec_fetch(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "chart_ids": [],
+                "quant_input_manifest": {
+                    "data_files": {
+                        "NVDA_SEC": str(tmp_path / "NVDA_sec_edgar_company_facts.csv"),
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "job_id": "qa-missing-company-fundamentals",
+                "created_at": "2026-05-14T12:00:00Z",
+                "query": (
+                    "Prepare a stock-specific research report on NVIDIA revenue, "
+                    "margin, cash-flow, balance-sheet trends, and scenarios."
+                ),
+                "title": "NVIDIA Fundamentals",
+                "executive_summary": "NVIDIA growth is discussed.",
+                "markdown": "## Executive Summary\nNVDA revenue and margin trends are discussed.",
+                "charts": {},
+                "data_sources": [],
+                "metadata": {"analysis_type": "earnings", "chart_count": 0, "word_count": 8},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "missing_helper_evidence"
+    assert payload["required_upstream"] == "quantitative-developer"
+    assert "numeric_facts" in payload["reason"]
+    assert "source_coverage" in payload["reason"]
+
+
+def test_submit_quality_decision_rejects_company_fundamental_numeric_drift(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "chart_ids": [],
+                "latest_fundamentals": {
+                    "NVDA": {
+                        "revenue_b": 215.938,
+                        "cash_and_securities_b": 10.605,
+                        "diluted_eps": 4.9,
+                    }
+                },
+                "numeric_facts": [
+                    {
+                        "id": "sec_company_facts.NVDA.revenue_b",
+                        "display_value": "$215.938B",
+                        "raw_value": 215.938,
+                        "tolerance": 0.005,
+                        "source_key": "sec_company_facts.latest_fundamentals.NVDA.revenue_b",
+                        "subject": "NVDA",
+                        "metric": "revenue_b",
+                    },
+                    {
+                        "id": "sec_company_facts.NVDA.cash_and_securities_b",
+                        "display_value": "$10.605B",
+                        "raw_value": 10.605,
+                        "tolerance": 0.005,
+                        "source_key": "sec_company_facts.latest_fundamentals.NVDA.cash_and_securities_b",
+                        "subject": "NVDA",
+                        "metric": "cash_and_securities_b",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "job_id": "qa-company-fundamental-drift",
+                "created_at": "2026-05-14T12:00:00Z",
+                "query": "Review NVIDIA revenue and balance sheet.",
+                "title": "NVIDIA Fundamentals",
+                "executive_summary": "NVIDIA revenue and balance sheet are discussed.",
+                "markdown": "## Executive Summary\nNVDA revenue was about $130B and cash exceeded $40B.",
+                "charts": {},
+                "data_sources": [],
+                "metadata": {"analysis_type": "earnings", "chart_count": 0, "word_count": 10},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "numeric_fact_mismatch"
+    assert payload["required_upstream"] == "technical-writer"
+    assert "NVDA revenue_b" in payload["reason"]
+    assert "NVDA cash_and_securities_b" in payload["reason"]
+
+
+def test_submit_quality_decision_rejects_static_chart_semantics_blockers(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps({"status": "success", "chart_ids": ["duplicate_axis"]}),
+        encoding="utf-8",
+    )
+    chart = {
+        "id": "duplicate_axis",
+        "type": "line",
+        "title": "Duplicate Axis",
+        "description": "Duplicate x-axis rows should block QA approval.",
+        "xAxisKey": "date",
+        "series": [{"dataKey": "value", "label": "Value", "color": "#2563eb"}],
+        "data": [
+            {"date": "2026-01", "value": 1.0},
+            {"date": "2026-01", "value": 2.0},
+        ],
+    }
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "job_id": "qa-chart-semantics",
+                "created_at": "2026-05-14T12:00:00Z",
+                "query": "Include charts in the macro report.",
+                "title": "Chart Semantics",
+                "executive_summary": "Chart data is invalid.",
+                "markdown": "## Executive Summary\nChart follows.\n<!-- CHART:duplicate_axis -->",
+                "charts": {"duplicate_axis": chart},
+                "data_sources": [],
+                "metadata": {"analysis_type": "macro", "chart_count": 1, "word_count": 6},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "chart_semantics_mismatch"
+    assert payload["required_upstream"] == "quantitative-developer"
+    assert "duplicate x-axis rows" in payload["reason"]
 
 
 def test_submit_quality_decision_rejects_recession_probability_without_composite_diagnostics(tmp_path):
@@ -1037,16 +1891,16 @@ def test_submit_quality_decision_rejects_recession_probability_without_composite
             {
                 "status": "success",
                 "chart_ids": ["recession_risk"],
-                "composite_predictive_indicator": {
-                    "latest_signal": "low",
-                    "latest_percentile_0_100": 0.0,
-                    "backtest_summary": {
-                        "status": "ok",
-                        "metrics": {
-                            "precision": 0.25,
-                            "recall": 0.0484,
-                            "false_negative": 59,
-                        },
+                "composite_current_row": {
+                    "classification": "low",
+                    "composite_percentile_0_100": 0.0,
+                },
+                "composite_validation_metrics": {
+                    "status": "ok",
+                    "metrics": {
+                        "precision": 0.25,
+                        "recall": 0.0484,
+                        "false_negative": 59,
                     },
                 },
             }
@@ -1082,7 +1936,7 @@ def test_submit_quality_decision_rejects_recession_probability_without_composite
     )
 
     assert payload["status"] == "rejected"
-    assert "backtest diagnostics" in payload["reason"]
+    assert "validation diagnostics" in payload["reason"]
     assert any("precision" in fix and "recall" in fix for fix in payload["required_fixes"])
 
 
@@ -1092,7 +1946,6 @@ def test_quality_analyst_prompt_requires_econometric_validation():
     assert "missing validation/replay" in prompt
     assert "predictive or historical-comparison work" in prompt
     assert "backtest_summary" not in prompt
-    assert "historical_simulations" not in prompt
 
 
 def test_load_report_for_review_rejects_non_report_artifacts(tmp_path):

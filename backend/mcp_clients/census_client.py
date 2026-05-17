@@ -223,10 +223,10 @@ class CensusPublicDataClient:
             data = response.json()
         except requests.Timeout as exc:
             raise CensusDataError("Census request timed out.") from exc
-        except requests.RequestException as exc:
-            raise CensusDataError(f"Census request failed: {exc}") from exc
         except ValueError as exc:
             raise CensusDataError("Census response was not valid JSON.") from exc
+        except requests.RequestException as exc:
+            raise CensusDataError(f"Census request failed: {exc}") from exc
         return data
 
     def _parse_table(self, payload: Any) -> list[dict[str, str | int | None]]:

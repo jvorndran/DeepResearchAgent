@@ -1,18 +1,28 @@
 """OLS forecasting, event backtests, and historical replay helpers."""
 import sys
+from typing import Any, Iterable
 
-from .shared import *
-from .shared import (
+import numpy as np
+import pandas as pd
+
+from .._utils import (
+    METHOD_ANALOG_WINDOW_COMPARISON,
+    METHOD_DIRECT_OLS_FORECAST,
+    METHOD_EVENT_SIGNAL_BACKTEST,
+    METHOD_HISTORICAL_SCENARIO_REPLAY,
+    METHOD_OLS_REGRESSION,
+    METHOD_SIGNAL_FRAMEWORK_BACKTEST,
+    METHOD_STATIONARITY_CHECK,
+    METHOD_WALK_FORWARD_OLS_BACKTEST,
     _adfuller,
     _as_ordered_frame,
     _clean_regression_frame,
-    _direction_multiplier,
     _finite_float,
     _iso_date,
-    _require_columns,
     _scipy_stats,
     _statsmodels_api,
 )
+
 
 def _model_spec(
     target_col: str, feature_cols: list[str], *, forecast_horizon: int | None = None
@@ -324,21 +334,43 @@ def event_signal_backtest(
         prior_signals = [date for date in signal_dates if date <= event_date]
         if prior_signals:
             lead_times.append(int(round((event_date - max(prior_signals)).days / 30.4375)))
-    false_positive_analysis = {
-        "false_positive_count": metrics["false_positive"],
-        "miss_count": metrics["false_negative"],
+    lead_time_rows: list[dict[str, Any]] = []
+    for event_date in first_target_events:
+        prior_signals = [date for date in signal_dates if date <= event_date]
+        prior_signal = max(prior_signals) if prior_signals else None
+        lead_time_rows.append(
+            {
+                "event_date": event_date.date().isoformat(),
+                "prior_signal_date": prior_signal.date().isoformat() if prior_signal else None,
+                "lead_periods": (
+                    int(round((event_date - prior_signal).days / 30.4375))
+                    if prior_signal is not None
+                    else None
+                ),
+                "status": "covered" if prior_signal is not None else "missed",
+            }
+        )
+    false_alarm_rows: list[dict[str, Any]] = []
+    false_alarm_frame = frame.loc[predicted & ~actual]
+    for _, row in false_alarm_frame.iterrows():
+        signal_date = pd.Timestamp(row[date_col])
+        target_date = signal_date + pd.DateOffset(months=prediction_horizon)
+        false_alarm_rows.append(
+            {
+                "signal_date": signal_date.date().isoformat(),
+                "target_date": target_date.date().isoformat(),
+                "signal_value": _finite_float(row[signal_col]),
+                "threshold": _finite_float(threshold),
+                "direction": direction,
+            }
+        )
+    event_backtest_metrics = {
+        **metrics,
         "average_lead_periods": _finite_float(np.mean(lead_times) if lead_times else None),
-        "lead_periods_before_target_events": lead_times,
     }
-    backtest_summary = {
-        "status": "ok",
-        "test_window": {
-            "start": _iso_date(frame[date_col].iloc[0]),
-            "end": _iso_date(frame[date_col].iloc[-1]),
-        },
-        "test_observations": int(len(frame)),
-        "metrics": metrics,
-        "false_positive_analysis": false_positive_analysis,
+    test_window = {
+        "start": _iso_date(frame[date_col].iloc[0]),
+        "end": _iso_date(frame[date_col].iloc[-1]),
     }
     return {
         "status": "ok",
@@ -347,11 +379,18 @@ def event_signal_backtest(
         "threshold": threshold,
         "direction": direction,
         "prediction_horizon": prediction_horizon,
-        "test_window": backtest_summary["test_window"],
+        "test_window": test_window,
         "test_observations": int(len(frame)),
-        "metrics": metrics,
-        "false_positive_analysis": false_positive_analysis,
-        "backtest_summary": backtest_summary,
+        "event_backtest_metrics": event_backtest_metrics,
+        "lead_time_rows": lead_time_rows,
+        "false_alarm_rows": false_alarm_rows,
+        "backtest_design": {
+            "signal_col": signal_col,
+            "target_col": target_col,
+            "threshold": _finite_float(threshold),
+            "direction": direction,
+            "prediction_horizon": int(prediction_horizon),
+        },
         "methods_used": [METHOD_EVENT_SIGNAL_BACKTEST],
         "limitations": [
             "Signal backtests depend on the chosen threshold and target-event definition.",
@@ -375,9 +414,8 @@ def signal_framework_backtest(
 ) -> dict[str, Any]:
     """Backtest a thresholded multi-component macro signal against recession starts.
 
-    The caller owns the economic component definitions. This helper owns the
-    no-lookahead bookkeeping: pre-recession scores, false-alarm episodes, and a
-    canonical ``historical_simulations.signal_framework_backtest`` payload.
+    The caller owns the economic component definitions. This helper returns
+    reusable no-lookahead rows and metrics for analysis.py to compose.
     """
 
     components = list(component_cols)
@@ -406,11 +444,10 @@ def signal_framework_backtest(
         return {
             "status": "insufficient_observations",
             "test_observations": int(len(frame)),
-            "historical_simulations": {
-                "signal_framework_backtest": {
-                    "status": "insufficient_observations",
-                    "total_observations": int(len(frame)),
-                }
+            "signal_validation_metrics": {
+                "method": METHOD_SIGNAL_FRAMEWORK_BACKTEST,
+                "status": "insufficient_observations",
+                "observations": int(len(frame)),
             },
             "methods_used": [METHOD_SIGNAL_FRAMEWORK_BACKTEST],
             "limitations": ["Signal-framework backtest skipped because too few rows were available."],
@@ -450,6 +487,7 @@ def signal_framework_backtest(
         if score is not None and score >= threshold:
             correct_calls += 1
         pre_recession_scores[key] = {
+            "event_date": start.date().isoformat(),
             "score": score,
             "components_triggered": triggered(peak),
             "max_score_date": _iso_date(peak[date_col]),
@@ -473,7 +511,7 @@ def signal_framework_backtest(
         peak = block.loc[block["_score"].idxmax()]
         false_alarms.append(
             {
-                "period": (
+                "window_label": (
                     f"{start_date.year}"
                     if start_date.year == end_date.year
                     else f"{start_date.year}-{end_date.year}"
@@ -482,53 +520,92 @@ def signal_framework_backtest(
                 "end": end_date.date().isoformat(),
                 "max_score": _finite_float(peak["_score"]),
                 "components_at_peak": triggered(peak),
+                "threshold": _finite_float(threshold),
+                "lookahead_periods": int(false_alarm_lookahead_periods),
             }
         )
 
     latest = frame.iloc[-1]
     latest_score = _finite_float(latest["_score"])
-    if latest_score is None:
-        interpretation = "unknown"
-    elif latest_score >= threshold:
-        interpretation = "red"
-    elif latest_score >= max(threshold - 1, 1):
-        interpretation = "yellow"
-    else:
-        interpretation = "green"
+    threshold_value = _finite_float(threshold)
+    signal_event_rows: list[dict[str, Any]] = []
+    for label, row in pre_recession_scores.items():
+        if not isinstance(row, dict):
+            continue
+        score = _finite_float(row.get("score"))
+        met_threshold = (
+            score is not None and threshold_value is not None and score >= threshold_value
+        )
+        signal_event_rows.append(
+            {
+                "event_label": str(label),
+                "event_date": row.get("event_date"),
+                "score": score,
+                "met_threshold": met_threshold,
+                "max_score_date": row.get("max_score_date"),
+                "components_triggered": row.get("components_triggered", []),
+                "status": row.get("status", "ok"),
+            }
+        )
 
-    historical = {
-        "signal_framework_backtest": {
-            "status": "ok",
-            "description": (
-                "Composite signal score backtested against recession starts with "
-                "no-lookahead pre-recession windows and forward false-alarm checks."
-            ),
-            "components": [str(labels.get(component, component)) for component in components],
-            "threshold": _finite_float(threshold),
-            "lookback_periods": int(lookback_periods),
-            "false_alarm_lookahead_periods": int(false_alarm_lookahead_periods),
-            "total_observations": int(len(frame)),
-            "recession_count": int(len(starts)),
-            "recession_calls_correct": int(correct_calls),
-            "false_alarms": int(len(false_alarms)),
-            "true_positive_rate": _finite_float(correct_calls / len(starts) if starts else None),
-            "pre_recession_scores": pre_recession_scores,
-            "false_alarm_episodes": false_alarms,
-            "current_signal": {
-                "score": latest_score,
-                "interpretation": interpretation,
-                "components_triggered": triggered(latest),
-                "date": _iso_date(latest[date_col]),
-            },
-        }
+    precision = _finite_float(
+        correct_calls / (correct_calls + len(false_alarms))
+        if correct_calls + len(false_alarms) > 0
+        else None
+    )
+    signal_validation_metrics = {
+        "method": METHOD_SIGNAL_FRAMEWORK_BACKTEST,
+        "status": "ok",
+        "components": [str(labels.get(component, component)) for component in components],
+        "threshold": threshold_value,
+        "lookback_periods": int(lookback_periods),
+        "false_alarm_lookahead_periods": int(false_alarm_lookahead_periods),
+        "observations": int(len(frame)),
+        "event_count": int(len(starts)),
+        "events_met_threshold": int(correct_calls),
+        "events_below_threshold": max(int(len(starts)) - int(correct_calls), 0),
+        "false_positive_windows": int(len(false_alarms)),
+        "true_positive_rate": _finite_float(correct_calls / len(starts) if starts else None),
+        "precision": precision,
     }
+    latest_signal_observation = {
+        "date": _iso_date(latest[date_col]),
+        "score": latest_score,
+        "threshold": threshold_value,
+        "above_threshold": (
+            latest_score is not None
+            and threshold_value is not None
+            and latest_score >= threshold_value
+        ),
+        "threshold_distance": (
+            _finite_float(latest_score - threshold_value)
+            if latest_score is not None and threshold_value is not None
+            else None
+        ),
+        "components_triggered": triggered(latest),
+    }
+    signal_score_rows = [
+        {
+            "date": _iso_date(row[date_col]),
+            "score": _finite_float(row["_score"]),
+            "threshold": threshold_value,
+            "above_threshold": bool(row["_score"] >= threshold),
+            "components_triggered": triggered(row),
+            "event_observed": bool(row["_recession"]),
+        }
+        for _, row in frame.iterrows()
+    ]
     return {
         "status": "ok",
-        "historical_simulations": historical,
-        "simulation_design": {
-            "recession_col": recession_col,
+        "signal_score_rows": signal_score_rows,
+        "signal_event_rows": signal_event_rows,
+        "signal_false_positive_windows": false_alarms,
+        "signal_validation_metrics": signal_validation_metrics,
+        "latest_signal_observation": latest_signal_observation,
+        "signal_design": {
+            "event_col": recession_col,
             "component_cols": components,
-            "threshold": _finite_float(threshold),
+            "threshold": threshold_value,
             "lookback_periods": int(lookback_periods),
             "false_alarm_lookahead_periods": int(false_alarm_lookahead_periods),
         },
@@ -545,47 +622,24 @@ def historical_scenario_replay(
     data: pd.DataFrame,
     *,
     date_col: str = "date",
-    signal_cols: Iterable[str] | None = None,
-    outcome_col: str | None = None,
-    windows: Iterable[dict[str, Any]] | None = None,
+    signal_cols: Iterable[str],
+    outcome_col: str,
+    windows: Iterable[dict[str, Any]],
     lookahead_periods: int = 6,
-    target_col: str | None = None,
-    target: str | None = None,
-    scenario_col: str | None = None,
-    pre_periods: int = 6,
-    post_periods: int | None = None,
-    analog_count: int | None = None,
 ) -> dict[str, Any]:
-    """Summarize how a signal stack behaved around named historical windows."""
+    """Return reusable replay rows for caller-selected historical windows."""
 
-    legacy_target = target_col or target
-    if signal_cols is None and legacy_target and scenario_col:
-        return _historical_event_replay(
-            data,
-            date_col=date_col,
-            target_col=legacy_target,
-            scenario_col=scenario_col,
-            pre_periods=pre_periods,
-            post_periods=post_periods or lookahead_periods,
-            analog_count=analog_count,
-        )
-    if outcome_col is None and legacy_target:
-        outcome_col = legacy_target
-    if outcome_col is None:
-        raise ValueError("outcome_col is required unless target_col/target and scenario_col are provided")
     signals = list(signal_cols or [])
     if not signals:
         raise ValueError("signal_cols must include at least one signal")
+    if not outcome_col:
+        raise ValueError("outcome_col is required")
+    replay_windows = list(windows or [])
+    if not replay_windows:
+        raise ValueError("windows must include at least one explicit historical window")
     if lookahead_periods < 1:
         raise ValueError("lookahead_periods must be at least 1")
     frame = _as_ordered_frame(data, date_col, [*signals, outcome_col])
-    default_windows = [
-        {"label": "2001 downturn", "start": "2001-01-01", "end": "2001-12-31"},
-        {"label": "global financial crisis", "start": "2007-12-01", "end": "2009-06-30"},
-        {"label": "pandemic shock", "start": "2020-02-01", "end": "2020-06-30"},
-        {"label": "inflation tightening", "start": "2022-01-01", "end": "2023-12-31"},
-    ]
-    replay_windows = list(windows) if windows is not None else default_windows
     rows: list[dict[str, Any]] = []
     for item in replay_windows:
         label = str(item.get("label") or item.get("name") or "historical_window")
@@ -636,87 +690,18 @@ def historical_scenario_replay(
             }
         )
     return {
-        "historical_simulations": rows,
-        "simulation_design": {
+        "replay_rows": rows,
+        "replay_design": {
+            "date_col": date_col,
             "outcome_variable": outcome_col,
             "signal_variables": signals,
-            "lookahead_periods": lookahead_periods,
+            "lookahead_periods": int(lookahead_periods),
+            "window_count": int(len(replay_windows)),
         },
         "methods_used": [METHOD_HISTORICAL_SCENARIO_REPLAY],
         "limitations": [
             "Historical replay compares observed windows; it is not a counterfactual causal simulation.",
             "Results depend on the chosen windows and the frequency of the local input panel.",
-        ],
-    }
-
-
-def _historical_event_replay(
-    data: pd.DataFrame,
-    *,
-    date_col: str,
-    target_col: str,
-    scenario_col: str,
-    pre_periods: int,
-    post_periods: int,
-    analog_count: int | None,
-) -> dict[str, Any]:
-    """Compatibility replay for older target/scenario event-window scripts."""
-
-    if pre_periods < 0:
-        raise ValueError("pre_periods must be non-negative")
-    if post_periods < 1:
-        raise ValueError("post_periods must be at least 1")
-    frame = _as_ordered_frame(data, date_col, [target_col, scenario_col])
-    scenario = pd.to_numeric(frame[scenario_col], errors="coerce").fillna(0.0)
-    event_starts = frame.index[(scenario.gt(0) & scenario.shift(fill_value=0).le(0))].tolist()
-    if analog_count is not None:
-        event_starts = event_starts[-max(1, int(analog_count)) :]
-
-    rows: list[dict[str, Any]] = []
-    for event_number, start_idx in enumerate(event_starts, start=1):
-        pre_idx = max(0, start_idx - pre_periods)
-        end_idx = min(len(frame) - 1, start_idx + post_periods)
-        window = frame.iloc[pre_idx : end_idx + 1]
-        after = frame.iloc[start_idx : end_idx + 1]
-        target_start = _finite_float(frame[target_col].iloc[start_idx])
-        target_end = _finite_float(after[target_col].iloc[-1]) if not after.empty else None
-        target_change = (
-            _finite_float(float(target_end) - float(target_start))
-            if target_start is not None and target_end is not None
-            else None
-        )
-        label = f"{pd.Timestamp(frame[date_col].iloc[start_idx]).year} event"
-        rows.append(
-            {
-                "label": label,
-                "start_date": _iso_date(window[date_col].iloc[0]),
-                "end_date": _iso_date(window[date_col].iloc[-1]),
-                "event_start_date": _iso_date(frame[date_col].iloc[start_idx]),
-                "status": "ok",
-                "target_start": target_start,
-                "target_end": target_end,
-                "target_change": target_change,
-                "scenario_peak": _finite_float(window[scenario_col].max()),
-                "pre_periods": int(start_idx - pre_idx),
-                "post_periods": int(len(after) - 1),
-            }
-        )
-
-    return {
-        "historical_simulations": rows,
-        "analog_windows": rows,
-        "simulation_design": {
-            "event_definition": f"{scenario_col} > 0 transition",
-            "target_variable": target_col,
-            "scenario_variable": scenario_col,
-            "pre_periods": int(pre_periods),
-            "post_periods": int(post_periods),
-            "analog_count": analog_count,
-        },
-        "methods_used": [METHOD_HISTORICAL_SCENARIO_REPLAY],
-        "limitations": [
-            "Event replay summarizes observed windows around scenario transitions; it is not a counterfactual causal simulation.",
-            "The compatibility target/scenario call selects historical event starts rather than nearest-neighbor analogs.",
         ],
     }
 
@@ -769,7 +754,6 @@ def compare_analog_windows(
     current_profile = window_profile({**current_window, "label": "current"})
     analog_profiles = [window_profile(item) for item in windows]
     ranking: list[dict[str, Any]] = []
-    breakdown: dict[str, Any] = {}
 
     for profile in analog_profiles:
         divergences: list[dict[str, Any]] = []
@@ -801,22 +785,25 @@ def compare_analog_windows(
             reverse=True,
         )
         distance = _finite_float(np.sqrt(squared_distance)) if divergences else None
+        normalized_similarity = (
+            _finite_float(100.0 / (1.0 + max(float(distance), 0.0)))
+            if distance is not None
+            else None
+        )
         label = str(profile["label"])
         ranking.append(
             {
                 "analog": label,
                 "distance": distance,
+                "raw_distance": distance,
+                "distance_score": distance,
+                "normalized_similarity": normalized_similarity,
                 "common_variables": [item["variable"] for item in divergences],
                 "top_divergences": divergences[:top_n_divergences],
+                "divergence_facts": divergences[:top_n_divergences],
                 "status": "ok" if divergences else "insufficient_common_variables",
             }
         )
-        breakdown[label] = {
-            "top_divergences": divergences[:top_n_divergences],
-            "common_variable_count": len(divergences),
-            "status": "ok" if divergences else "insufficient_common_variables",
-        }
-
     ranking.sort(
         key=lambda item: item["distance"] if item["distance"] is not None else np.inf
     )
@@ -826,7 +813,6 @@ def compare_analog_windows(
             profile["label"]: profile["values"]
             for profile in [*analog_profiles, current_profile]
         },
-        "analogy_breakdown": breakdown,
         "comparison_design": {
             "date_col": date_col,
             "value_cols": values,
@@ -1094,8 +1080,8 @@ def direct_ols_forecast(
     stationarity = [
         _stationarity_check(frame[column], column) for column in [target_col, *base_features]
     ]
-    backtests: list[dict[str, Any]] = []
-    model_comparison: list[dict[str, Any]] = []
+    walk_forward_rows: list[dict[str, Any]] = []
+    model_validation_rows: list[dict[str, Any]] = []
     if run_backtests:
         for step in range(1, horizon + 1):
             backtest = walk_forward_ols_backtest(
@@ -1122,11 +1108,11 @@ def direct_ols_forecast(
                     "limitations",
                 }
             }
-            backtests.append(compact_backtest)
+            walk_forward_rows.append(compact_backtest)
             if backtest.get("status") == "ok":
                 for item in backtest.get("model_comparison", []):
                     if isinstance(item, dict):
-                        model_comparison.append({"horizon": step, **item})
+                        model_validation_rows.append({"horizon": step, **item})
     selected_diagnostics = next(
         (
             item
@@ -1170,14 +1156,9 @@ def direct_ols_forecast(
                 if check.get("warning") and check.get("status") == "warning"
             ],
         },
-        "backtest_summary": {
-            "status": "ok"
-            if any(item.get("status") == "ok" for item in backtests)
-            else "not_run" if not run_backtests else "insufficient_test_observations",
-            "horizon_results": backtests,
-        },
-        "model_comparison": model_comparison,
-        "forecast_table": forecast_rows,
+        "forecast_rows": forecast_rows,
+        "walk_forward_backtest_rows": walk_forward_rows,
+        "model_validation_rows": model_validation_rows,
         "methods_used": [
             METHOD_DIRECT_OLS_FORECAST,
             *([METHOD_WALK_FORWARD_OLS_BACKTEST] if run_backtests else []),
