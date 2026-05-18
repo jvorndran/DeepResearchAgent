@@ -53,8 +53,8 @@ Recharts `charts.json`, and `execution_summary.json` for the writer.
 - Do not print, stream, or final-answer a large nested statistics object. Save
   full computed values in `execution_summary.json`.
 - Execution summaries should include reusable evidence fields where available:
-  `numeric_facts`, source paths, methods used, chart IDs, tables, diagnostics,
-  limitations, and source coverage.
+  `numeric_facts`, chart provenance, source paths, methods used, chart IDs,
+  tables, diagnostics, limitations, and source coverage.
 
 # FINAL RESPONSE
 Return ONLY this compact JSON. Do not wrap it in markdown or add prose:

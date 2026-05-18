@@ -781,6 +781,48 @@ def _series_fact(series: dict[str, Any]) -> str | None:
     return f"{label} ({data_key})"
 
 
+def _provenance_fact(provenance: Any) -> str | None:
+    if not isinstance(provenance, dict):
+        return None
+
+    pieces: list[str] = []
+    for key in (
+        "source_series",
+        "source_files",
+        "raw_window",
+        "raw_latest_observation",
+        "displayed_window",
+        "displayed_latest_label",
+        "frequency",
+        "resampling",
+        "normalization",
+        "limitations",
+    ):
+        value = provenance.get(key)
+        if value is None or value == "" or value == [] or value == {}:
+            continue
+        pieces.append(f"{key}={_compact_provenance_value(value, key=key)}")
+    if not pieces:
+        return None
+    return "provenance=" + " | ".join(pieces[:10])
+
+
+def _compact_provenance_value(value: Any, *, key: str) -> str:
+    if isinstance(value, dict):
+        items = []
+        for item_key, item_value in list(value.items())[:8]:
+            if key == "source_files":
+                item_value = Path(str(item_value)).name
+            items.append(f"{item_key}:{item_value}")
+        return ", ".join(items)
+    if isinstance(value, list):
+        items = value[:8]
+        if key == "source_files":
+            items = [Path(str(item)).name for item in items]
+        return ", ".join(str(item) for item in items)
+    return str(value)
+
+
 def _compact_chart_facts_for_draft(charts_map: dict[str, Any]) -> str:
     """Return concise chart facts so prose matches the renderable artifacts."""
 
@@ -800,6 +842,9 @@ def _compact_chart_facts_for_draft(charts_map: dict[str, Any]) -> str:
         description = chart.get("description")
         if isinstance(description, str) and description.strip():
             pieces.append(f"description={description.strip()}")
+        provenance = _provenance_fact(chart.get("provenance"))
+        if provenance:
+            pieces.append(provenance)
 
         if chart_type in {"line", "bar", "area", "composed"}:
             x_key = chart.get("xAxisKey") or chart.get("xKey")

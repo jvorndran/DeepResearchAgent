@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from tests.runner import Watchdog
+from tests.runner import discover_artifacts
 from tests.runner import run_research_loop
 
 
@@ -92,6 +93,25 @@ def test_runner_writes_trace_artifacts_without_text_log(monkeypatch, tmp_path):
     assert "1. trace-digest.md" in digest
     assert "2. trace_diagnostics.json" in digest
     assert "3. phoenix_spans.jsonl" in digest
+
+
+def test_runner_artifact_discovery_prefers_generated_script_path(tmp_path):
+    output_dir = tmp_path / "job-test"
+    code_dir = output_dir / "code"
+    code_dir.mkdir(parents=True)
+    generated_script = code_dir / "analysis_v2.py"
+    generated_script.write_text("# fallback generator\n", encoding="utf-8")
+    (code_dir / "analysis.py").write_text("# stale generator\n", encoding="utf-8")
+    (output_dir / "report.json").write_text("{}", encoding="utf-8")
+    (output_dir / "charts.json").write_text("{}", encoding="utf-8")
+    (output_dir / "execution_summary.json").write_text(
+        json.dumps({"generated_by": {"script_path": str(generated_script)}}),
+        encoding="utf-8",
+    )
+
+    artifacts = discover_artifacts(output_dir)
+
+    assert artifacts["analysis_py"] == str(generated_script)
 
 
 def test_loop_prompts_and_skill_docs_use_trace_artifacts():

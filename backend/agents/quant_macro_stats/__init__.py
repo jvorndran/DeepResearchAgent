@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .artifacts import (
+    chart_provenance,
     display_value,
     normalize_quant_execution_summary,
     normalize_quant_report_charts,
@@ -133,6 +134,7 @@ __all__ = [
     "build_analog_evidence",
     "build_composite_predictive_indicator",
     "chart_records",
+    "chart_provenance",
     "classify_recession_regime",
     "compare_analog_windows",
     "direct_ols_forecast",

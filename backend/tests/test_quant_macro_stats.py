@@ -36,6 +36,7 @@ def test_quant_macro_stats_public_exports_are_helper_only():
         "normalize_quant_execution_summary",
         "QUANT_HELPER_CATALOG",
         "format_quant_helper_catalog_for_prompt",
+        "chart_provenance",
     }
     removed_report_generators = {
         "build_company_fundamental_outputs",
@@ -83,6 +84,7 @@ def test_quant_helper_catalog_is_compact_agent_context():
     assert "direct_ols_forecast(data, target_col, feature_cols" in catalog
     assert "signal_framework_backtest(data, *, component_cols" in catalog
     assert "sec_company_facts_evidence(data_files" in catalog
+    assert "chart_provenance(source_series=..." in catalog
     assert "save_quant_outputs(output_dir, charts, execution_summary)" in catalog
     assert {"load_monthly_panel", "direct_ols_forecast", "save_quant_outputs"}.issubset(
         helper_names
@@ -727,6 +729,52 @@ def test_save_quant_outputs_writes_generic_evidence_payload(tmp_path):
     assert list(saved_charts) == ["trend"]
     assert "preserved_prior_charts" not in handoff
     assert "preserved_report_aligned_charts" not in handoff
+
+
+def test_save_quant_outputs_preserves_chart_provenance_and_generator_path(
+    tmp_path, monkeypatch
+):
+    code_dir = tmp_path / "code"
+    code_dir.mkdir()
+    script_path = code_dir / "analysis_v2.py"
+    script_path.write_text("# generated script\n", encoding="utf-8")
+    monkeypatch.setattr("sys.argv", [str(script_path)])
+    provenance = qms.chart_provenance(
+        source_series=["T10Y2Y"],
+        source_files={"T10Y2Y": tmp_path / "t10y2y.csv"},
+        raw_window={"start": "2026-05-01", "end": "2026-05-15"},
+        raw_latest_observation={"T10Y2Y": "2026-05-15"},
+        displayed_window={"start": "2026-05", "end": "2026-05"},
+        displayed_latest_label="2026-05",
+        frequency="daily",
+        resampling="monthly last observation with month labels",
+        normalization={"base_date": "2016-01", "base_value": 100},
+        limitations=["partial latest month"],
+    )
+    charts = {
+        "yield_spread": {
+            "type": "line",
+            "title": "Yield Spread",
+            "data": [{"date": "2026-05", "spread": 0.5}],
+            "series": [{"dataKey": "spread", "name": "Spread"}],
+            "xAxis": {"dataKey": "date"},
+            "provenance": provenance,
+        }
+    }
+
+    handoff = qms.save_quant_outputs(tmp_path, charts, {"methods_used": ["unit"]})
+    saved_summary = json.loads((tmp_path / "execution_summary.json").read_text())
+    saved_charts = json.loads((tmp_path / "charts.json").read_text())
+
+    assert saved_charts["yield_spread"]["provenance"]["raw_latest_observation"] == {
+        "T10Y2Y": "2026-05-15"
+    }
+    assert saved_summary["chart_provenance"]["yield_spread"]["displayed_latest_label"] == (
+        "2026-05"
+    )
+    assert saved_summary["generated_by"]["script_path"] == str(script_path)
+    assert handoff["chart_provenance"]["yield_spread"]["frequency"] == "daily"
+    assert handoff["generated_by"]["script_path"] == str(script_path)
 
 
 def test_save_quant_outputs_does_not_shape_scenario_score_rows(tmp_path):
