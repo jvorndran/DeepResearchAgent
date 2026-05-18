@@ -171,6 +171,30 @@ def _latest_chart_handoff_mismatch(messages: list[Any]) -> dict[str, Any] | None
     return None
 
 
+def _latest_artifact_fact_mismatch(messages: list[Any]) -> dict[str, Any] | None:
+    for message in reversed(messages):
+        if _message_tool_name(message) not in {
+            "write_research_report",
+            "validate_research_report_file",
+        }:
+            continue
+        parsed = _json_from_message(message)
+        if not isinstance(parsed, dict):
+            continue
+        if parsed.get("failure_category") == "artifact_fact_mismatch":
+            return parsed
+        blockers = parsed.get("blockers")
+        if not isinstance(blockers, list):
+            continue
+        if any(
+            isinstance(blocker, str)
+            and blocker.startswith("artifact_fact_mismatch:")
+            for blocker in blockers
+        ):
+            return parsed
+    return None
+
+
 def _success_handoff_content(
     validation: dict[str, Any], successful_write: dict[str, Any]
 ) -> str:
@@ -287,10 +311,49 @@ def _chart_handoff_failure_handoff_content(messages: list[Any]) -> str:
     )
 
 
+def _artifact_fact_failure_handoff_content(messages: list[Any]) -> str:
+    mismatch = _latest_artifact_fact_mismatch(messages) or {}
+    blockers = (
+        mismatch.get("blockers")
+        if isinstance(mismatch.get("blockers"), list)
+        else []
+    )
+    message = mismatch.get("message")
+    if blockers:
+        reason = blockers[0]
+    elif isinstance(message, str):
+        reason = message
+    else:
+        reason = (
+            "artifact_fact_mismatch: execution_summary.json, numeric_facts, "
+            "and chart data disagree on a repeated quantitative fact"
+        )
+    report_path = mismatch.get("report_path") or mismatch.get("report_json")
+    if not isinstance(report_path, str) or not report_path:
+        report_path = _latest_writer_report_path(messages)
+    return json.dumps(
+        {
+            "status": "failed",
+            "report_json": report_path,
+            "required_upstream": "quant-developer",
+            "failure_category": "artifact_fact_mismatch",
+            "reason": reason,
+            "required_fixes": [
+                "Regenerate quant artifacts so execution_summary.json, "
+                "numeric_facts, and chart data use one consistent fact basis, "
+                "or declare explicit transform_basis metadata for intentionally "
+                "different calculations."
+            ],
+        }
+    )
+
+
 class TechnicalWriterToolBoundaryMiddleware(AgentMiddleware):
     """Expose only report-writing tools to prevent context-heavy file reads."""
 
     def _terminal_handoff_content(self, messages: list[Any]) -> str | None:
+        if _latest_artifact_fact_mismatch(messages):
+            return _artifact_fact_failure_handoff_content(messages)
         if _latest_chart_handoff_mismatch(messages):
             return _chart_handoff_failure_handoff_content(messages)
         if _terminal_zero_chart_validation(messages):

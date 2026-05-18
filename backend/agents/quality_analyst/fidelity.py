@@ -9,6 +9,10 @@ from pydantic import ValidationError
 
 from core.report_schema import ResearchReport
 
+from ..artifact_fact_consistency import (
+    artifact_fact_consistency_blocker,
+    artifact_fact_consistency_dict,
+)
 from agents.quant_macro_stats.artifacts.numeric_fact_contracts import (
     normalize_numeric_facts,
     numeric_fact_current_state_duration_misuse,
@@ -17,7 +21,6 @@ from agents.quant_macro_stats.artifacts.numeric_fact_contracts import (
 from agents.quant_macro_stats.artifacts.execution_summary_normalization import (
     normalize_quant_execution_summary,
 )
-
 from ..report_artifacts import (
     chart_handoff_blocker,
     chart_handoff_dict,
@@ -1459,6 +1462,14 @@ def _approval_blockers(report_path: str) -> list[str]:
     handoff_blocker = chart_handoff_blocker(chart_handoff_dict(data, full_summary))
     if handoff_blocker:
         blockers.append(handoff_blocker)
+    fact_blocker = artifact_fact_consistency_blocker(
+        artifact_fact_consistency_dict(
+            execution_summary=full_summary,
+            report_data=data,
+        )
+    )
+    if fact_blocker:
+        blockers.append(fact_blocker)
     blockers.extend(_chart_semantics_approval_blockers(data))
     blockers.extend(_execution_summary_fidelity_blockers(data, Path(report_path)))
     if summary.get("status") in {"failed", "error", "missing"}:
@@ -1546,6 +1557,13 @@ def _approval_failure_metadata(report_path: str) -> dict[str, str]:
         return {
             "failure_category": "chart_handoff_mismatch",
             "required_upstream": required_upstream,
+        }
+    if artifact_fact_consistency_blocker(
+        artifact_fact_consistency_dict(execution_summary=summary, report_data=data)
+    ):
+        return {
+            "failure_category": "artifact_fact_mismatch",
+            "required_upstream": "quant-developer",
         }
     if _chart_semantics_approval_blockers(data):
         return {

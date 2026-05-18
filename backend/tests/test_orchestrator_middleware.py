@@ -269,6 +269,69 @@ def test_orchestrator_tool_boundary_routes_chart_handoff_repair_to_quant(tmp_pat
     assert allowed.content == "delegated"
 
 
+def test_orchestrator_tool_boundary_routes_artifact_fact_repair_to_quant(tmp_path):
+    middleware = OrchestratorToolBoundaryMiddleware()
+    report_path = tmp_path / "report.json"
+    report_path.write_text("{}", encoding="utf-8")
+    messages = [
+        AIMessage(
+            content=json.dumps(
+                {
+                    "status": "failed",
+                    "report_json": str(report_path),
+                    "reason": (
+                        "artifact_fact_mismatch: conflicting correlation values "
+                        "for UNRATE/CPIAUCSL"
+                    ),
+                    "required_fixes": [
+                        "Regenerate quant artifacts so execution_summary.json, "
+                        "numeric_facts, and chart data use one consistent fact basis."
+                    ],
+                    "failure_category": "artifact_fact_mismatch",
+                    "required_upstream": "quant-developer",
+                }
+            )
+        )
+    ]
+    writer_request = SimpleNamespace(
+        tool_call={
+            "name": "task",
+            "id": "wrong-artifact-owner",
+            "args": {
+                "subagent_type": "technical-writer",
+                "description": "Repair report prose after the artifact fact mismatch.",
+            },
+        },
+        state={"messages": messages},
+    )
+
+    blocked = middleware.wrap_tool_call(
+        writer_request,
+        lambda req: SimpleNamespace(content="delegated", status="success"),
+    )
+
+    assert "Blocked QA recovery delegation to `technical-writer`" in blocked.content
+    assert "required_upstream=`quant-developer`" in blocked.content
+
+    quant_request = SimpleNamespace(
+        tool_call={
+            "name": "task",
+            "id": "right-artifact-owner",
+            "args": {
+                "subagent_type": "quant-developer",
+                "description": "Regenerate inconsistent quant artifacts after QA rejection.",
+            },
+        },
+        state={"messages": messages},
+    )
+    allowed = middleware.wrap_tool_call(
+        quant_request,
+        lambda req: SimpleNamespace(content="delegated", status="success"),
+    )
+
+    assert allowed.content == "delegated"
+
+
 def test_orchestrator_tool_boundary_allows_approval_emit_after_quality_approval():
     middleware = OrchestratorToolBoundaryMiddleware()
     request = SimpleNamespace(

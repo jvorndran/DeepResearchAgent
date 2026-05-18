@@ -1937,6 +1937,81 @@ def test_write_research_report_rejects_zero_duration_as_historical_duration(tmp_
     assert "zero-duration" in result["message"]
 
 
+def test_write_research_report_rejects_conflicting_correlation_artifacts(tmp_path):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text(
+        json.dumps(
+            {
+                "macro_correlation_heatmap": {
+                    "id": "macro_correlation_heatmap",
+                    "type": "bar",
+                    "title": "Macro Correlations",
+                    "description": "Correlation facts by pair.",
+                    "xAxisKey": "pair",
+                    "series": [
+                        {
+                            "dataKey": "correlation",
+                            "label": "Correlation",
+                            "color": "#2563eb",
+                        }
+                    ],
+                    "data": [
+                        {
+                            "pair": "(UNRATE, CPIAUCSL)",
+                            "var1": "UNRATE",
+                            "var2": "CPIAUCSL",
+                            "correlation": 0.024,
+                        }
+                    ],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    summary = {
+        "scenario_stress": {
+            "corr": {
+                "UNRATE": {"UNRATE": 1.0, "CPIAUCSL": 0.908},
+                "CPIAUCSL": {"UNRATE": 0.908, "CPIAUCSL": 1.0},
+            }
+        },
+        "numeric_facts": [
+            {
+                "id": "corr_UNRATE_CPIAUCSL",
+                "label": "Correlation(UNRATE, CPIAUCSL)",
+                "value": 0.024,
+                "display_value": "0.024",
+            }
+        ],
+    }
+
+    result = json.loads(
+        write_research_report.func(
+            markdown=(
+                "## Executive Summary\n"
+                "The UNRATE/CPIAUCSL correlation was 0.024.\n\n"
+                "<!-- CHART:macro_correlation_heatmap -->\n\n"
+                "## Research Query\nReview next-year macro risks."
+            ),
+            charts_json_path=str(charts_path),
+            original_query="Review next-year macro risks with charts.",
+            execution_summary=json.dumps(summary),
+            runtime=SimpleNamespace(
+                context=SimpleNamespace(
+                    job_id="job-correlation-mismatch",
+                    output_dir=str(tmp_path),
+                )
+            ),
+        )
+    )
+
+    assert result["status"] == "error"
+    assert result["failure_category"] == "artifact_fact_mismatch"
+    assert result["required_upstream"] == "quant-developer"
+    assert result["report_path"] == str((tmp_path / "report.json").resolve())
+    assert "UNRATE/CPIAUCSL" in result["message"]
+
+
 def test_plan_report_structure_preserves_dict_backtest_model_and_simulation_metrics(tmp_path):
     charts_path = tmp_path / "charts.json"
     charts_path.write_text("{}", encoding="utf-8")
@@ -3175,6 +3250,87 @@ def test_validate_research_report_file_rejects_missing_handoff_chart_ids(tmp_pat
     assert "chart_handoff_mismatch" in gate["blockers"][0]
 
 
+def test_validate_research_report_file_rejects_artifact_fact_mismatch(tmp_path):
+    report_path = tmp_path / "report.json"
+    chart = {
+        "id": "macro_correlation_heatmap",
+        "type": "bar",
+        "title": "Macro Correlations",
+        "description": "Correlation facts by pair.",
+        "xAxisKey": "pair",
+        "series": [
+            {"dataKey": "correlation", "label": "Correlation", "color": "#2563eb"}
+        ],
+        "data": [
+            {
+                "pair": "(UNRATE, CPIAUCSL)",
+                "var1": "UNRATE",
+                "var2": "CPIAUCSL",
+                "correlation": 0.024,
+            }
+        ],
+    }
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "chart_ids": ["macro_correlation_heatmap"],
+                "scenario_stress": {
+                    "corr": {
+                        "UNRATE": {"UNRATE": 1.0, "CPIAUCSL": 0.908},
+                        "CPIAUCSL": {"UNRATE": 0.908, "CPIAUCSL": 1.0},
+                    }
+                },
+                "numeric_facts": [
+                    {
+                        "id": "corr_UNRATE_CPIAUCSL",
+                        "label": "Correlation(UNRATE, CPIAUCSL)",
+                        "value": 0.024,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "job_id": "job-1",
+                "created_at": "2026-04-29T00:00:00+00:00",
+                "query": "Build a macro chart report.",
+                "title": "Macro Chart Report",
+                "executive_summary": "Macro correlations were charted.",
+                "markdown": (
+                    "## Executive Summary\nMacro correlations were charted.\n\n"
+                    "<!-- CHART:macro_correlation_heatmap -->"
+                ),
+                "charts": {"macro_correlation_heatmap": chart},
+                "data_sources": [],
+                "metadata": {
+                    "analysis_type": "macro_indicator",
+                    "chart_count": 1,
+                    "word_count": 8,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    runtime = SimpleNamespace(context=SimpleNamespace(job_id="job-1", output_dir=str(tmp_path)))
+
+    gate = json.loads(
+        validate_research_report_file.func(
+            runtime=runtime,
+            report_json_path=str(report_path),
+            auto_patch=False,
+        )
+    )
+
+    assert gate["passes_gate"] is False
+    assert gate["artifact_fact_consistency"]["valid"] is False
+    assert "artifact_fact_mismatch" in gate["blockers"][0]
+
+
 def test_validate_research_report_file_allows_explicitly_dropped_handoff_chart_ids(
     tmp_path,
 ):
@@ -4044,6 +4200,54 @@ def test_technical_writer_middleware_returns_quant_failure_for_chart_handoff_mis
     ]
     assert handoff["missing_report_chart_ids"] == ["savings_credit_stress"]
     assert "chart_handoff_mismatch" in handoff["reason"]
+
+
+def test_technical_writer_middleware_returns_quant_failure_for_artifact_fact_mismatch():
+    middleware = next(
+        item
+        for item in TECHNICAL_WRITER_SUBAGENT["middleware"]
+        if isinstance(item, TechnicalWriterToolBoundaryMiddleware)
+    )
+    reason = (
+        "artifact_fact_mismatch: conflicting correlation values for "
+        "UNRATE/CPIAUCSL"
+    )
+    request = _Request(
+        [
+            SimpleNamespace(name="write_research_report"),
+            SimpleNamespace(name="validate_research_report_file"),
+        ],
+        messages=[
+            ToolMessage(
+                content=json.dumps(
+                    {
+                        "status": "error",
+                        "error": "artifact_fact_mismatch",
+                        "failure_category": "artifact_fact_mismatch",
+                        "required_upstream": "quant-developer",
+                        "report_path": "/tmp/outputs/job-1/report.json",
+                        "blockers": [reason],
+                        "message": reason,
+                    }
+                ),
+                name="write_research_report",
+                tool_call_id="call-write",
+            ),
+        ],
+    )
+
+    response = middleware.wrap_model_call(
+        request,
+        lambda req: ModelResponse(result=[AIMessage(content="should not run")]),
+    )
+
+    handoff = json.loads(response.result[0].content)
+    assert handoff["status"] == "failed"
+    assert handoff["report_json"] == "/tmp/outputs/job-1/report.json"
+    assert handoff["required_upstream"] == "quant-developer"
+    assert handoff["failure_category"] == "artifact_fact_mismatch"
+    assert "UNRATE/CPIAUCSL" in handoff["reason"]
+    assert "numeric_facts" in handoff["required_fixes"][0]
 
 
 def test_technical_writer_middleware_blocks_inherited_filesystem_tool_calls():
