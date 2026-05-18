@@ -1,4 +1,5 @@
 import json
+import shlex
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -154,6 +155,69 @@ def test_successful_execute_handoff_stops_future_tool_use():
 
     assert seen_tools == []
     assert response.result[0].content == handoff
+
+
+def test_model_call_forces_execute_after_written_script_without_tool_call(tmp_path):
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    script_path = tmp_path / "outputs" / "job-execute" / "code" / "analysis.py"
+    request = _Request(
+        [SimpleNamespace(name="execute"), SimpleNamespace(name="read_file")],
+        messages=[
+            ToolMessage(
+                content=f"Updated file {script_path}",
+                name="write_file",
+                tool_call_id="call-write",
+            )
+        ],
+    )
+
+    response = middleware.wrap_model_call(
+        request,
+        lambda req: ModelResponse(
+            result=[
+                AIMessage(
+                    content=(
+                        "Failed to call tool due to error: Tool write_file failed. "
+                        "This is a system error - please try sending this function again."
+                    )
+                )
+            ]
+        ),
+    )
+
+    tool_call = response.result[0].tool_calls[0]
+    expected_command = f"{shlex.quote(quant_dev.PYTHON_EXECUTABLE)} {shlex.quote(str(script_path))}"
+    assert tool_call["name"] == "execute"
+    assert tool_call["args"] == {"command": expected_command}
+
+
+def test_model_call_does_not_repeat_execute_after_latest_write_failure(tmp_path):
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    script_path = tmp_path / "outputs" / "job-execute" / "code" / "analysis.py"
+    request = _Request(
+        [SimpleNamespace(name="execute"), SimpleNamespace(name="read_file")],
+        messages=[
+            ToolMessage(
+                content=f"Updated file {script_path}",
+                name="write_file",
+                tool_call_id="call-write",
+            ),
+            ToolMessage(
+                content="Command failed with traceback",
+                name="execute",
+                tool_call_id="call-execute",
+                status="error",
+            ),
+        ],
+    )
+
+    response = middleware.wrap_model_call(
+        request,
+        lambda req: ModelResponse(result=[AIMessage(content="I need to inspect stderr.")]),
+    )
+
+    assert response.result[0].content == "I need to inspect stderr."
+    assert response.result[0].tool_calls == []
 
 
 def test_prewrite_failure_handoff_overwrites_prior_quant_artifacts(tmp_path, monkeypatch):
