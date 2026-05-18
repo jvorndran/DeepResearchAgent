@@ -1636,6 +1636,7 @@ def test_write_research_report_rejects_company_fundamental_numeric_drift(tmp_pat
                 "source_key": "sec_company_facts.latest_fundamentals.NVDA.revenue_b",
                 "subject": "NVDA",
                 "metric": "revenue_b",
+                "literal_required": False,
             },
             {
                 "id": "sec_company_facts.NVDA.cash_and_securities_b",
@@ -1645,6 +1646,7 @@ def test_write_research_report_rejects_company_fundamental_numeric_drift(tmp_pat
                 "source_key": "sec_company_facts.latest_fundamentals.NVDA.cash_and_securities_b",
                 "subject": "NVDA",
                 "metric": "cash_and_securities_b",
+                "literal_required": False,
             },
         ],
     }
@@ -1669,6 +1671,115 @@ def test_write_research_report_rejects_company_fundamental_numeric_drift(tmp_pat
     assert result["failure_category"] == "numeric_fact_mismatch"
     assert "NVDA revenue_b" in result["message"]
     assert "NVDA cash_and_securities_b" in result["message"]
+
+
+def test_plan_report_structure_adds_zero_duration_state_guidance(tmp_path):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text("{}", encoding="utf-8")
+
+    result = json.loads(
+        plan_report_structure.func(
+            query_type="macro_indicator",
+            charts_json_path=str(charts_path),
+            execution_summary=json.dumps(
+                {
+                    "numeric_facts": [
+                        {
+                            "id": "inversion",
+                            "label": "Inversion Months",
+                            "value": 0,
+                            "unit": "months",
+                            "precision": 0,
+                            "literal_required": True,
+                        }
+                    ]
+                }
+            ),
+            original_query="Review whether the yield curve is currently inverted.",
+            runtime=_Runtime(),
+        )
+    )
+
+    draft = result["execution_summary_for_draft"]
+    assert "inversion=0 months" in draft
+    assert "semantic_role=current_state_duration" in draft
+    assert "literal_required=false" in draft
+    assert "no active/current episode" in draft
+    assert result["helper_evidence_for_draft"]["numeric_facts"][0]["literal_required"] is False
+
+
+def test_write_research_report_accepts_zero_duration_current_state_prose(tmp_path):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text("{}", encoding="utf-8")
+    summary = {
+        "numeric_facts": [
+            {
+                "id": "inversion",
+                "label": "Inversion Months",
+                "value": 0,
+                "unit": "months",
+                "precision": 0,
+                "literal_required": True,
+            }
+        ]
+    }
+
+    result = json.loads(
+        write_research_report.func(
+            markdown=(
+                "## Executive Summary\n"
+                "The yield curve is not currently inverted after a prolonged inversion "
+                "that ended earlier in 2025.\n\n"
+                "## Research Query\nReview whether the yield curve is currently inverted."
+            ),
+            charts_json_path=str(charts_path),
+            original_query="Review whether the yield curve is currently inverted.",
+            execution_summary=json.dumps(summary),
+            runtime=SimpleNamespace(
+                context=SimpleNamespace(job_id="job-zero-duration-good", output_dir=str(tmp_path))
+            ),
+        )
+    )
+
+    assert result["report_path"].endswith("report.json")
+    assert result["validation_issues"] == []
+
+
+def test_write_research_report_rejects_zero_duration_as_historical_duration(tmp_path):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text("{}", encoding="utf-8")
+    summary = {
+        "numeric_facts": [
+            {
+                "id": "inversion",
+                "label": "Inversion Months",
+                "value": 0,
+                "unit": "months",
+                "precision": 0,
+                "literal_required": True,
+            }
+        ]
+    }
+
+    result = json.loads(
+        write_research_report.func(
+            markdown=(
+                "## Executive Summary\n"
+                "The yield curve has normalized after 0 months of inversion.\n\n"
+                "## Research Query\nReview whether the yield curve is currently inverted."
+            ),
+            charts_json_path=str(charts_path),
+            original_query="Review whether the yield curve is currently inverted.",
+            execution_summary=json.dumps(summary),
+            runtime=SimpleNamespace(
+                context=SimpleNamespace(job_id="job-zero-duration-bad", output_dir=str(tmp_path))
+            ),
+        )
+    )
+
+    assert result["status"] == "error"
+    assert result["failure_category"] == "numeric_fact_mismatch"
+    assert "zero-duration" in result["message"]
 
 
 def test_plan_report_structure_preserves_dict_backtest_model_and_simulation_metrics(tmp_path):

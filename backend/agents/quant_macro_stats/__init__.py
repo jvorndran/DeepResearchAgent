@@ -4,9 +4,14 @@ from __future__ import annotations
 
 from .artifacts import (
     display_value,
+    normalize_numeric_fact,
+    normalize_numeric_facts,
     normalize_quant_execution_summary,
     normalize_quant_report_charts,
+    normalize_unit,
     numeric_fact,
+    numeric_fact_current_state_duration_misuse,
+    numeric_fact_literal_required,
     save_quant_outputs,
 )
 from .catalog import (
@@ -156,11 +161,16 @@ __all__ = [
     "load_monthly_panel",
     "month_label",
     "normalize_analog_ranking",
-    "normalize_scenario_evidence_rows",
+    "normalize_numeric_fact",
+    "normalize_numeric_facts",
     "normalize_forecast_table",
     "normalize_quant_execution_summary",
     "normalize_quant_report_charts",
+    "normalize_scenario_evidence_rows",
+    "normalize_unit",
     "numeric_fact",
+    "numeric_fact_current_state_duration_misuse",
+    "numeric_fact_literal_required",
     "ols_regression",
     "predictor_contribution_rows",
     "read_monthly_series",

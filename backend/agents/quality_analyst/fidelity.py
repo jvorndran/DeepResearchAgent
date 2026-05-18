@@ -8,6 +8,15 @@ from pydantic import ValidationError
 
 from core.report_schema import ResearchReport
 
+from agents.quant_macro_stats.artifacts.numeric_fact_contracts import (
+    normalize_numeric_facts,
+    numeric_fact_current_state_duration_misuse,
+    numeric_fact_literal_required,
+)
+from agents.quant_macro_stats.artifacts.execution_summary_normalization import (
+    normalize_quant_execution_summary,
+)
+
 from ..report_artifacts import load_report_json
 from ..technical_writer.chart_audit import chart_semantics_dict
 from .utils import _truncate
@@ -37,6 +46,10 @@ def _load_sibling_execution_summary(report_path: Path) -> dict[str, object]:
             "path": str(summary_path),
             "error": "Expected execution_summary.json to contain a JSON object.",
         }
+    try:
+        parsed = normalize_quant_execution_summary(parsed)
+    except ValueError:
+        pass
 
     source_status = str(parsed.get("status") or "success")
     compact: dict[str, object] = {
@@ -194,11 +207,7 @@ def _numeric_facts_from_summary(summary: dict[str, object]) -> list[dict[str, ob
     facts: list[dict[str, object]] = []
     seen: set[str] = set()
     for candidate in candidates:
-        if not isinstance(candidate, list):
-            continue
-        for item in candidate:
-            if not isinstance(item, dict):
-                continue
+        for item in normalize_numeric_facts(candidate):
             fact_id = str(item.get("id") or item.get("source_key") or "")
             if not fact_id or fact_id in seen:
                 continue
@@ -303,6 +312,7 @@ def _numeric_fact_fidelity_blockers(
 
     markdown_lower = markdown.lower()
     missing: list[str] = []
+    semantic_misuse: list[str] = []
     for fact in facts:
         subject = str(fact.get("subject") or "").strip()
         metric = str(fact.get("metric") or fact.get("id") or fact.get("source_key") or "").strip()
@@ -311,10 +321,25 @@ def _numeric_fact_fidelity_blockers(
         markers = _metric_markers_for_fact(fact)
         if markers and not any(marker in markdown_lower for marker in markers):
             continue
+        label = " ".join(part for part in (subject, metric) if part)
+        label = label or str(
+            fact.get("label") or fact.get("id") or fact.get("source_key") or "numeric fact"
+        )
+        if numeric_fact_current_state_duration_misuse(markdown, fact):
+            semantic_misuse.append(label)
+            continue
+        if not numeric_fact_literal_required(fact):
+            continue
         if not _contains_numeric_fact_value(markdown, fact):
-            label = " ".join(part for part in (subject, metric) if part)
-            missing.append(label or str(fact.get("id") or fact.get("source_key") or "numeric fact"))
+            missing.append(label)
 
+    if semantic_misuse:
+        return [
+            "Report treats current-state zero-duration numeric_facts as historical "
+            f"durations for {', '.join(semantic_misuse[:8])}. Regenerate the "
+            "affected prose from state_description instead of saying an episode "
+            "lasted 0 months."
+        ]
     if not missing:
         return []
     return [
@@ -391,25 +416,13 @@ _CLOSEST_ANALOG_RE = re.compile(
     re.IGNORECASE,
 )
 _ANALOG_YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
-_ANALOG_TOPIC_RE = re.compile(r"\b(?:analog|analogue)\b", re.IGNORECASE)
-_ANALOG_ANALYTIC_CLAIM_RE = re.compile(
-    r"\b(?:closest|most similar|similarity|distance|ranked|ranking)\b|"
-    r"\b(?:best|top)\s+(?:analog|analogue|match|fit|window|episode)\b|"
-    r"\b(?:resembles?|look(?:s|ed)?\s+(?:more\s+|most\s+)?like)\b",
+_ANALOG_CLAIM_RE = re.compile(
+    r"\b(?:analog|analogue|closest|distance|similarity|recession|cycle)\b",
     re.IGNORECASE,
 )
 _ANALOG_LIMITATION_RE = re.compile(
     r"\b(?:unavailable|not\s+available|not\s+covered|insufficient|excluded|missing|"
     r"not\s+present)\b",
-    re.IGNORECASE,
-)
-_ANALOG_COVERAGE_CONTEXT_RE = re.compile(
-    r"\b(?:data|dataset|sample|series|coverage|available|availability|"
-    r"observations?|history)\b[^\n.]{0,80}\b(?:from|since|starting|starts?|"
-    r"begins?|onward|through|limited|only|excludes?|excluded|missing)\b|"
-    r"\b(?:from|since|starting|starts?|begins?|onward|through|limited)\b"
-    r"[^\n.]{0,80}\b(?:data|dataset|sample|series|coverage|available|"
-    r"availability|observations?|history)\b",
     re.IGNORECASE,
 )
 
@@ -428,16 +441,6 @@ def _analog_labels_match(claimed: object, expected: object) -> bool:
     claimed_years = _analog_years(claimed_text)
     expected_years = _analog_years(expected_text)
     return bool(claimed_years and expected_years and claimed_years == expected_years)
-
-
-def _line_claims_historical_analog_evidence(line: str) -> bool:
-    if _ANALOG_LIMITATION_RE.search(line):
-        return False
-    if _ANALOG_COVERAGE_CONTEXT_RE.search(line):
-        return bool(_ANALOG_ANALYTIC_CLAIM_RE.search(line))
-    return bool(
-        _ANALOG_TOPIC_RE.search(line) or _ANALOG_ANALYTIC_CLAIM_RE.search(line)
-    )
 
 
 def _execution_summary_analog_years(summary: dict[str, object]) -> set[str]:
@@ -486,15 +489,15 @@ def _claimed_historical_analog_years(markdown: str) -> set[str]:
             in_research_query = heading == "research query"
             if in_research_query:
                 continue
-        if in_research_query:
-            continue
-        if not _line_claims_historical_analog_evidence(line):
+        if in_research_query or _ANALOG_LIMITATION_RE.search(line):
             continue
         for match in _ANALOG_YEAR_RE.finditer(line):
             before = line[max(0, match.start() - 32) : match.start()].lower()
             if re.search(r"\bcurrent\b[^\n.]{0,32}$", before):
                 continue
-            claimed.add(match.group(0))
+            context = line[max(0, match.start() - 80) : match.end() + 80]
+            if _ANALOG_CLAIM_RE.search(context):
+                claimed.add(match.group(0))
     return claimed
 
 
@@ -548,7 +551,9 @@ def _unsupported_historical_analog_claim_blocker(
                 label_lower in line_lower or any(year in line for year in years)
             ):
                 continue
-            if _line_claims_historical_analog_evidence(line_lower):
+            if _ANALOG_LIMITATION_RE.search(line_lower):
+                continue
+            if _ANALOG_CLAIM_RE.search(line_lower):
                 claimed.append(label)
                 break
     if not claimed:

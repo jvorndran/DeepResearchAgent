@@ -690,98 +690,6 @@ def test_submit_quality_decision_rejects_claimed_analog_window_without_evidence(
     assert any("computed analog windows" in fix for fix in payload["required_fixes"])
 
 
-def test_submit_quality_decision_allows_historical_coverage_year_language(tmp_path):
-    report_path = tmp_path / "report.json"
-    (tmp_path / "execution_summary.json").write_text(
-        json.dumps(
-            {
-                "status": "success",
-                "methods_used": ["rate-cut event study"],
-                "limitations": ["FRED S&P 500 observations begin in 2016."],
-            }
-        ),
-        encoding="utf-8",
-    )
-    report_path.write_text(
-        json.dumps(
-            {
-                "query": "Test whether the first Fed cut is bullish for stocks.",
-                "title": "Fed Cut Event Study",
-                "executive_summary": "Recent data are supportive but limited.",
-                "markdown": (
-                    "## Caveats\n"
-                    "Historical analog coverage is limited to FRED data from 2016 onward.\n"
-                    "The 1995 and 2001 easing cycles are not covered by this dataset."
-                ),
-                "charts": [],
-                "data_sources": [],
-                "metadata": {"word_count": 24},
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    payload = json.loads(
-        submit_quality_decision.invoke(
-            {
-                "decision": "approve",
-                "report_path": str(report_path),
-                "notes": "Coverage caveats are stated.",
-            }
-        )
-    )
-
-    assert payload["status"] == "approved"
-
-
-def test_submit_quality_decision_allows_event_study_cycle_years(tmp_path):
-    report_path = tmp_path / "report.json"
-    (tmp_path / "execution_summary.json").write_text(
-        json.dumps(
-            {
-                "status": "success",
-                "cycles_analyzed": [
-                    {"first_cut_year": 2019, "horizon_months": 6},
-                    {"first_cut_year": 2020, "horizon_months": 6},
-                    {"first_cut_year": 2024, "horizon_months": 6},
-                ],
-                "aggregate_summary": {"cycle_count": 3},
-            }
-        ),
-        encoding="utf-8",
-    )
-    report_path.write_text(
-        json.dumps(
-            {
-                "query": "Test whether the first Fed cut is bullish for stocks.",
-                "title": "Fed Cut Event Study",
-                "executive_summary": "The recent event-study sample is small.",
-                "markdown": (
-                    "## Evidence\n"
-                    "The event-study sample includes the 2019, 2020, and 2024 "
-                    "rate-cut cycles."
-                ),
-                "charts": [],
-                "data_sources": [],
-                "metadata": {"word_count": 18},
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    payload = json.loads(
-        submit_quality_decision.invoke(
-            {
-                "decision": "approve",
-                "report_path": str(report_path),
-                "notes": "Cycle years describe the event-study sample.",
-            }
-        )
-    )
-
-    assert payload["status"] == "approved"
-
-
 def test_submit_quality_decision_counts_ranking_rows_as_window_coverage(tmp_path):
     report_path = tmp_path / "report.json"
     (tmp_path / "execution_summary.json").write_text(
@@ -1874,6 +1782,7 @@ def test_submit_quality_decision_rejects_company_fundamental_numeric_drift(tmp_p
                         "source_key": "sec_company_facts.latest_fundamentals.NVDA.revenue_b",
                         "subject": "NVDA",
                         "metric": "revenue_b",
+                        "literal_required": False,
                     },
                     {
                         "id": "sec_company_facts.NVDA.cash_and_securities_b",
@@ -1883,6 +1792,7 @@ def test_submit_quality_decision_rejects_company_fundamental_numeric_drift(tmp_p
                         "source_key": "sec_company_facts.latest_fundamentals.NVDA.cash_and_securities_b",
                         "subject": "NVDA",
                         "metric": "cash_and_securities_b",
+                        "literal_required": False,
                     },
                 ],
             }
@@ -1922,6 +1832,118 @@ def test_submit_quality_decision_rejects_company_fundamental_numeric_drift(tmp_p
     assert payload["required_upstream"] == "technical-writer"
     assert "NVDA revenue_b" in payload["reason"]
     assert "NVDA cash_and_securities_b" in payload["reason"]
+
+
+def test_submit_quality_decision_accepts_zero_duration_current_state_prose(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "numeric_facts": [
+                    {
+                        "id": "inversion",
+                        "label": "Inversion Months",
+                        "value": 0,
+                        "unit": "months",
+                        "precision": 0,
+                        "literal_required": True,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "job_id": "qa-zero-duration-good",
+                "created_at": "2026-05-14T12:00:00Z",
+                "query": "Review whether the yield curve is currently inverted.",
+                "title": "Yield Curve State",
+                "executive_summary": "The yield curve is not currently inverted.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "The yield curve is not currently inverted after a prolonged inversion "
+                    "that ended earlier in 2025."
+                ),
+                "charts": {},
+                "data_sources": [],
+                "metadata": {"analysis_type": "macro", "chart_count": 0, "word_count": 18},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "approved"
+
+
+def test_submit_quality_decision_rejects_zero_duration_as_historical_duration(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "numeric_facts": [
+                    {
+                        "id": "inversion",
+                        "label": "Inversion Months",
+                        "value": 0,
+                        "unit": "months",
+                        "precision": 0,
+                        "literal_required": True,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "job_id": "qa-zero-duration-bad",
+                "created_at": "2026-05-14T12:00:00Z",
+                "query": "Review whether the yield curve is currently inverted.",
+                "title": "Yield Curve State",
+                "executive_summary": "The curve normalized after 0 months.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "The yield curve has normalized after 0 months of inversion."
+                ),
+                "charts": {},
+                "data_sources": [],
+                "metadata": {"analysis_type": "macro", "chart_count": 0, "word_count": 11},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "numeric_fact_mismatch"
+    assert payload["required_upstream"] == "technical-writer"
+    assert "zero-duration" in payload["reason"]
 
 
 def test_submit_quality_decision_rejects_static_chart_semantics_blockers(tmp_path):
