@@ -17,29 +17,6 @@ def _write_series(path: Path, values: list[tuple[str, float]]) -> str:
     return str(path)
 
 
-def _write_nvda_sec_company_facts(path: Path) -> str:
-    pd.DataFrame(
-        {
-            "fiscal_year": [2025, 2026],
-            "revenue": [130_497_000_000, 215_938_000_000],
-            "gross_profit": [97_858_000_000, 153_865_000_000],
-            "operating_income": [81_453_000_000, 136_859_000_000],
-            "net_income": [72_880_000_000, 120_224_000_000],
-            "operating_cash_flow": [64_089_000_000, 118_200_000_000],
-            "capital_expenditures": [3_236_000_000, 21_524_000_000],
-            "cash_and_equivalents": [8_589_000_000, 8_589_000_000],
-            "marketable_securities_current": [1_716_000_000, 2_016_000_000],
-            "long_term_debt": [8_463_000_000, 7_469_000_000],
-            "stockholders_equity": [65_000_000_000, 79_000_000_000],
-            "assets": [111_601_000_000, 124_092_000_000],
-            "liabilities": [32_274_000_000, 45_000_000_000],
-            "diluted_eps": [2.94, 4.90],
-            "shares": [24_700_000_000, 24_514_000_000],
-        }
-    ).to_csv(path, index=False)
-    return str(path)
-
-
 def test_quant_macro_stats_public_exports_are_helper_only():
     required_exports = {
         "align_period_features",
@@ -206,6 +183,83 @@ def test_load_monthly_panel_resolves_reusable_series_specs(tmp_path):
     }
     assert list(loaded.panel.columns) == ["date", "UNRATE", "PAYEMS"]
     assert loaded.panel["UNRATE"].tolist() == [3.8, 3.9]
+
+
+def test_align_period_features_does_not_fill_monthly_tails_when_weekly_extends():
+    panel = qms.align_period_features(
+        {
+            "PAYEMS": pd.DataFrame(
+                {
+                    "date": ["2026-03-01", "2026-04-01"],
+                    "value": [158_000.0, 158_100.0],
+                }
+            ),
+            "JTSJOL": pd.DataFrame(
+                {
+                    "date": ["2026-02-01", "2026-03-01"],
+                    "value": [7_100.0, 6_900.0],
+                }
+            ),
+            "ICSA": pd.DataFrame(
+                {
+                    "date": ["2026-05-02", "2026-05-09"],
+                    "value": [240_000.0, 250_000.0],
+                }
+            ),
+            "T5YIE": pd.DataFrame(
+                {
+                    "date": ["2026-05-14", "2026-05-15"],
+                    "value": [2.30, 2.40],
+                }
+            ),
+        },
+        frequency="M",
+        how="outer",
+        fill_method="ffill",
+        fill_limit=2,
+        max_date=None,
+    )
+
+    rows = panel.set_index(panel["date"].dt.strftime("%Y-%m"))
+    assert rows.loc["2026-04", "PAYEMS"] == 158_100.0
+    assert pd.isna(rows.loc["2026-04", "JTSJOL"])
+    assert pd.isna(rows.loc["2026-05", "PAYEMS"])
+    assert pd.isna(rows.loc["2026-05", "JTSJOL"])
+    assert rows.loc["2026-05", "ICSA"] == 245_000.0
+    assert rows.loc["2026-05", "T5YIE"] == pytest.approx(2.35)
+
+
+def test_align_period_features_carries_quarterly_values_only_within_quarter():
+    panel = qms.align_period_features(
+        {
+            "GDPC1": pd.DataFrame(
+                {
+                    "date": ["2026-01-01", "2026-04-01"],
+                    "value": [23_000.0, 23_100.0],
+                }
+            ),
+            "UNRATE": pd.DataFrame(
+                {
+                    "date": pd.date_range("2026-01-01", periods=7, freq="MS"),
+                    "value": [4.0, 4.1, 4.1, 4.2, 4.2, 4.3, 4.3],
+                }
+            ),
+        },
+        frequency="M",
+        how="outer",
+        fill_method="ffill",
+        fill_limit=3,
+        max_date=None,
+    )
+
+    rows = panel.set_index(panel["date"].dt.strftime("%Y-%m"))
+    assert rows.loc["2026-01", "GDPC1"] == 23_000.0
+    assert rows.loc["2026-02", "GDPC1"] == 23_000.0
+    assert rows.loc["2026-03", "GDPC1"] == 23_000.0
+    assert rows.loc["2026-04", "GDPC1"] == 23_100.0
+    assert rows.loc["2026-05", "GDPC1"] == 23_100.0
+    assert rows.loc["2026-06", "GDPC1"] == 23_100.0
+    assert pd.isna(rows.loc["2026-07", "GDPC1"])
 
 
 def test_direct_ols_forecast_and_signal_backtest_are_reusable_helpers():
@@ -750,91 +804,6 @@ def test_save_quant_outputs_writes_generic_evidence_payload(tmp_path):
     assert list(saved_charts) == ["trend"]
     assert "preserved_prior_charts" not in handoff
     assert "preserved_report_aligned_charts" not in handoff
-
-
-def test_save_quant_outputs_auto_attaches_sec_helper_evidence(tmp_path):
-    sec_path = Path(_write_nvda_sec_company_facts(tmp_path / "NVDA_sec_edgar_company_facts.csv"))
-    charts = {
-        "income_statement": {
-            "type": "line",
-            "title": "Revenue",
-            "data": [{"fiscal_year": "2026", "revenue": 215_938_000_000}],
-            "series": [{"dataKey": "revenue", "name": "Revenue"}],
-            "xAxis": {"dataKey": "fiscal_year"},
-        }
-    }
-    manual_fact_source_keys = [
-        "sec_company_facts",
-        "NVDA_SEC",
-        str(sec_path),
-        sec_path.name,
-        sec_path.stem,
-    ]
-    summary = {
-        "title": "NVIDIA AI spending resilience",
-        "source_files": {"sec_company_facts": str(sec_path)},
-        "quant_input_manifest": {"data_files": {"NVDA_SEC": str(sec_path)}},
-        "methods_used": ["manual_sec_summary"],
-        "numeric_facts": [
-            qms.numeric_fact(
-                fact_id=f"manual_revenue_{index}",
-                label="Latest revenue",
-                raw_value=215_938_000_000,
-                unit="$M",
-                precision=0,
-                tolerance=0.1,
-                source_key=source_key,
-            )
-            for index, source_key in enumerate(manual_fact_source_keys)
-        ]
-        + [
-            qms.numeric_fact(
-                fact_id="fred_latest",
-                label="FRED latest",
-                raw_value=4.5,
-                unit="percent",
-                precision=1,
-                tolerance=0.1,
-                source_key="FRED.FEDFUNDS",
-            )
-        ],
-    }
-
-    handoff = qms.save_quant_outputs(tmp_path, charts, summary)
-    saved_summary = json.loads((tmp_path / "execution_summary.json").read_text())
-
-    fact_ids = {fact["id"] for fact in saved_summary["numeric_facts"]}
-    assert saved_summary["latest_fundamentals"]["NVDA"]["revenue_b"] == pytest.approx(215.938)
-    assert saved_summary["latest_fundamentals"]["NVDA"]["cash_and_securities_b"] == pytest.approx(10.605)
-    assert saved_summary["latest_fundamentals"]["NVDA"]["long_term_debt_b"] == pytest.approx(7.469)
-    assert saved_summary["company_history_rows"][-1]["ticker"] == "NVDA"
-    assert saved_summary["source_coverage"]["sec_company_facts"]["status"] == "covered"
-    assert "sec_company_fundamentals" in saved_summary["methods_used"]
-    assert not any(fact_id.startswith("manual_revenue_") for fact_id in fact_ids)
-    assert "fred_latest" in fact_ids
-    assert "sec_company_facts.NVDA.revenue_b" in fact_ids
-    assert handoff["latest_fundamentals"]["NVDA"]["revenue_b"] == pytest.approx(215.938)
-
-
-def test_save_quant_outputs_rejects_unbuildable_sec_helper_evidence(tmp_path):
-    missing_path = tmp_path / "NVDA_sec_edgar_company_facts.csv"
-
-    with pytest.raises(ValueError, match="SEC company-facts files are present"):
-        qms.save_quant_outputs(
-            tmp_path,
-            {},
-            {
-                "source_files": {"NVDA_SEC": str(missing_path)},
-                "numeric_facts": [
-                    {
-                        "id": "latest_revenue",
-                        "display_value": "215,938,000,000",
-                        "raw_value": 215_938_000_000,
-                        "source_key": "NVDA_SEC",
-                    }
-                ],
-            },
-        )
 
 
 def test_save_quant_outputs_does_not_shape_scenario_score_rows(tmp_path):

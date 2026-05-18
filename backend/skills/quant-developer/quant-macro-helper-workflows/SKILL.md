@@ -65,7 +65,10 @@ statistics inside `analysis.py`.
 - For daily or weekly FRED series joined with monthly or quarterly macro
   series, aggregate higher-frequency series to the target frequency and
   normalize every input to the same period key. Prefer
-  `align_period_features(series_frames, frequency="M", how="outer", timestamp_position="start", fill_method="ffill", fill_limit=2)`.
+  `align_period_features(series_frames, frequency="M", how="outer", timestamp_position="start", fill_method="ffill", fill_limit=2, fill_scope="lower_frequency")`.
+  This only carries lower-frequency observations such as quarterly GDP within
+  their native period; it must leave same-frequency monthly/JOLTS tails missing
+  when weekly or daily series extend farther.
 - Use `'QE'` for quarterly and `'ME'` for monthly only with `.resample(...)`.
   Never call `.to_period("QE")` or `.to_period("ME")`.
 - JSON serialization safety: use `save_quant_outputs` for final artifact

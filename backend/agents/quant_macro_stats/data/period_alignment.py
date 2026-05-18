@@ -1,6 +1,6 @@
 """Period alignment and composite predictive indicator helpers."""
 
-from typing import Any, Iterable
+from typing import Any, Iterable, Literal
 
 import numpy as np
 import pandas as pd
@@ -14,6 +14,71 @@ from .._utils import (
     _require_columns,
 )
 
+FillScope = Literal["lower_frequency", "all"]
+
+_FREQUENCY_RANK = {
+    "D": 0,
+    "W": 1,
+    "M": 2,
+    "Q": 3,
+    "Y": 4,
+}
+
+
+def _coarse_frequency_from_inferred(freq: str | None) -> str | None:
+    if not freq:
+        return None
+    upper = freq.upper()
+    if upper.startswith("W"):
+        return "W"
+    if upper.startswith(("M", "BM")):
+        return "M"
+    if upper.startswith(("Q", "BQ")):
+        return "Q"
+    if upper.startswith(("A", "Y", "BA", "BY")):
+        return "Y"
+    if upper.startswith(("B", "D")):
+        return "D"
+    return None
+
+
+def _infer_source_frequency(dates: pd.Series, *, target_frequency: str) -> str:
+    clean_dates = pd.Series(pd.to_datetime(dates, errors="coerce")).dropna().sort_values()
+    if clean_dates.empty:
+        return target_frequency
+
+    try:
+        inferred = _coarse_frequency_from_inferred(pd.infer_freq(clean_dates))
+    except ValueError:
+        inferred = None
+    if inferred is not None:
+        return inferred
+
+    target_periods = clean_dates.dt.to_period(target_frequency)
+    if target_periods.value_counts().max() > 1:
+        return "W" if target_frequency == "M" else "M"
+
+    unique_ordinals = sorted({period.ordinal for period in target_periods})
+    if len(unique_ordinals) < 2:
+        return target_frequency
+    period_gaps = [
+        right - left for left, right in zip(unique_ordinals, unique_ordinals[1:], strict=False)
+    ]
+    median_gap = float(np.median(period_gaps))
+    if target_frequency == "M" and median_gap >= 2.5:
+        return "Q"
+    if target_frequency == "Q" and median_gap >= 3.5:
+        return "Y"
+    return target_frequency
+
+
+def _is_lower_frequency(source_frequency: str, target_frequency: str) -> bool:
+    return _FREQUENCY_RANK[source_frequency] > _FREQUENCY_RANK[target_frequency]
+
+
+def _target_periods_as_frequency(periods: pd.Series, frequency: str) -> pd.Series:
+    return periods.dt.to_timestamp(how="start").dt.to_period(frequency)
+
 
 def align_period_features(
     series_frames: dict[str, pd.DataFrame],
@@ -26,6 +91,7 @@ def align_period_features(
     timestamp_position: str = "start",
     fill_method: str | None = None,
     fill_limit: int | None = None,
+    fill_scope: FillScope = "lower_frequency",
     max_date: str | pd.Timestamp | None = "today",
 ) -> pd.DataFrame:
     """
@@ -35,8 +101,12 @@ def align_period_features(
     macro series, and quarterly output series need a deterministic common
     frequency. It performs no network calls. By default it never imputes
     missing values; pass ``fill_method="ffill"`` with a small ``fill_limit``
-    when quarterly series such as GDP should be carried into a monthly panel
-    without creating hand-rolled Cartesian joins.
+    when lower-frequency series such as quarterly GDP should be carried into a
+    monthly panel without creating hand-rolled Cartesian joins. Forward-fill is
+    source-frequency-aware by default: it carries lower-frequency values only
+    within their native period and does not extend same-frequency monthly
+    series into newer weekly/daily periods. Pass ``fill_scope="all"`` only for
+    explicit legacy imputation where stale tail values are acceptable.
     The output date defaults to the period start because FRED monthly and
     quarterly observations are commonly stamped at the first day of the period;
     pass ``timestamp_position="end"`` when chart labels should use period-end
@@ -63,6 +133,8 @@ def align_period_features(
         raise ValueError("fill_method must be None or 'ffill'")
     if fill_limit is not None and fill_limit < 0:
         raise ValueError("fill_limit must be non-negative")
+    if fill_scope not in {"lower_frequency", "all"}:
+        raise ValueError("fill_scope must be 'lower_frequency' or 'all'")
     if max_date == "today":
         max_timestamp = pd.Timestamp.today().normalize()
     elif max_date is None:
@@ -72,6 +144,8 @@ def align_period_features(
 
     period_col = "month" if frequency == "M" else "quarter"
     aligned_frames: list[pd.DataFrame] = []
+    source_frequencies: dict[str, str] = {}
+    source_period_cols: dict[str, str] = {}
     for name, raw in series_frames.items():
         if raw is None or raw.empty:
             raise ValueError(
@@ -94,8 +168,18 @@ def align_period_features(
         frame = frame.dropna(subset=[date_col, name])
         if frame.empty:
             raise ValueError(f"Series '{name}' has no usable numeric observations after cleaning")
+        source_frequency = _infer_source_frequency(frame[date_col], target_frequency=frequency)
+        source_frequencies[name] = source_frequency
         frame[period_col] = frame[date_col].dt.to_period(frequency)
-        grouped = getattr(frame.groupby(period_col)[name], aggregation)().reset_index()
+        value_grouped = getattr(frame.groupby(period_col)[name], aggregation)()
+        if _is_lower_frequency(source_frequency, frequency):
+            source_period_col = f"__source_period_{len(source_period_cols)}"
+            source_period_cols[name] = source_period_col
+            frame[source_period_col] = frame[date_col].dt.to_period(source_frequency)
+            source_period_grouped = frame.groupby(period_col)[source_period_col].last()
+            grouped = pd.concat([value_grouped, source_period_grouped], axis=1).reset_index()
+        else:
+            grouped = value_grouped.reset_index()
         aligned_frames.append(grouped)
 
     merged = aligned_frames[0]
@@ -104,7 +188,27 @@ def align_period_features(
     merged = merged.sort_values(period_col).reset_index(drop=True)
     if fill_method == "ffill":
         value_columns = [name for name in series_frames if name in merged.columns]
-        merged[value_columns] = merged[value_columns].ffill(limit=fill_limit)
+        if fill_scope == "all":
+            merged[value_columns] = merged[value_columns].ffill(limit=fill_limit)
+        else:
+            for name in value_columns:
+                source_frequency = source_frequencies.get(name, frequency)
+                source_period_col = source_period_cols.get(name)
+                if source_period_col is None or not _is_lower_frequency(
+                    source_frequency, frequency
+                ):
+                    continue
+                filled_values = merged[name].ffill(limit=fill_limit)
+                filled_source_periods = merged[source_period_col].ffill(limit=fill_limit)
+                current_source_periods = _target_periods_as_frequency(
+                    merged[period_col], source_frequency
+                )
+                carry_mask = (
+                    merged[name].isna()
+                    & filled_source_periods.notna()
+                    & filled_source_periods.eq(current_source_periods)
+                )
+                merged.loc[carry_mask, name] = filled_values.loc[carry_mask]
     timestamp_how = "start" if timestamp_position == "start" else "end"
     merged[date_col] = merged[period_col].dt.to_timestamp(how=timestamp_how).dt.normalize()
     columns = [date_col, *series_frames.keys()]

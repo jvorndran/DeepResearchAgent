@@ -258,6 +258,42 @@ execution_summary = {{"forecast_table": [], "signal_false_positive_windows": fal
     assert "already composes reusable forecast evidence rows" in response.content
 
 
+def test_period_alignment_guardrail_blocks_claims_and_jolts_without_helper(tmp_path):
+    claims_path = tmp_path / "icsa.csv"
+    jolts_path = tmp_path / "jtsjol.csv"
+    claims_path.write_text("date,value\n2026-05-09,240000\n", encoding="utf-8")
+    jolts_path.write_text("date,value\n2026-03-01,6900\n", encoding="utf-8")
+    content = f'''
+DATA_FILES = {{"ICSA": {str(claims_path)!r}, "JTSJOL": {str(jolts_path)!r}}}
+panel = {{}}
+'''
+
+    response = _blocked_write_response(tmp_path, content)
+
+    assert response.status == "error"
+    assert "Blocked mixed-frequency FRED analysis script" in response.content
+    assert 'fill_scope="lower_frequency"' in response.content
+    assert "monthly/JOLTS tails missing" in response.content
+
+
+def test_period_alignment_guardrail_blocks_treasury_and_jolts_without_helper(tmp_path):
+    t5yie_path = tmp_path / "t5yie.csv"
+    jolts_path = tmp_path / "jtsjol.csv"
+    t5yie_path.write_text("date,value\n2026-05-15,2.35\n", encoding="utf-8")
+    jolts_path.write_text("date,value\n2026-03-01,6900\n", encoding="utf-8")
+    content = f'''
+DATA_FILES = {{"T5YIE": {str(t5yie_path)!r}, "JTSJOL": {str(jolts_path)!r}}}
+panel = {{}}
+'''
+
+    response = _blocked_write_response(tmp_path, content)
+
+    assert response.status == "error"
+    assert "Blocked mixed-frequency FRED analysis script" in response.content
+    assert 'fill_scope="lower_frequency"' in response.content
+    assert "monthly/JOLTS tails missing" in response.content
+
+
 def test_macro_guardrail_blocks_removed_output_preservation_surfaces(tmp_path):
     content = '''
 from agents.quant_macro_stats import merge_quant_validation_summary, save_quant_outputs

@@ -1063,7 +1063,8 @@ class QuantDeveloperToolBoundaryMiddleware(AgentMiddleware):
                             "positional argument. Use keyword arguments for the rest: "
                             'align_period_features(series_frames, frequency="M", '
                             'how="outer", timestamp_position="start", '
-                            'fill_method="ffill", fill_limit=2).'
+                            'fill_method="ffill", fill_limit=2, '
+                            'fill_scope="lower_frequency").'
                         ),
                         name="write_file",
                         tool_call_id=context.tool_call_id,
@@ -1216,10 +1217,14 @@ class QuantDeveloperToolBoundaryMiddleware(AgentMiddleware):
                     "Treasury yields or initial claims with monthly/quarterly macro "
                     "series. Import and call `align_period_features(series_frames, "
                     'frequency="M", how="outer", timestamp_position="start", '
-                    'fill_method="ffill", fill_limit=2)` '
+                    'fill_method="ffill", fill_limit=2, '
+                    'fill_scope="lower_frequency")` '
                     "from `agents.quant_macro_stats` before deriving features or "
-                    "calling `direct_ols_forecast`; do not first merge resampled "
-                    "month-end timestamps against month-start FRED observations."
+                    "calling `direct_ols_forecast`. The helper only carries "
+                    "lower-frequency observations such as quarterly GDP within their "
+                    "native period; leave same-frequency monthly/JOLTS tails missing "
+                    "when weekly or daily series extend farther. Do not first merge "
+                    "resampled month-end timestamps against month-start FRED observations."
                 ),
                 name="write_file",
                 tool_call_id=context.tool_call_id,
