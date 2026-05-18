@@ -93,6 +93,28 @@ def _latest_zero_chart_validation(messages: list[Any]) -> dict[str, Any] | None:
     return None
 
 
+def _latest_chart_handoff_mismatch(messages: list[Any]) -> dict[str, Any] | None:
+    for message in reversed(messages):
+        if _message_tool_name(message) not in {
+            "write_research_report",
+            "validate_research_report_file",
+        }:
+            continue
+        parsed = _json_from_message(message)
+        if not isinstance(parsed, dict):
+            continue
+        chart_handoff = parsed.get("chart_handoff")
+        if (
+            isinstance(chart_handoff, dict)
+            and isinstance(chart_handoff.get("missing_report_chart_ids"), list)
+            and chart_handoff["missing_report_chart_ids"]
+        ):
+            return parsed
+        if parsed.get("failure_category") == "chart_handoff_mismatch":
+            return parsed
+    return None
+
+
 def _success_handoff_content(messages: list[Any]) -> str:
     validation = _latest_successful_validation(messages) or {}
     report_path = _latest_writer_report_path(messages)
@@ -139,13 +161,59 @@ def _zero_chart_failure_handoff_content(messages: list[Any]) -> str:
     )
 
 
+def _chart_handoff_failure_handoff_content(messages: list[Any]) -> str:
+    mismatch = _latest_chart_handoff_mismatch(messages) or {}
+    chart_handoff = (
+        mismatch.get("chart_handoff")
+        if isinstance(mismatch.get("chart_handoff"), dict)
+        else {}
+    )
+    blockers = (
+        mismatch.get("blockers")
+        if isinstance(mismatch.get("blockers"), list)
+        else []
+    )
+    message = mismatch.get("message")
+    if blockers:
+        reason = blockers[0]
+    elif isinstance(message, str):
+        reason = message
+    else:
+        reason = (
+            "chart_handoff_mismatch: final report did not preserve "
+            "non-dropped chart IDs"
+        )
+    report_path = mismatch.get("report_path")
+    if not isinstance(report_path, str) or not report_path:
+        report_path = _latest_writer_report_path(messages)
+    return json.dumps(
+        {
+            "status": "failed",
+            "report_json": report_path,
+            "chart_ids": chart_handoff.get("expected_chart_ids") or [],
+            "missing_report_chart_ids": chart_handoff.get("missing_report_chart_ids")
+            or [],
+            "dropped_chart_ids": chart_handoff.get("dropped_chart_ids") or [],
+            "required_upstream": "quant-developer",
+            "reason": reason,
+            "required_fixes": [
+                "Regenerate quant artifacts so every non-dropped execution_summary.chart_ids "
+                "entry has a renderable report chart definition, or mark intentionally omitted "
+                "charts in dropped_chart_ids."
+            ],
+        }
+    )
+
+
 class TechnicalWriterToolBoundaryMiddleware(AgentMiddleware):
     """Expose only report-writing tools to prevent context-heavy file reads."""
 
     def _only_writer_tools(self, request: ModelRequest) -> ModelRequest:
         messages = list(request.messages)
-        if _latest_successful_validation(messages) or _latest_zero_chart_validation(
-            messages
+        if (
+            _latest_successful_validation(messages)
+            or _latest_chart_handoff_mismatch(messages)
+            or _latest_zero_chart_validation(messages)
         ):
             return request.override(tools=[])
         tools = [tool for tool in request.tools if _tool_name(tool) in _ALLOWED_TOOL_NAMES]
@@ -159,6 +227,10 @@ class TechnicalWriterToolBoundaryMiddleware(AgentMiddleware):
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse:
         messages = list(request.messages)
+        if _latest_chart_handoff_mismatch(messages):
+            return ModelResponse(
+                result=[AIMessage(content=_chart_handoff_failure_handoff_content(messages))]
+            )
         if _latest_zero_chart_validation(messages):
             return ModelResponse(
                 result=[AIMessage(content=_zero_chart_failure_handoff_content(messages))]
@@ -173,6 +245,10 @@ class TechnicalWriterToolBoundaryMiddleware(AgentMiddleware):
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
         messages = list(request.messages)
+        if _latest_chart_handoff_mismatch(messages):
+            return ModelResponse(
+                result=[AIMessage(content=_chart_handoff_failure_handoff_content(messages))]
+            )
         if _latest_zero_chart_validation(messages):
             return ModelResponse(
                 result=[AIMessage(content=_zero_chart_failure_handoff_content(messages))]

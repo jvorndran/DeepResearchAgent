@@ -2,8 +2,6 @@
 from copy import deepcopy
 from typing import Any, Iterable
 
-from .numeric_fact_contracts import normalize_numeric_facts
-
 
 _COMPACT_HANDOFF_KEYS = (
     "historical_window_coverage",
@@ -136,20 +134,6 @@ def _collect_validation_methods(summary: dict[str, Any]) -> None:
                     methods.append(method)
 
 
-def _normalize_numeric_fact_contracts(summary: dict[str, Any]) -> None:
-    """Canonicalize legacy numeric_facts before saving or handing off artifacts."""
-
-    if "numeric_facts" not in summary:
-        return
-    try:
-        summary["numeric_facts"] = normalize_numeric_facts(
-            summary.get("numeric_facts"),
-            strict=True,
-        )
-    except ValueError as exc:
-        raise ValueError(f"Invalid execution_summary.numeric_facts: {exc}") from exc
-
-
 def _iter_nested_mappings(*values: Any, max_depth: int = 3) -> Iterable[dict[str, Any]]:
     """Yield mapping payloads reachable from helper handoff containers."""
 
@@ -167,6 +151,5 @@ def _iter_nested_mappings(*values: Any, max_depth: int = 3) -> Iterable[dict[str
 
 _SUMMARY_NORMALIZATION_RULES = (
     _drop_obsolete_preservation_flags,
-    _normalize_numeric_fact_contracts,
     _collect_validation_methods,
 )

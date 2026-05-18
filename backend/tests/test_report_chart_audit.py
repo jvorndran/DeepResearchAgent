@@ -72,6 +72,43 @@ def test_report_chart_audit_accepts_renderable_axis_chart(tmp_path):
     assert audit["chart_semantics"]["valid"] is True
 
 
+def test_report_chart_audit_rejects_missing_handoff_chart_ids(tmp_path):
+    report_path = _write_report(
+        tmp_path,
+        {
+            "id": "consumer_stress_dashboard",
+            "type": "line",
+            "title": "Consumer Stress",
+            "description": "Consumer stress over time.",
+            "xAxisKey": "date",
+            "series": [{"dataKey": "value", "label": "Value", "color": "#2563eb"}],
+            "data": [{"date": "2026-01", "value": 1.0}],
+        },
+    )
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "chart_ids": [
+                    "consumer_stress_dashboard",
+                    "savings_credit_stress",
+                    "company_net_margins",
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    audit = json.loads(run_report_chart_audit(str(report_path)))
+
+    assert audit["passes_audit"] is False
+    assert audit["chart_handoff"]["missing_report_chart_ids"] == [
+        "savings_credit_stress",
+        "company_net_margins",
+    ]
+    assert "chart_handoff_mismatch" in audit["blockers"][0]
+
+
 def test_report_chart_audit_accepts_broad_governed_chart_families(tmp_path):
     charts = {
         "radar_profile": {
