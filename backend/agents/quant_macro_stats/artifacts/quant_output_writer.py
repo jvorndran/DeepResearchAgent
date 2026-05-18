@@ -12,6 +12,10 @@ from .recharts_schema_normalization import (
     _drop_empty_chart_definitions,
     _normalize_declared_since_lists,
 )
+from .source_unit_fidelity import (
+    attach_source_unit_metadata,
+    failed_unit_comparison_messages,
+)
 from .execution_summary_normalization import (
     build_quant_output_handoff,
     normalize_quant_execution_summary,
@@ -45,6 +49,7 @@ def save_quant_outputs(
 
     summary = normalize_quant_execution_summary(execution_summary)
     _normalize_declared_since_lists(summary)
+    _preserve_source_unit_contract(summary)
     _attach_generated_by(summary, output_path)
     _preserve_chart_provenance(chart_map, summary, chart_ids)
 
@@ -103,6 +108,15 @@ def _preserve_chart_provenance(
         summary["chart_provenance"] = preserved
     else:
         summary.pop("chart_provenance", None)
+
+
+def _preserve_source_unit_contract(summary: dict[str, Any]) -> None:
+    """Keep source units in the saved contract and fail invalid comparisons."""
+
+    attach_source_unit_metadata(summary)
+    errors = failed_unit_comparison_messages(summary)
+    if errors:
+        raise ValueError(errors[0])
 
 
 def _attach_generated_by(summary: dict[str, Any], output_path: Path) -> None:

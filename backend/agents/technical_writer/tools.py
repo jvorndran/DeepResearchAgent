@@ -1628,6 +1628,72 @@ def _compact_macro_evidence_payload(parsed: dict[str, Any]) -> str | None:
     )
 
 
+def _compact_source_unit_payload(parsed: dict[str, Any]) -> str | None:
+    metadata = parsed.get("source_unit_metadata")
+    comparisons = parsed.get("unit_comparisons")
+    errors = parsed.get("source_unit_errors")
+    lines: list[str] = []
+
+    if isinstance(metadata, list) and metadata:
+        rendered = []
+        for row in metadata[:16]:
+            if not isinstance(row, dict):
+                continue
+            key = row.get("source_key") or row.get("series_id") or row.get("title")
+            units = row.get("units")
+            family = row.get("unit_family")
+            basis = row.get("unit_basis")
+            if not key or not (units or family or basis):
+                continue
+            pieces = [str(key)]
+            if row.get("series_id") and row.get("series_id") != key:
+                pieces.append(f"series_id={row.get('series_id')}")
+            if units:
+                pieces.append(f"units={units}")
+            if family:
+                pieces.append(f"unit_family={family}")
+            if basis:
+                pieces.append(f"unit_basis={basis}")
+            rendered.append("; ".join(pieces))
+        if rendered:
+            lines.append("- source_unit_metadata: " + " | ".join(rendered))
+
+    if isinstance(comparisons, list) and comparisons:
+        rendered = []
+        for row in comparisons[:12]:
+            if not isinstance(row, dict):
+                continue
+            comparison_id = row.get("id") or row.get("comparison_id") or "comparison"
+            pieces = [
+                str(comparison_id),
+                f"status={row.get('status')}",
+                f"compatible={row.get('compatible')}",
+            ]
+            if row.get("metric"):
+                pieces.append(f"metric={row.get('metric')}")
+            if row.get("conversion"):
+                pieces.append(f"conversion={row.get('conversion')}")
+            if row.get("error"):
+                pieces.append(f"error={row.get('error')}")
+            rendered.append("; ".join(pieces))
+        if rendered:
+            lines.append("- unit_comparisons: " + " | ".join(rendered))
+
+    if isinstance(errors, list) and errors:
+        lines.append("- source_unit_errors: " + " | ".join(str(item) for item in errors[:8]))
+    elif isinstance(errors, str) and errors.strip():
+        lines.append("- source_unit_errors: " + errors.strip())
+
+    if not lines:
+        return None
+    return (
+        "Source-unit contract from execution_summary.json. Use only comparisons "
+        "with status=passed or status=converted; do not write direct gap, "
+        "divergence, or ratio claims for failed or missing unit comparisons:\n"
+        + "\n".join(lines)
+    )
+
+
 def _numeric_facts_from_summary(parsed: dict[str, Any]) -> list[dict[str, Any]]:
     candidates: list[object] = [parsed.get("numeric_facts")]
     facts: list[dict[str, Any]] = []
@@ -1744,7 +1810,16 @@ def _helper_evidence_for_draft(parsed: dict[str, Any]) -> dict[str, Any]:
     if facts:
         evidence["numeric_facts"] = facts
 
-    for key in ("source_coverage", "methods_used", "chart_ids", "limitations", "source_context_files"):
+    for key in (
+        "source_coverage",
+        "methods_used",
+        "chart_ids",
+        "limitations",
+        "source_context_files",
+        "source_unit_metadata",
+        "unit_comparisons",
+        "source_unit_errors",
+    ):
         value = parsed.get(key)
         if _is_non_empty_payload(value):
             evidence[key] = value
@@ -2381,6 +2456,11 @@ def _compact_execution_summary_payload(parsed: dict) -> str:
     stats = parsed.get("statistical_summary")
     stats_payload = stats if isinstance(stats, dict) else {}
 
+    source_unit_summary = _compact_source_unit_payload(parsed)
+    if source_unit_summary:
+        parts.append(source_unit_summary)
+        compact_limit = max(compact_limit, 8000)
+
     helper_evidence_summary = _compact_helper_evidence_payload(parsed)
     if helper_evidence_summary:
         parts.append(helper_evidence_summary)
@@ -2948,6 +3028,9 @@ def write_research_report(
                 "methods_used",
                 "chart_ids",
                 "limitations",
+                "source_unit_metadata",
+                "unit_comparisons",
+                "source_unit_errors",
             ):
                 if helper_evidence.get(key):
                     execution_payload.setdefault(key, helper_evidence[key])

@@ -37,6 +37,9 @@ def test_quant_macro_stats_public_exports_are_helper_only():
         "QUANT_HELPER_CATALOG",
         "format_quant_helper_catalog_for_prompt",
         "chart_provenance",
+        "source_unit_metadata",
+        "source_unit_metadata_from_csv",
+        "unit_comparison",
     }
     removed_report_generators = {
         "build_company_fundamental_outputs",
@@ -85,6 +88,8 @@ def test_quant_helper_catalog_is_compact_agent_context():
     assert "signal_framework_backtest(data, *, component_cols" in catalog
     assert "sec_company_facts_evidence(data_files" in catalog
     assert "chart_provenance(source_series=..." in catalog
+    assert "source_unit_metadata(source_key, source_file=..." in catalog
+    assert "unit_comparison(comparison_id, sources" in catalog
     assert "save_quant_outputs(output_dir, charts, execution_summary)" in catalog
     assert {"load_monthly_panel", "direct_ols_forecast", "save_quant_outputs"}.issubset(
         helper_names
@@ -775,6 +780,112 @@ def test_save_quant_outputs_preserves_chart_provenance_and_generator_path(
     assert saved_summary["generated_by"]["script_path"] == str(script_path)
     assert handoff["chart_provenance"]["yield_spread"]["frequency"] == "daily"
     assert handoff["generated_by"]["script_path"] == str(script_path)
+
+
+def test_source_unit_helpers_flag_hourly_weekly_wage_mismatch(tmp_path):
+    hourly_path = tmp_path / "hourly.csv"
+    weekly_path = tmp_path / "weekly.csv"
+    pd.DataFrame(
+        [
+            {
+                "date": "2025-12-01",
+                "value": 37.02,
+                "series_id": "CES0500000008",
+                "title": "Average Hourly Earnings of Production and Nonsupervisory Employees",
+                "units": "dollars per hour",
+            }
+        ]
+    ).to_csv(hourly_path, index=False)
+    pd.DataFrame(
+        [
+            {
+                "date": "2025-12-01",
+                "value": 1072.67,
+                "series_id": "CES0500000030",
+                "title": "Average Weekly Earnings of Production and Nonsupervisory Employees",
+                "units": "dollars per week",
+            }
+        ]
+    ).to_csv(weekly_path, index=False)
+
+    hourly = qms.source_unit_metadata("prod_hourly", source_file=hourly_path)
+    weekly = qms.source_unit_metadata("prod_weekly", source_file=weekly_path)
+    comparison = qms.unit_comparison(
+        "production_wage_gap",
+        [hourly, weekly],
+        operation="difference",
+        metric="production/nonsupervisory earnings gap",
+    )
+
+    assert hourly["unit_basis"] == "hour"
+    assert weekly["unit_basis"] == "week"
+    assert comparison["status"] == "failed"
+    assert comparison["compatible"] is False
+    assert "Convert compared sources to a common unit" in comparison["error"]
+
+
+def test_save_quant_outputs_preserves_source_unit_metadata_from_source_files(tmp_path):
+    weekly_path = tmp_path / "CES0500000030.csv"
+    pd.DataFrame(
+        [
+            {
+                "date": "2025-12-01",
+                "value": 1072.67,
+                "series_id": "CES0500000030",
+            }
+        ]
+    ).to_csv(weekly_path, index=False)
+
+    charts = {
+        "weekly_wages": {
+            "type": "line",
+            "title": "Weekly Wages",
+            "data": [{"date": "2025-12-01", "wages": 1072.67}],
+            "series": [{"dataKey": "wages", "name": "Wages"}],
+            "xAxis": {"dataKey": "date"},
+        }
+    }
+    handoff = qms.save_quant_outputs(
+        tmp_path,
+        charts,
+        {
+            "methods_used": ["unit_test_method"],
+            "source_files": {"weekly_wages": str(weekly_path)},
+        },
+    )
+    saved_summary = json.loads((tmp_path / "execution_summary.json").read_text())
+
+    source_units = saved_summary["source_unit_metadata"]
+    assert source_units[0]["series_id"] == "CES0500000030"
+    assert source_units[0]["units"] == "dollars per week"
+    assert source_units[0]["unit_basis"] == "week"
+    assert handoff["source_unit_metadata"][0]["unit_family"] == "currency_per_time"
+
+
+def test_save_quant_outputs_rejects_failed_source_unit_comparison(tmp_path):
+    hourly = qms.source_unit_metadata(
+        "all_hourly",
+        series_id="CES0500000003",
+        title="Average Hourly Earnings of All Employees, Total Private",
+        units="dollars per hour",
+    )
+    weekly = qms.source_unit_metadata(
+        "prod_weekly",
+        series_id="CES0500000030",
+        title="Average Weekly Earnings of Production and Nonsupervisory Employees",
+        units="dollars per week",
+    )
+    comparison = qms.unit_comparison("wage_divergence", [hourly, weekly])
+
+    with pytest.raises(ValueError, match="wage_divergence failed source-unit validation"):
+        qms.save_quant_outputs(
+            tmp_path,
+            {"wages": {"type": "line", "data": [{"date": "2025", "value": 1}]}},
+            {
+                "source_unit_metadata": [hourly, weekly],
+                "unit_comparisons": [comparison],
+            },
+        )
 
 
 def test_save_quant_outputs_does_not_shape_scenario_score_rows(tmp_path):

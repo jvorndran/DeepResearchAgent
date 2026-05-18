@@ -10,6 +10,13 @@ from core.report_schema import ResearchReport
 
 from ..report_artifacts import load_report_json
 from ..technical_writer.chart_audit import chart_semantics_dict
+from ..quant_macro_stats.artifacts.source_unit_fidelity import (
+    attach_source_unit_metadata,
+    failed_unit_comparison_messages,
+    has_passing_mixed_wage_unit_comparison,
+    mixed_wage_period_sources,
+    normalize_source_unit_metadata,
+)
 from .utils import _truncate
 
 def _load_sibling_execution_summary(report_path: Path) -> dict[str, object]:
@@ -99,6 +106,10 @@ def _load_sibling_execution_summary(report_path: Path) -> dict[str, object]:
         "company_macro_sensitivity",
         "diagnostics",
         "source_coverage",
+        "source_files",
+        "source_unit_metadata",
+        "unit_comparisons",
+        "source_unit_errors",
     ):
         value = parsed.get(key)
         if value is not None:
@@ -852,6 +863,242 @@ def _model_claim_evidence_blockers(
     ]
 
 
+_WAGE_GAP_CLAIM_RE = re.compile(
+    r"\b(wage|earnings|pay)\b.{0,80}\b(gap|diverg|difference|spread|versus|vs\.?|compare|comparison)\b"
+    r"|\b(gap|diverg|difference|spread|versus|vs\.?|compare|comparison)\b.{0,80}\b(wage|earnings|pay)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _summary_contains_wage_gap_metric(value: object, *, depth: int = 0) -> bool:
+    if depth > 4:
+        return False
+    if isinstance(value, dict):
+        for key, child in value.items():
+            key_text = str(key).lower()
+            if (
+                any(token in key_text for token in ("wage", "earnings", "pay"))
+                and any(
+                    token in key_text
+                    for token in ("gap", "diverg", "difference", "spread", "compare")
+                )
+            ):
+                return True
+            if _summary_contains_wage_gap_metric(child, depth=depth + 1):
+                return True
+    elif isinstance(value, list):
+        return any(_summary_contains_wage_gap_metric(item, depth=depth + 1) for item in value)
+    return False
+
+
+def _chart_text_for_wage_unit_review(report_data: dict[str, object]) -> str:
+    pieces: list[str] = []
+    for chart in _iter_report_charts(report_data):
+        for key in ("id", "title", "description"):
+            value = chart.get(key)
+            if isinstance(value, str):
+                pieces.append(value)
+        series = chart.get("series")
+        if isinstance(series, list):
+            for item in series:
+                if not isinstance(item, dict):
+                    continue
+                for key in ("dataKey", "label", "name"):
+                    value = item.get(key)
+                    if isinstance(value, str):
+                        pieces.append(value)
+    return "\n".join(pieces)
+
+
+def _iter_report_charts(report_data: dict[str, object]) -> list[dict[str, object]]:
+    charts = report_data.get("charts")
+    if isinstance(charts, dict):
+        chart_items = charts.values()
+    elif isinstance(charts, list):
+        chart_items = charts
+    else:
+        return []
+    return [chart for chart in chart_items if isinstance(chart, dict)]
+
+
+def _chart_series_count(chart: dict[str, object]) -> int:
+    series = chart.get("series")
+    if isinstance(series, list):
+        return len([item for item in series if isinstance(item, dict)])
+
+    data = chart.get("data")
+    if not isinstance(data, list) or not data or not isinstance(data[0], dict):
+        return 0
+    x_axis_key = str(chart.get("xAxisKey") or chart.get("x_axis_key") or "").strip()
+    excluded = {"date", "period", "year", "month", "quarter", "label", "name", x_axis_key}
+    return len(
+        [
+            key
+            for key, value in data[0].items()
+            if str(key).strip().lower() not in excluded and isinstance(value, (int, float))
+        ]
+    )
+
+
+def _mixed_wage_unit_chart_overlays(
+    report_data: dict[str, object],
+    source_unit_metadata: object,
+) -> list[str]:
+    source_basis_by_token = _wage_source_basis_by_token(source_unit_metadata)
+    if len(set(source_basis_by_token.values())) < 2:
+        return []
+
+    overlays: list[str] = []
+    for chart in _iter_report_charts(report_data):
+        chart_tokens = _chart_source_tokens(chart)
+        matched_bases = {
+            source_basis_by_token[token]
+            for token in chart_tokens
+            if token in source_basis_by_token
+        }
+        if _chart_series_count(chart) < 2 or len(matched_bases) < 2:
+            continue
+        label = str(chart.get("id") or chart.get("title") or "unnamed chart")
+        title = str(chart.get("title") or "").strip()
+        overlays.append(f"{label} ({title})" if title and title != label else label)
+    return overlays
+
+
+def _wage_source_basis_by_token(source_unit_metadata: object) -> dict[str, str]:
+    basis_by_token: dict[str, str] = {}
+    for record in normalize_source_unit_metadata(source_unit_metadata):
+        family = str(record.get("unit_family") or "").lower()
+        basis = str(record.get("unit_basis") or "").strip().lower()
+        measure = str(record.get("measure") or "").lower()
+        text = f"{record.get('title') or ''} {record.get('units') or ''}".lower()
+        if family != "currency_per_time" or not basis:
+            continue
+        if measure != "wage" and "wage" not in text and "earnings" not in text:
+            continue
+        for key in ("source_key", "series_id"):
+            token = _source_unit_token(record.get(key))
+            if token:
+                basis_by_token[token] = basis
+        source_file = record.get("source_file")
+        if isinstance(source_file, str) and source_file.strip():
+            token = _source_unit_token(Path(source_file).stem)
+            if token:
+                basis_by_token[token] = basis
+    return basis_by_token
+
+
+def _chart_source_tokens(chart: dict[str, object]) -> set[str]:
+    tokens: set[str] = set()
+    for key in ("id",):
+        token = _source_unit_token(chart.get(key))
+        if token:
+            tokens.add(token)
+
+    series = chart.get("series")
+    if isinstance(series, list):
+        for item in series:
+            if not isinstance(item, dict):
+                continue
+            for key in ("dataKey", "label", "name", "source_key", "series_id"):
+                token = _source_unit_token(item.get(key))
+                if token:
+                    tokens.add(token)
+
+    data = chart.get("data")
+    if isinstance(data, list) and data and isinstance(data[0], dict):
+        for key in data[0]:
+            token = _source_unit_token(key)
+            if token:
+                tokens.add(token)
+
+    provenance = chart.get("provenance")
+    if isinstance(provenance, dict):
+        for key in ("source_series", "source_files"):
+            _add_source_unit_tokens(tokens, provenance.get(key))
+    return tokens
+
+
+def _add_source_unit_tokens(tokens: set[str], value: object) -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            for item in (key, child):
+                token = _source_unit_token(Path(item).stem if isinstance(item, str) else item)
+                if token:
+                    tokens.add(token)
+    elif isinstance(value, list):
+        for item in value:
+            token = _source_unit_token(Path(item).stem if isinstance(item, str) else item)
+            if token:
+                tokens.add(token)
+    else:
+        token = _source_unit_token(value)
+        if token:
+            tokens.add(token)
+
+
+def _source_unit_token(value: object) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+
+
+def _source_unit_fidelity_blockers(
+    summary: dict[str, object],
+    markdown: str,
+    report_data: dict[str, object],
+) -> list[str]:
+    if not summary:
+        return []
+
+    enriched_summary = dict(summary)
+    attach_source_unit_metadata(enriched_summary)
+
+    blockers = [
+        f"execution_summary.json source-unit comparison failed: {message}"
+        for message in failed_unit_comparison_messages(enriched_summary)
+    ]
+
+    mixed_wage_sources = mixed_wage_period_sources(
+        enriched_summary.get("source_unit_metadata")
+    )
+    if len(mixed_wage_sources) < 2:
+        return blockers
+    if has_passing_mixed_wage_unit_comparison(enriched_summary):
+        return blockers
+
+    chart_overlays = _mixed_wage_unit_chart_overlays(
+        report_data,
+        enriched_summary.get("source_unit_metadata"),
+    )
+    review_text = "\n".join(
+        (
+            markdown,
+            _chart_text_for_wage_unit_review(report_data),
+        )
+    )
+    mentions_wage_gap = bool(_WAGE_GAP_CLAIM_RE.search(review_text))
+    mentions_summary_gap = _summary_contains_wage_gap_metric(enriched_summary)
+    if not chart_overlays and not mentions_wage_gap and not mentions_summary_gap:
+        return blockers
+
+    basis_details = "; ".join(
+        f"{basis}: {', '.join(labels[:4])}"
+        for basis, labels in sorted(mixed_wage_sources.items())
+    )
+    comparison_context = "wage gap/divergence claims"
+    if chart_overlays:
+        comparison_context = "direct wage chart overlays"
+        chart_details = ", ".join(chart_overlays[:4])
+        if mentions_wage_gap or mentions_summary_gap:
+            comparison_context += " and wage gap/divergence claims"
+        comparison_context += f" ({chart_details})"
+    blockers.append(
+        f"Report or execution_summary.json contains {comparison_context} while "
+        "using wage sources with incompatible unit bases and no passing "
+        f"unit_comparisons contract ({basis_details}). Regenerate quant artifacts "
+        "after converting to a common unit, or remove the direct wage gap claim."
+    )
+    return blockers
+
+
 def _execution_summary_fidelity_blockers(
     report_data: dict[str, object], report_path: Path
 ) -> list[str]:
@@ -872,6 +1119,7 @@ def _execution_summary_fidelity_blockers(
     )
     if missing_helper_evidence:
         blockers.append(missing_helper_evidence)
+    blockers.extend(_source_unit_fidelity_blockers(summary, markdown, report_data))
     blockers.extend(_state_comparison_fidelity_blockers(summary, markdown))
     blockers.extend(_numeric_fact_fidelity_blockers(summary, markdown))
 
@@ -1187,6 +1435,11 @@ def _approval_failure_metadata(report_path: str) -> dict[str, str]:
     if not summary:
         return {}
     markdown = str(data.get("markdown", ""))
+    if _source_unit_fidelity_blockers(summary, markdown, data):
+        return {
+            "failure_category": "source_unit_mismatch",
+            "required_upstream": "quantitative-developer",
+        }
     if _chart_semantics_approval_blockers(data):
         return {
             "failure_category": "chart_semantics_mismatch",

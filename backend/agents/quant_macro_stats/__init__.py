@@ -9,6 +9,9 @@ from .artifacts import (
     normalize_quant_report_charts,
     numeric_fact,
     save_quant_outputs,
+    source_unit_metadata,
+    source_unit_metadata_from_csv,
+    unit_comparison,
 )
 from .catalog import (
     QUANT_HELPER_CATALOG,
@@ -178,9 +181,12 @@ __all__ = [
     "sec_company_facts_evidence",
     "sec_ticker_from_source",
     "signal_framework_backtest",
+    "source_unit_metadata",
+    "source_unit_metadata_from_csv",
     "stress_score_series",
     "summarize_sec_company_facts",
     "to_json_safe",
+    "unit_comparison",
     "walk_forward_ols_backtest",
     "window_coverage",
 ]
