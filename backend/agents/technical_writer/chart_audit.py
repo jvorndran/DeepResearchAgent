@@ -92,6 +92,22 @@ def _finite_values(data: list[Any], key: str) -> list[float]:
     return values
 
 
+def _duplicate_series_data_keys(series: list[Any]) -> list[str]:
+    counts: dict[str, int] = {}
+    order: list[str] = []
+    for item in series:
+        if not isinstance(item, dict):
+            continue
+        data_key = item.get("dataKey")
+        if not isinstance(data_key, str) or not data_key.strip():
+            continue
+        key = data_key.strip()
+        if key not in counts:
+            order.append(key)
+        counts[key] = counts.get(key, 0) + 1
+    return [key for key in order if counts[key] > 1]
+
+
 def _is_positive_finite_number(value: object) -> bool:
     return _is_finite_number(value) and float(value) > 0
 
@@ -478,6 +494,12 @@ def chart_semantics_dict(report: ResearchReport) -> dict:
             x_axis_key = chart.get("xAxisKey")
             series = chart.get("series")
             if isinstance(x_axis_key, str) and x_axis_key and isinstance(series, list):
+                duplicate_series_keys = _duplicate_series_data_keys(series)
+                if duplicate_series_keys:
+                    chart_blockers.append(
+                        "duplicate axis series dataKey values are ambiguous: "
+                        f"{', '.join(duplicate_series_keys)}"
+                    )
                 seen_x_values: set[str] = set()
                 duplicate_x_values = 0
                 all_series_keys = [

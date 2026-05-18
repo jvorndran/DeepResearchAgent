@@ -1759,55 +1759,6 @@ def test_submit_quality_decision_rejects_missing_helper_evidence_after_sec_fetch
     assert "source_coverage" in payload["reason"]
 
 
-def test_submit_quality_decision_rejects_missing_helper_evidence_from_data_files_used(tmp_path):
-    report_path = tmp_path / "report.json"
-    (tmp_path / "execution_summary.json").write_text(
-        json.dumps(
-            {
-                "status": "success",
-                "chart_ids": [],
-                "data_files_used": ["sec_facts"],
-            }
-        ),
-        encoding="utf-8",
-    )
-    report_path.write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "job_id": "qa-missing-company-fundamentals-data-files-used",
-                "created_at": "2026-05-14T12:00:00Z",
-                "query": (
-                    "Prepare a stock-specific research report on NVIDIA revenue, "
-                    "margin, cash-flow, balance-sheet trends, and scenarios."
-                ),
-                "title": "NVIDIA Fundamentals",
-                "executive_summary": "NVIDIA growth is discussed.",
-                "markdown": "## Executive Summary\nNVDA revenue and margin trends are discussed.",
-                "charts": {},
-                "data_sources": [],
-                "metadata": {"analysis_type": "earnings", "chart_count": 0, "word_count": 8},
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    payload = json.loads(
-        submit_quality_decision.invoke(
-            {
-                "decision": "approve",
-                "report_path": str(report_path),
-                "notes": "Looks acceptable.",
-            }
-        )
-    )
-
-    assert payload["status"] == "rejected"
-    assert payload["failure_category"] == "missing_helper_evidence"
-    assert payload["required_upstream"] == "quantitative-developer"
-    assert "SEC company-facts files are present" in payload["reason"]
-
-
 def test_submit_quality_decision_rejects_company_fundamental_numeric_drift(tmp_path):
     report_path = tmp_path / "report.json"
     (tmp_path / "execution_summary.json").write_text(

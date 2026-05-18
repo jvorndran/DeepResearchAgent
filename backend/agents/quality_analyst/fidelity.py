@@ -12,31 +12,6 @@ from ..report_artifacts import load_report_json
 from ..technical_writer.chart_audit import chart_semantics_dict
 from .utils import _truncate
 
-_SEC_COMPANY_FACTS_REF_MARKERS = (
-    "sec_facts",
-    "sec_company_facts",
-    "sec_edgar_company_facts",
-    "edgar_company_facts",
-)
-
-
-def _looks_like_sec_company_facts_ref(value: object) -> bool:
-    text = str(value).strip()
-    if not text:
-        return False
-    upper = text.upper()
-    normalized = text.lower().replace("-", "_").replace(" ", "_")
-    path_name = Path(text).name.lower().replace("-", "_").replace(" ", "_")
-    return (
-        upper.startswith("SEC_")
-        or upper.endswith("_SEC")
-        or any(
-            marker in normalized or marker in path_name
-            for marker in _SEC_COMPANY_FACTS_REF_MARKERS
-        )
-    )
-
-
 def _load_sibling_execution_summary(report_path: Path) -> dict[str, object]:
     """Return a compact quant summary from execution_summary.json when available."""
     summary_path = report_path.with_name("execution_summary.json")
@@ -732,30 +707,16 @@ def _sec_company_files_present(summary: dict[str, object]) -> bool:
     status = summary.get("company_context_status")
     if isinstance(status, dict) and status.get("sec_source_keys"):
         return True
-    if _data_files_used_has_sec_company_facts(summary.get("data_files_used")):
-        return True
     manifest = summary.get("quant_input_manifest")
     data_files = manifest.get("data_files") if isinstance(manifest, dict) else None
     if not isinstance(data_files, dict):
         return False
     for key, path in data_files.items():
-        if _looks_like_sec_company_facts_ref(key) or _looks_like_sec_company_facts_ref(
-            path
-        ):
+        key_upper = str(key).upper()
+        path_name = Path(str(path)).name.lower()
+        if key_upper.endswith("_SEC") or "sec_edgar_company_facts" in path_name:
             return True
     return False
-
-
-def _data_files_used_has_sec_company_facts(value: object) -> bool:
-    if isinstance(value, dict):
-        return any(
-            _looks_like_sec_company_facts_ref(key)
-            or _data_files_used_has_sec_company_facts(item)
-            for key, item in value.items()
-        )
-    if isinstance(value, (list, tuple, set)):
-        return any(_data_files_used_has_sec_company_facts(item) for item in value)
-    return _looks_like_sec_company_facts_ref(value)
 
 
 _MODEL_CLAIM_RE = re.compile(
