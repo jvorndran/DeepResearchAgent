@@ -263,6 +263,21 @@ QUANT_HELPER_CATALOG: tuple[QuantHelperCategory, ...] = (
                 preserves=("id", "label", "value", "display_value", "source_key"),
             ),
             QuantHelperSpec(
+                name="chart_provenance",
+                import_path="agents.quant_macro_stats",
+                signature="chart_provenance(source_series=..., raw_window=..., displayed_window=...)",
+                use_when=(
+                    "Attach raw source dates, displayed labels, resampling, and "
+                    "normalization metadata to each chart before saving."
+                ),
+                preserves=(
+                    "source_series",
+                    "raw_latest_observation",
+                    "displayed_latest_label",
+                    "normalization",
+                ),
+            ),
+            QuantHelperSpec(
                 name="attach_methods_used",
                 import_path="agents.quant_macro_stats",
                 signature="attach_methods_used(charts, methods)",

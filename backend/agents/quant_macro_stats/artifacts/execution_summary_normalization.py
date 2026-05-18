@@ -43,6 +43,8 @@ _COMPACT_HANDOFF_KEYS = (
     "company_macro_sensitivity",
     "source_coverage",
     "numeric_facts",
+    "chart_provenance",
+    "generated_by",
 )
 
 _COMMON_VALIDATION_CONTAINER_KEYS = (

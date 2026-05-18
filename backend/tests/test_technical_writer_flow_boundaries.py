@@ -177,6 +177,14 @@ def test_plan_report_structure_surfaces_chart_facts_for_draft(tmp_path):
                         }
                     ],
                     "referenceAreas": [{"label": "Latest year", "x1": "2025-01", "x2": "2026-01"}],
+                    "provenance": {
+                        "source_series": ["FEDFUNDS", "T10Y2Y", "PCEPI"],
+                        "raw_latest_observation": {"T10Y2Y": "2026-01-15"},
+                        "displayed_window": {"start": "2026-01", "end": "2026-01"},
+                        "displayed_latest_label": "2026-01",
+                        "resampling": "T10Y2Y daily series resampled to monthly last observation",
+                        "normalization": {"PCEPI": "year-over-year percent change"},
+                    },
                 }
             }
         ),
@@ -199,6 +207,9 @@ def test_plan_report_structure_surfaces_chart_facts_for_draft(tmp_path):
     assert "rates_inflation_overlay: type=composed" in chart_facts
     assert "Fed funds (FEDFUNDS, line)" in chart_facts
     assert "10Y-2Y yield spread (CURVE_SPREAD, line)" in chart_facts
+    assert "raw_latest_observation=T10Y2Y:2026-01-15" in chart_facts
+    assert "displayed_latest_label=2026-01" in chart_facts
+    assert "normalization=PCEPI:year-over-year percent change" in chart_facts
     assert "referenceAreas=Latest year" in chart_facts
     assert draft.startswith("Chart facts from charts.json")
     assert "Computed macro facts." in draft
