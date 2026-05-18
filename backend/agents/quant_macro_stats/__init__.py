@@ -5,6 +5,7 @@ from __future__ import annotations
 from .artifacts import (
     chart_provenance,
     display_value,
+    latest_numeric_fact,
     normalize_quant_execution_summary,
     normalize_quant_report_charts,
     numeric_fact,
@@ -157,6 +158,7 @@ __all__ = [
     "iter_quant_helper_specs",
     "latest_finite_observation",
     "latest_finite_value",
+    "latest_numeric_fact",
     "lead_lag_correlations",
     "load_monthly_panel",
     "month_label",

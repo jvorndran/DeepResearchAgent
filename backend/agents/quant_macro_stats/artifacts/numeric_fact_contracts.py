@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .._utils import finite_number as _finite
+from .._utils import latest_finite_observation as _latest_finite_observation
 from .._utils import rounded_number as _round
 
 
@@ -65,3 +66,36 @@ def numeric_fact(
     if metric:
         fact["metric"] = metric
     return fact
+
+
+def latest_numeric_fact(
+    panel: Any,
+    key: str,
+    *,
+    fact_id: str,
+    label: str,
+    unit: str,
+    precision: int,
+    tolerance: float,
+    source_key: str | None = None,
+    subject: str | None = None,
+    metric: str | None = None,
+    digits: int | None = None,
+) -> dict[str, Any] | None:
+    value, as_of_date = _latest_finite_observation(
+        panel,
+        key,
+        digits=digits if digits is not None else max(precision, 3),
+    )
+    return numeric_fact(
+        fact_id=fact_id,
+        label=label,
+        raw_value=value,
+        unit=unit,
+        precision=precision,
+        tolerance=tolerance,
+        source_key=source_key or key,
+        as_of_date=as_of_date,
+        subject=subject,
+        metric=metric or key,
+    )
