@@ -2286,6 +2286,63 @@ def test_submit_quality_decision_rejects_mixed_hourly_weekly_wage_gap(tmp_path):
     assert "dollars per week" in payload["reason"]
 
 
+def test_submit_quality_decision_rejects_missing_handoff_chart_ids(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "chart_ids": ["consumer_stress_dashboard", "savings_credit_stress"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    chart = {
+        "id": "consumer_stress_dashboard",
+        "type": "line",
+        "title": "Consumer Stress",
+        "description": "Consumer stress over time.",
+        "xAxisKey": "date",
+        "series": [{"dataKey": "value", "label": "Value", "color": "#2563eb"}],
+        "data": [{"date": "2026-01", "value": 1.0}],
+    }
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "job_id": "qa-chart-handoff",
+                "created_at": "2026-05-14T12:00:00Z",
+                "query": "Include charts in the macro report.",
+                "title": "Chart Handoff",
+                "executive_summary": "One chart survived.",
+                "markdown": (
+                    "## Executive Summary\nOne chart survived.\n"
+                    "<!-- CHART:consumer_stress_dashboard -->"
+                ),
+                "charts": {"consumer_stress_dashboard": chart},
+                "data_sources": [],
+                "metadata": {"analysis_type": "macro", "chart_count": 1, "word_count": 6},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "chart_handoff_mismatch"
+    assert payload["required_upstream"] == "quant-developer"
+    assert "missing_report_chart_ids=['savings_credit_stress']" in payload["reason"]
+
+
 def test_submit_quality_decision_rejects_mixed_hourly_weekly_wage_chart_overlay(tmp_path):
     hourly_path = tmp_path / "CES0500000003.csv"
     weekly_path = tmp_path / "CES0500000030.csv"

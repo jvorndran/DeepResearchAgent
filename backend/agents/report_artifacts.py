@@ -65,3 +65,124 @@ def load_report_json(report_json_path: str) -> tuple[dict[str, Any] | None, str 
 
 def chart_marker_ids(markdown: str) -> list[str]:
     return CHART_MARKER_RE.findall(markdown)
+
+
+def load_sibling_execution_summary_json(
+    report_json_path: str | Path,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """
+    Load execution_summary.json next to report.json.
+
+    A missing sibling is not an error for static report validation because legacy
+    reports and prose-only runs may not have quantitative artifacts.
+    """
+    path = Path(report_json_path).with_name("execution_summary.json")
+    if not path.is_file():
+        return None, None
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        return None, str(exc)
+    except json.JSONDecodeError as exc:
+        return None, f"Invalid execution_summary.json: {exc}"
+    if not isinstance(parsed, dict):
+        return None, "execution_summary.json root must be a JSON object"
+    return parsed, None
+
+
+def _unique_string_ids(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    ids: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        text = str(item).strip() if item is not None else ""
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        ids.append(text)
+    return ids
+
+
+def _report_chart_ids(report_data: dict[str, Any]) -> list[str]:
+    charts = report_data.get("charts")
+    if isinstance(charts, dict):
+        return _unique_string_ids(list(charts.keys()))
+    if not isinstance(charts, list):
+        return []
+
+    ids: list[str] = []
+    seen: set[str] = set()
+    for item in charts:
+        if not isinstance(item, dict):
+            continue
+        for key in ("id", "chart_id", "name"):
+            chart_id = item.get(key)
+            text = str(chart_id).strip() if chart_id is not None else ""
+            if text:
+                break
+        else:
+            text = ""
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        ids.append(text)
+    return ids
+
+
+def chart_handoff_dict(
+    report_data: dict[str, Any],
+    execution_summary: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """
+    Compare final report chart coverage with the quantitative chart handoff.
+
+    Expected charts are the non-dropped IDs from execution_summary.json. Missing
+    final chart definitions are blocking; markdown marker coverage is returned
+    as a diagnostic because canonical marker integrity is enforced separately.
+    """
+    summary = execution_summary if isinstance(execution_summary, dict) else {}
+    upstream_chart_ids = _unique_string_ids(summary.get("chart_ids"))
+    dropped_chart_ids = _unique_string_ids(summary.get("dropped_chart_ids"))
+    dropped = set(dropped_chart_ids)
+    expected_chart_ids = [
+        chart_id for chart_id in upstream_chart_ids if chart_id not in dropped
+    ]
+    report_chart_ids = _report_chart_ids(report_data)
+    markdown_chart_ids = chart_marker_ids(str(report_data.get("markdown", "")))
+    report_chart_set = set(report_chart_ids)
+    markdown_chart_set = set(markdown_chart_ids)
+    missing_report_chart_ids = [
+        chart_id for chart_id in expected_chart_ids if chart_id not in report_chart_set
+    ]
+    missing_markdown_chart_ids = [
+        chart_id for chart_id in expected_chart_ids if chart_id not in markdown_chart_set
+    ]
+    return {
+        "required": bool(upstream_chart_ids),
+        "valid": not missing_report_chart_ids,
+        "expected_chart_ids": expected_chart_ids,
+        "upstream_chart_ids": upstream_chart_ids,
+        "dropped_chart_ids": dropped_chart_ids,
+        "report_chart_ids": report_chart_ids,
+        "markdown_chart_ids": markdown_chart_ids,
+        "missing_report_chart_ids": missing_report_chart_ids,
+        "missing_markdown_chart_ids": missing_markdown_chart_ids,
+    }
+
+
+def chart_handoff_blocker(chart_handoff: dict[str, Any]) -> str | None:
+    if not chart_handoff or chart_handoff.get("valid", True):
+        return None
+    missing_report = chart_handoff.get("missing_report_chart_ids") or []
+    parts: list[str] = []
+    if missing_report:
+        parts.append(f"missing_report_chart_ids={missing_report}")
+    if not parts:
+        return None
+    parts.append(f"expected_chart_ids={chart_handoff.get('expected_chart_ids') or []}")
+    parts.append(f"dropped_chart_ids={chart_handoff.get('dropped_chart_ids') or []}")
+    return (
+        "chart_handoff_mismatch: final report did not preserve non-dropped "
+        "execution_summary.chart_ids (" + "; ".join(parts) + ")"
+    )

@@ -18,7 +18,12 @@ from agents.quant_macro_stats.artifacts.execution_summary_normalization import (
     normalize_quant_execution_summary,
 )
 
-from ..report_artifacts import load_report_json
+from ..report_artifacts import (
+    chart_handoff_blocker,
+    chart_handoff_dict,
+    load_report_json,
+    load_sibling_execution_summary_json,
+)
 from ..technical_writer.chart_audit import chart_semantics_dict
 from ..quant_macro_stats.artifacts.source_unit_fidelity import (
     attach_source_unit_metadata,
@@ -73,6 +78,7 @@ def _load_sibling_execution_summary(report_path: Path) -> dict[str, object]:
         "statistical_text",
         "brief_analysis_summary",
         "chart_ids",
+        "dropped_chart_ids",
         "validation_window",
         "state_comparison",
         "numeric_facts",
@@ -128,8 +134,9 @@ def _load_sibling_execution_summary(report_path: Path) -> dict[str, object]:
     ):
         value = parsed.get(key)
         if value is not None:
-            if key in {"chart_ids", "methods_used", "limitations"} and isinstance(
-                value, list
+            if (
+                key in {"chart_ids", "dropped_chart_ids", "methods_used", "limitations"}
+                and isinstance(value, list)
             ):
                 compact[key] = [str(chart_id) for chart_id in value]
             elif isinstance(value, (dict, list)):
@@ -140,12 +147,8 @@ def _load_sibling_execution_summary(report_path: Path) -> dict[str, object]:
 
 
 def _load_execution_summary_payload(report_path: Path) -> dict[str, object] | None:
-    summary_path = report_path.with_name("execution_summary.json")
-    try:
-        parsed = json.loads(summary_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    return parsed if isinstance(parsed, dict) else None
+    parsed, _ = load_sibling_execution_summary_json(report_path)
+    return parsed
 
 
 def _numeric_text_variants(value: object) -> set[str]:
@@ -1453,6 +1456,9 @@ def _approval_blockers(report_path: str) -> list[str]:
     freshness_blocker = _current_helper_evidence_freshness_blocker(data, full_summary)
     if freshness_blocker:
         blockers.append(freshness_blocker)
+    handoff_blocker = chart_handoff_blocker(chart_handoff_dict(data, full_summary))
+    if handoff_blocker:
+        blockers.append(handoff_blocker)
     blockers.extend(_chart_semantics_approval_blockers(data))
     blockers.extend(_execution_summary_fidelity_blockers(data, Path(report_path)))
     if summary.get("status") in {"failed", "error", "missing"}:
@@ -1529,6 +1535,17 @@ def _approval_failure_metadata(report_path: str) -> dict[str, str]:
         return {
             "failure_category": "source_unit_mismatch",
             "required_upstream": "quantitative-developer",
+        }
+    chart_handoff = chart_handoff_dict(data, summary)
+    if chart_handoff_blocker(chart_handoff):
+        required_upstream = (
+            "quant-developer"
+            if chart_handoff.get("missing_report_chart_ids")
+            else "technical-writer"
+        )
+        return {
+            "failure_category": "chart_handoff_mismatch",
+            "required_upstream": required_upstream,
         }
     if _chart_semantics_approval_blockers(data):
         return {

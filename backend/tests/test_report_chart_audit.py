@@ -169,6 +169,43 @@ def test_report_chart_audit_rejects_display_window_provenance_mismatch(tmp_path)
     ]
 
 
+def test_report_chart_audit_rejects_missing_handoff_chart_ids(tmp_path):
+    report_path = _write_report(
+        tmp_path,
+        {
+            "id": "consumer_stress_dashboard",
+            "type": "line",
+            "title": "Consumer Stress",
+            "description": "Consumer stress over time.",
+            "xAxisKey": "date",
+            "series": [{"dataKey": "value", "label": "Value", "color": "#2563eb"}],
+            "data": [{"date": "2026-01", "value": 1.0}],
+        },
+    )
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "chart_ids": [
+                    "consumer_stress_dashboard",
+                    "savings_credit_stress",
+                    "company_net_margins",
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    audit = json.loads(run_report_chart_audit(str(report_path)))
+
+    assert audit["passes_audit"] is False
+    assert audit["chart_handoff"]["missing_report_chart_ids"] == [
+        "savings_credit_stress",
+        "company_net_margins",
+    ]
+    assert "chart_handoff_mismatch" in audit["blockers"][0]
+
+
 def test_report_chart_audit_rejects_raw_latest_provenance_outpaced_by_display_label(
     tmp_path,
 ):

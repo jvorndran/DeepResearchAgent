@@ -24,7 +24,12 @@ from agents.quant_macro_stats.artifacts.numeric_fact_contracts import (
     numeric_fact_literal_required,
 )
 
-from ..report_artifacts import chart_marker_ids, inject_auto_report_footer
+from ..report_artifacts import (
+    chart_handoff_blocker,
+    chart_handoff_dict,
+    chart_marker_ids,
+    inject_auto_report_footer,
+)
 
 from .report_validation import run_report_static_gate
 
@@ -3107,6 +3112,21 @@ def write_research_report(
     if not out_dir:
         out_dir = str(OUTPUT_BASE_DIR / canonical_job_id)
     report_path = str((Path(out_dir) / "report.json").resolve())
+    chart_handoff = chart_handoff_dict(report.model_dump(), execution_payload)
+    handoff_blocker = chart_handoff_blocker(chart_handoff)
+    if handoff_blocker and chart_handoff.get("missing_report_chart_ids"):
+        return json.dumps(
+            {
+                "status": "error",
+                "error": "chart_handoff_mismatch",
+                "failure_category": "chart_handoff_mismatch",
+                "required_upstream": "quant-developer",
+                "report_path": report_path,
+                "chart_handoff": chart_handoff,
+                "blockers": [handoff_blocker],
+                "message": handoff_blocker,
+            }
+        )
     validation_issues, report_saved = _save_report(report, report_path)
 
     return json.dumps(
@@ -3188,8 +3208,9 @@ def validate_research_report_file(
         auto_patch: If True, apply auto footer re-sync and chart-marker patches when applicable.
 
     Returns:
-        JSON string with `passes_gate`, `report_path`, `format`, `charts`, `chart_render`,
-        `chart_semantics`, `warnings`, `auto_patched`, `patches_applied`, and `blockers`.
+        JSON string with `passes_gate`, `report_path`, `format`, `charts`,
+        `chart_render`, `chart_semantics`, `chart_handoff`, `warnings`,
+        `auto_patched`, `patches_applied`, and `blockers`.
         Revise markdown and call
         `write_research_report` again if structural `blockers` remain.
     """
