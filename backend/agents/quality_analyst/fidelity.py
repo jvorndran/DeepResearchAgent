@@ -3,6 +3,7 @@ import json
 import re
 from pathlib import Path
 from datetime import datetime, timezone
+from typing import Iterable
 
 from pydantic import ValidationError
 
@@ -110,6 +111,7 @@ def _load_sibling_execution_summary(report_path: Path) -> dict[str, object]:
         "source_unit_metadata",
         "unit_comparisons",
         "source_unit_errors",
+        "data_files",
     ):
         value = parsed.get(key)
         if value is not None:
@@ -364,6 +366,8 @@ def _report_claims_company_fundamental_analysis(report_data: dict[str, object]) 
 
 
 def _has_reusable_company_evidence(summary: dict[str, object]) -> bool:
+    if _sec_company_files_present(summary):
+        return _has_complete_sec_company_helper_evidence(summary)
     if _numeric_facts_from_summary(summary):
         return True
     latest = summary.get("latest_fundamentals")
@@ -375,6 +379,32 @@ def _has_reusable_company_evidence(summary: dict[str, object]) -> bool:
         if isinstance(coverage, dict) and coverage.get("status") == "covered":
             return True
     return False
+
+
+def _has_complete_sec_company_helper_evidence(summary: dict[str, object]) -> bool:
+    latest = summary.get("latest_fundamentals")
+    if not isinstance(latest, dict) or not latest:
+        return False
+
+    source_coverage = summary.get("source_coverage")
+    if not isinstance(source_coverage, dict):
+        return False
+    sec_coverage = source_coverage.get("sec_company_facts")
+    if not isinstance(sec_coverage, dict) or sec_coverage.get("status") != "covered":
+        return False
+
+    return any(
+        _is_sec_company_helper_fact(fact)
+        for fact in _numeric_facts_from_summary(summary)
+    )
+
+
+def _is_sec_company_helper_fact(fact: dict[str, object]) -> bool:
+    fact_id = str(fact.get("id") or "")
+    source_key = str(fact.get("source_key") or "")
+    return fact_id.startswith("sec_company_facts.") and source_key.startswith(
+        "sec_company_facts.latest_fundamentals."
+    )
 
 
 def _missing_helper_evidence_blocker(
@@ -389,11 +419,12 @@ def _missing_helper_evidence_blocker(
         return None
     return (
         "Report includes stock-specific company-fundamentals claims and SEC "
-        "company-facts files are present in the quantitative input manifest, "
-        "but execution_summary.json lacks reusable helper evidence such as "
-        "numeric_facts, latest_fundamentals, source_coverage, methods, and "
-        "limitations. Rerun quantitative-developer so analysis.py composes the "
-        "SEC helper output before writer synthesis."
+        "company-facts files are present in the quantitative handoff, but "
+        "execution_summary.json lacks complete reusable SEC helper evidence: "
+        "latest_fundamentals, source_coverage.sec_company_facts=covered, and "
+        "sec_company_facts.* numeric_facts from sec_company_facts_evidence(...). "
+        "Rerun quantitative-developer so analysis.py composes the SEC helper "
+        "output before writer synthesis."
     )
 
 
@@ -718,16 +749,30 @@ def _sec_company_files_present(summary: dict[str, object]) -> bool:
     status = summary.get("company_context_status")
     if isinstance(status, dict) and status.get("sec_source_keys"):
         return True
-    manifest = summary.get("quant_input_manifest")
-    data_files = manifest.get("data_files") if isinstance(manifest, dict) else None
-    if not isinstance(data_files, dict):
-        return False
-    for key, path in data_files.items():
-        key_upper = str(key).upper()
-        path_name = Path(str(path)).name.lower()
-        if key_upper.endswith("_SEC") or "sec_edgar_company_facts" in path_name:
+    for key, path in _iter_sec_company_data_file_candidates(summary):
+        if _is_sec_company_file_reference(key, path):
             return True
     return False
+
+
+def _iter_sec_company_data_file_candidates(
+    summary: dict[str, object],
+) -> Iterable[tuple[object, object]]:
+    for container_key in ("source_files", "data_files"):
+        container = summary.get(container_key)
+        if isinstance(container, dict):
+            yield from container.items()
+
+    manifest = summary.get("quant_input_manifest")
+    data_files = manifest.get("data_files") if isinstance(manifest, dict) else None
+    if isinstance(data_files, dict):
+        yield from data_files.items()
+
+
+def _is_sec_company_file_reference(key: object, path: object) -> bool:
+    key_upper = str(key).upper()
+    path_name = Path(str(path)).name.lower()
+    return key_upper.endswith("_SEC") or "sec_edgar_company_facts" in path_name
 
 
 _MODEL_CLAIM_RE = re.compile(

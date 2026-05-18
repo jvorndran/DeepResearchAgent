@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from langchain.agents.middleware.types import ModelResponse
 from langchain_core.messages import AIMessage, ToolMessage
 
+from agents import quant_macro_stats as qms
 from agents.technical_writer.subagent import (
     TECHNICAL_WRITER_SUBAGENT,
     TechnicalWriterToolBoundaryMiddleware,
@@ -212,6 +213,74 @@ def test_plan_report_structure_surfaces_source_unit_comparison_status(tmp_path):
     assert "all_hourly; series_id=CES0500000003; units=dollars per hour" in draft
     assert "wage_gap; status=failed; compatible=False" in draft
     assert result["helper_evidence_for_draft"]["unit_comparisons"][0]["id"] == "wage_gap"
+
+
+def test_plan_report_structure_uses_sec_helper_scaled_numeric_facts(tmp_path):
+    sec_path = tmp_path / "NVDA_sec_edgar_company_facts.csv"
+    sec_path.write_text(
+        "\n".join(
+            [
+                "fiscal_year,revenue,gross_profit,operating_income,net_income,"
+                "operating_cash_flow,capital_expenditures,cash_and_equivalents,"
+                "marketable_securities_current,long_term_debt,stockholders_equity,"
+                "assets,liabilities,diluted_eps,shares",
+                "2025,130497000000,97858000000,81453000000,72880000000,"
+                "64089000000,3236000000,8589000000,1716000000,8463000000,"
+                "65000000000,111601000000,32274000000,2.94,24700000000",
+                "2026,215938000000,153865000000,136859000000,120224000000,"
+                "118200000000,21524000000,8589000000,2016000000,7469000000,"
+                "79000000000,124092000000,45000000000,4.90,24514000000",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "quant"
+    qms.save_quant_outputs(
+        output_dir,
+        {
+            "income_statement": {
+                "type": "line",
+                "title": "Revenue",
+                "data": [{"fiscal_year": "2026", "revenue": 215_938_000_000}],
+                "series": [{"dataKey": "revenue", "name": "Revenue"}],
+                "xAxis": {"dataKey": "fiscal_year"},
+            }
+        },
+        {
+            "title": "NVIDIA AI spending resilience",
+            "source_files": {"sec_company_facts": str(sec_path)},
+            "numeric_facts": [
+                qms.numeric_fact(
+                    fact_id="latest_revenue",
+                    label="Latest revenue",
+                    raw_value=215_938_000_000,
+                    unit="$M",
+                    precision=0,
+                    tolerance=0.1,
+                    source_key=sec_path.name,
+                )
+            ],
+        },
+    )
+
+    result = json.loads(
+        plan_report_structure.func(
+            query_type="earnings_analysis",
+            charts_json_path=str(output_dir / "charts.json"),
+            execution_summary=(output_dir / "execution_summary.json").read_text(
+                encoding="utf-8"
+            ),
+            original_query="Assess whether NVIDIA remains a great business if AI spending cools.",
+            runtime=_Runtime(),
+        )
+    )
+
+    draft = result["execution_summary_for_draft"]
+    assert "$215.938B" in draft
+    assert "$10.605B" in draft
+    assert "$7.469B" in draft
+    assert "215,938,000,000" not in draft
+    assert "(latest_revenue=" not in draft
 
 
 def test_plan_report_structure_surfaces_chart_facts_for_draft(tmp_path):
