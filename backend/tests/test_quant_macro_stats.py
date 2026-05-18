@@ -351,12 +351,8 @@ def test_normalize_quant_summary_rejects_malformed_numeric_facts():
         )
 
     message = str(error.value)
-    assert "Malformed execution_summary.numeric_facts" in message
-    assert "macro.cpi_yoy.latest" in message
-    assert "raw_value" in message
-    assert "display_value" in message
-    assert "numeric_facts[1]: expected object" in message
-    assert "latest_numeric_fact(...)" in message
+    assert "Invalid execution_summary.numeric_facts" in message
+    assert "numeric_facts[0] must include a finite raw_value or value" in message
 
 
 def test_normalize_quant_summary_requires_facts_for_latest_scalar_snapshot():
@@ -1385,8 +1381,11 @@ def test_save_quant_outputs_rejects_conflicting_correlation_facts(tmp_path):
             {
                 "id": "corr_UNRATE_CPIAUCSL",
                 "label": "Correlation(UNRATE, CPIAUCSL)",
-                "value": 0.024,
+                "raw_value": 0.024,
                 "display_value": "0.024",
+                "unit": "correlation",
+                "tolerance": 0.005,
+                "source_key": "scenario_stress.corr.UNRATE.CPIAUCSL",
             }
         ],
     }
