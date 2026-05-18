@@ -215,6 +215,83 @@ def test_load_monthly_panel_resolves_reusable_series_specs(tmp_path):
     assert loaded.panel["UNRATE"].tolist() == [3.8, 3.9]
 
 
+def test_align_period_features_does_not_fill_monthly_tails_when_weekly_extends():
+    panel = qms.align_period_features(
+        {
+            "PAYEMS": pd.DataFrame(
+                {
+                    "date": ["2026-03-01", "2026-04-01"],
+                    "value": [158_000.0, 158_100.0],
+                }
+            ),
+            "JTSJOL": pd.DataFrame(
+                {
+                    "date": ["2026-02-01", "2026-03-01"],
+                    "value": [7_100.0, 6_900.0],
+                }
+            ),
+            "ICSA": pd.DataFrame(
+                {
+                    "date": ["2026-05-02", "2026-05-09"],
+                    "value": [240_000.0, 250_000.0],
+                }
+            ),
+            "T5YIE": pd.DataFrame(
+                {
+                    "date": ["2026-05-14", "2026-05-15"],
+                    "value": [2.30, 2.40],
+                }
+            ),
+        },
+        frequency="M",
+        how="outer",
+        fill_method="ffill",
+        fill_limit=2,
+        max_date=None,
+    )
+
+    rows = panel.set_index(panel["date"].dt.strftime("%Y-%m"))
+    assert rows.loc["2026-04", "PAYEMS"] == 158_100.0
+    assert pd.isna(rows.loc["2026-04", "JTSJOL"])
+    assert pd.isna(rows.loc["2026-05", "PAYEMS"])
+    assert pd.isna(rows.loc["2026-05", "JTSJOL"])
+    assert rows.loc["2026-05", "ICSA"] == 245_000.0
+    assert rows.loc["2026-05", "T5YIE"] == pytest.approx(2.35)
+
+
+def test_align_period_features_carries_quarterly_values_only_within_quarter():
+    panel = qms.align_period_features(
+        {
+            "GDPC1": pd.DataFrame(
+                {
+                    "date": ["2026-01-01", "2026-04-01"],
+                    "value": [23_000.0, 23_100.0],
+                }
+            ),
+            "UNRATE": pd.DataFrame(
+                {
+                    "date": pd.date_range("2026-01-01", periods=7, freq="MS"),
+                    "value": [4.0, 4.1, 4.1, 4.2, 4.2, 4.3, 4.3],
+                }
+            ),
+        },
+        frequency="M",
+        how="outer",
+        fill_method="ffill",
+        fill_limit=3,
+        max_date=None,
+    )
+
+    rows = panel.set_index(panel["date"].dt.strftime("%Y-%m"))
+    assert rows.loc["2026-01", "GDPC1"] == 23_000.0
+    assert rows.loc["2026-02", "GDPC1"] == 23_000.0
+    assert rows.loc["2026-03", "GDPC1"] == 23_000.0
+    assert rows.loc["2026-04", "GDPC1"] == 23_100.0
+    assert rows.loc["2026-05", "GDPC1"] == 23_100.0
+    assert rows.loc["2026-06", "GDPC1"] == 23_100.0
+    assert pd.isna(rows.loc["2026-07", "GDPC1"])
+
+
 def test_direct_ols_forecast_and_signal_backtest_are_reusable_helpers():
     frame = pd.DataFrame(
         {

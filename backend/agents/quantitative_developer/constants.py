@@ -41,6 +41,9 @@ _HIGH_FREQUENCY_FRED_KEYS = {
     "DGS1",
     "DGS5",
     "DGS30",
+    "T5YIE",
+    "T10YIE",
+    "T5YIFR",
     "ICSA",
     "IC4WSA",
 }
@@ -56,6 +59,16 @@ _MONTHLY_OR_LOWER_FRED_KEYS = {
     "GDP",
     "RSAFS",
     "UMCSENT",
+    "JTSJOL",
+    "JTSJOLR",
+    "JTSHIL",
+    "JTSHIR",
+    "JTSQUL",
+    "JTSQUR",
+    "JTSLDL",
+    "JTSLDR",
+    "JTSSTL",
+    "JTSSTR",
 }
 _DATA_FILES_MANIFEST_NAMES = {"DATA_FILES", "DATA", "DF", "D"}
 _ALLOWED_ANALYSIS_SCRIPT_RE = re.compile(r"(?:^|/)code/analysis(?:_v\d+)?\.py$")

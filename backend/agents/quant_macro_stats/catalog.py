@@ -50,10 +50,14 @@ QUANT_HELPER_CATALOG: tuple[QuantHelperCategory, ...] = (
                 import_path="agents.quant_macro_stats",
                 signature=(
                     "align_period_features(series_frames, *, frequency='M', "
-                    "how='outer', fill_method=None, fill_limit=None)"
+                    "how='outer', fill_method=None, fill_limit=None, "
+                    "fill_scope='lower_frequency')"
                 ),
-                use_when="Align daily, weekly, monthly, or quarterly frames by common period.",
-                preserves=("date", "named feature columns"),
+                use_when=(
+                    "Align daily, weekly, monthly, or quarterly frames by common "
+                    "period without forward-filling same-frequency stale tails."
+                ),
+                preserves=("date", "named feature columns", "source-period freshness"),
             ),
         ),
     ),
