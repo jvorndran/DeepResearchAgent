@@ -3136,6 +3136,7 @@ def test_validate_research_report_file_directory_path_resolves_report_json(tmp_p
     )
 
     assert result["passes_gate"] is False
+    assert result["report_path"] == str(tmp_path / "report.json")
     assert result["load_error"] == f"File not found: {tmp_path / 'report.json'}"
 
 
@@ -3323,6 +3324,7 @@ def test_write_research_report_preserves_quant_combo_chart_type(tmp_path):
 
     assert result["validation_issues"] == []
     assert gate["passes_gate"] is True
+    assert gate["report_path"] == result["report_path"]
     assert gate["charts"]["defined_charts"] == ["rates_composite"]
     assert gate["chart_render"]["checked_charts"] == ["rates_composite"]
     assert chart["type"] == "composed"
@@ -3406,6 +3408,57 @@ def test_technical_writer_middleware_stops_after_successful_validation():
         "report_json": "/tmp/outputs/job-1/report.json",
         "chart_ids": ["macro_signal"],
     }
+
+
+def test_technical_writer_middleware_rejects_validation_after_failed_write():
+    middleware = next(
+        item
+        for item in TECHNICAL_WRITER_SUBAGENT["middleware"]
+        if isinstance(item, TechnicalWriterToolBoundaryMiddleware)
+    )
+    request = _Request(
+        [
+            SimpleNamespace(name="write_research_report"),
+            SimpleNamespace(name="validate_research_report_file"),
+        ],
+        messages=[
+            ToolMessage(
+                content=json.dumps(
+                    {
+                        "status": "error",
+                        "error": "numeric_fact_mismatch",
+                        "failure_category": "numeric_fact_mismatch",
+                    }
+                ),
+                name="write_research_report",
+                tool_call_id="call-write",
+                status="error",
+            ),
+            ToolMessage(
+                content=json.dumps(
+                    {
+                        "passes_gate": True,
+                        "report_path": "/tmp/outputs/job-1/report.json",
+                        "charts": {"defined_charts": ["macro_signal"]},
+                    }
+                ),
+                name="validate_research_report_file",
+                tool_call_id="call-validate",
+            ),
+        ],
+    )
+
+    response = middleware.wrap_model_call(
+        request,
+        lambda req: ModelResponse(result=[AIMessage(content="should not run")]),
+    )
+
+    handoff = json.loads(response.result[0].content)
+    assert handoff["status"] == "failed"
+    assert handoff["report_json"] == "/tmp/outputs/job-1/report.json"
+    assert handoff["required_upstream"] == "technical-writer"
+    assert handoff["failure_category"] == "stale_report_validation"
+    assert "write_research_report" in handoff["reason"]
 
 
 def test_technical_writer_middleware_returns_quant_failure_for_zero_chart_gate():

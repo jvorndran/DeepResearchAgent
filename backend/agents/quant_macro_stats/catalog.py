@@ -256,41 +256,11 @@ QUANT_HELPER_CATALOG: tuple[QuantHelperCategory, ...] = (
                 name="numeric_fact",
                 import_path="agents.quant_macro_stats",
                 signature=(
-                    "numeric_fact(*, fact_id, label, raw_value, unit, precision, "
-                    "tolerance, source_key, as_of_date=None)"
+                    "numeric_fact(fact_id, label, raw_value, *, unit, precision, "
+                    "source_key=None)"
                 ),
                 use_when="Record auditable scalar values in execution_summary.numeric_facts.",
-                preserves=(
-                    "id",
-                    "label",
-                    "raw_value",
-                    "display_value",
-                    "tolerance",
-                    "unit",
-                    "source_key",
-                    "as_of_date",
-                ),
-            ),
-            QuantHelperSpec(
-                name="latest_numeric_fact",
-                import_path="agents.quant_macro_stats",
-                signature=(
-                    "latest_numeric_fact(panel, key, *, fact_id, label, unit, "
-                    "precision, tolerance, source_key=None)"
-                ),
-                use_when=(
-                    "Record the latest non-null panel value as a canonical "
-                    "numeric fact with as_of_date."
-                ),
-                preserves=(
-                    "id",
-                    "label",
-                    "raw_value",
-                    "display_value",
-                    "tolerance",
-                    "source_key",
-                    "as_of_date",
-                ),
+                preserves=("id", "label", "value", "display_value", "source_key"),
             ),
             QuantHelperSpec(
                 name="attach_methods_used",

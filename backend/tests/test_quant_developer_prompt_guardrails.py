@@ -35,9 +35,6 @@ def test_quant_prompt_requires_analysis_script_not_prebuilt_report_tools():
     assert "source coverage" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "# HELPER SELECTION CATALOG" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "direct_ols_forecast(data, target_col, feature_cols" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert "latest_numeric_fact(panel, key" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert "raw_value" in QUANT_DEVELOPER_SYSTEM_PROMPT
-    assert "display_value" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "save_quant_outputs(output_dir, charts, execution_summary)" in QUANT_DEVELOPER_SYSTEM_PROMPT
 
     removed_surfaces = [
