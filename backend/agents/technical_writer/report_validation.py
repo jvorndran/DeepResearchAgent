@@ -161,7 +161,6 @@ def apply_safe_patches(
 def _gate_payload(
     *,
     passes_gate: bool,
-    report_path: str = "",
     fmt: dict,
     charts: dict,
     scenarios: dict | None,
@@ -185,8 +184,6 @@ def _gate_payload(
         "patches_applied": patches_applied,
         "blockers": blockers,
     }
-    if report_path:
-        body["report_path"] = report_path
     if load_error is not None:
         body["load_error"] = load_error
     return json.dumps(body)
@@ -204,16 +201,14 @@ def run_report_static_gate(report_json_path: str, auto_patch: bool = True) -> st
         auto_patch: If True, re-apply canonical footer (idempotent) / strip broken chart markers
 
     Returns:
-        JSON string with passes_gate, report_path, format, charts, scenarios, chart_render,
+        JSON string with passes_gate, format, charts, scenarios, chart_render,
         chart_semantics, warnings, auto_patched, patches_applied, and blockers.
     """
-    path = Path(report_json_path).expanduser().resolve()
-    resolved_report_path = str(path)
+    path = Path(report_json_path)
     data, load_err = load_report_json(report_json_path)
     if load_err or data is None:
         return _gate_payload(
             passes_gate=False,
-            report_path=resolved_report_path,
             fmt={},
             charts={},
             scenarios={},
@@ -231,7 +226,6 @@ def run_report_static_gate(report_json_path: str, auto_patch: bool = True) -> st
     except ValidationError as e:
         return _gate_payload(
             passes_gate=False,
-            report_path=resolved_report_path,
             fmt={"valid": False, "schema_errors": [str(e)], "missing_elements": []},
             charts={},
             scenarios={},
@@ -262,7 +256,6 @@ def run_report_static_gate(report_json_path: str, auto_patch: bool = True) -> st
             except ValidationError as e:
                 return _gate_payload(
                     passes_gate=False,
-                    report_path=resolved_report_path,
                     fmt=fmt_ok,
                     charts=charts,
                     scenarios=scenarios,
@@ -279,7 +272,6 @@ def run_report_static_gate(report_json_path: str, auto_patch: bool = True) -> st
             except OSError as e:
                 return _gate_payload(
                     passes_gate=False,
-                    report_path=resolved_report_path,
                     fmt=fmt_ok,
                     charts=charts,
                     scenarios=scenarios,
@@ -309,7 +301,6 @@ def run_report_static_gate(report_json_path: str, auto_patch: bool = True) -> st
             passes = len(blockers) == 0
             return _gate_payload(
                 passes_gate=passes,
-                report_path=resolved_report_path,
                 fmt=fmt_ok,
                 charts=charts,
                 scenarios=scenarios,
@@ -331,7 +322,6 @@ def run_report_static_gate(report_json_path: str, auto_patch: bool = True) -> st
     passes = len(blockers) == 0
     return _gate_payload(
         passes_gate=passes,
-        report_path=resolved_report_path,
         fmt=fmt_ok,
         charts=charts,
         scenarios=scenarios,

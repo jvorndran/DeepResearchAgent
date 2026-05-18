@@ -3036,7 +3036,7 @@ def validate_research_report_file(
         auto_patch: If True, apply auto footer re-sync and chart-marker patches when applicable.
 
     Returns:
-        JSON string with `passes_gate`, `report_path`, `format`, `charts`, `chart_render`,
+        JSON string with `passes_gate`, `format`, `charts`, `chart_render`,
         `chart_semantics`, `warnings`, `auto_patched`, `patches_applied`, and `blockers`.
         Revise markdown and call
         `write_research_report` again if structural `blockers` remain.
@@ -3053,7 +3053,6 @@ def validate_research_report_file(
             return json.dumps(
                 {
                     "passes_gate": False,
-                    "report_path": "",
                     "load_error": "report_json_path is empty and job output_dir is not set",
                     "format": {},
                     "charts": {},

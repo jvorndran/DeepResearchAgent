@@ -391,13 +391,25 @@ _CLOSEST_ANALOG_RE = re.compile(
     re.IGNORECASE,
 )
 _ANALOG_YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
-_ANALOG_CLAIM_RE = re.compile(
-    r"\b(?:analog|analogue|closest|distance|similarity|recession|cycle)\b",
+_ANALOG_TOPIC_RE = re.compile(r"\b(?:analog|analogue)\b", re.IGNORECASE)
+_ANALOG_ANALYTIC_CLAIM_RE = re.compile(
+    r"\b(?:closest|most similar|similarity|distance|ranked|ranking)\b|"
+    r"\b(?:best|top)\s+(?:analog|analogue|match|fit|window|episode)\b|"
+    r"\b(?:resembles?|look(?:s|ed)?\s+(?:more\s+|most\s+)?like)\b",
     re.IGNORECASE,
 )
 _ANALOG_LIMITATION_RE = re.compile(
     r"\b(?:unavailable|not\s+available|not\s+covered|insufficient|excluded|missing|"
     r"not\s+present)\b",
+    re.IGNORECASE,
+)
+_ANALOG_COVERAGE_CONTEXT_RE = re.compile(
+    r"\b(?:data|dataset|sample|series|coverage|available|availability|"
+    r"observations?|history)\b[^\n.]{0,80}\b(?:from|since|starting|starts?|"
+    r"begins?|onward|through|limited|only|excludes?|excluded|missing)\b|"
+    r"\b(?:from|since|starting|starts?|begins?|onward|through|limited)\b"
+    r"[^\n.]{0,80}\b(?:data|dataset|sample|series|coverage|available|"
+    r"availability|observations?|history)\b",
     re.IGNORECASE,
 )
 
@@ -416,6 +428,16 @@ def _analog_labels_match(claimed: object, expected: object) -> bool:
     claimed_years = _analog_years(claimed_text)
     expected_years = _analog_years(expected_text)
     return bool(claimed_years and expected_years and claimed_years == expected_years)
+
+
+def _line_claims_historical_analog_evidence(line: str) -> bool:
+    if _ANALOG_LIMITATION_RE.search(line):
+        return False
+    if _ANALOG_COVERAGE_CONTEXT_RE.search(line):
+        return bool(_ANALOG_ANALYTIC_CLAIM_RE.search(line))
+    return bool(
+        _ANALOG_TOPIC_RE.search(line) or _ANALOG_ANALYTIC_CLAIM_RE.search(line)
+    )
 
 
 def _execution_summary_analog_years(summary: dict[str, object]) -> set[str]:
@@ -464,15 +486,15 @@ def _claimed_historical_analog_years(markdown: str) -> set[str]:
             in_research_query = heading == "research query"
             if in_research_query:
                 continue
-        if in_research_query or _ANALOG_LIMITATION_RE.search(line):
+        if in_research_query:
+            continue
+        if not _line_claims_historical_analog_evidence(line):
             continue
         for match in _ANALOG_YEAR_RE.finditer(line):
             before = line[max(0, match.start() - 32) : match.start()].lower()
             if re.search(r"\bcurrent\b[^\n.]{0,32}$", before):
                 continue
-            context = line[max(0, match.start() - 80) : match.end() + 80]
-            if _ANALOG_CLAIM_RE.search(context):
-                claimed.add(match.group(0))
+            claimed.add(match.group(0))
     return claimed
 
 
@@ -526,9 +548,7 @@ def _unsupported_historical_analog_claim_blocker(
                 label_lower in line_lower or any(year in line for year in years)
             ):
                 continue
-            if _ANALOG_LIMITATION_RE.search(line_lower):
-                continue
-            if _ANALOG_CLAIM_RE.search(line_lower):
+            if _line_claims_historical_analog_evidence(line_lower):
                 claimed.append(label)
                 break
     if not claimed:
