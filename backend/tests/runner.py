@@ -180,11 +180,7 @@ class PendingModelMessage:
             },
         )
         print(entry)
-        stop_reason = watchdog.observe_model_message(elapsed)
-        if stop_reason:
-            trace.record_watchdog_stop(stop_reason, elapsed, trigger="model_message")
-            print(format_log_entry("WATCHDOG", "system", f"Stopping early: {stop_reason}", elapsed))
-        return stop_reason
+        return watchdog.observe_model_message(elapsed)
 
 
 APPROVAL_MESSAGES = [
@@ -324,34 +320,10 @@ class Watchdog:
         if not has_uninformative_tool_args(name, args):
             self.identical_tool_calls[signature] += 1
 
-        if elapsed > self.max_runtime_seconds:
-            return f"runtime exceeded {self.max_runtime_seconds:.0f}s"
-        if self.tool_calls > self.max_tool_calls:
-            return f"tool call budget exceeded ({self.tool_calls}>{self.max_tool_calls})"
-        if self.fred_search_calls > self.max_fred_search_calls:
-            return (
-                f"fred_search budget exceeded "
-                f"({self.fred_search_calls}>{self.max_fred_search_calls})"
-            )
-        if (
-            name not in self.repeated_call_exempt_tools
-            and self.identical_tool_calls[signature] > self.max_identical_tool_calls
-        ):
-            return (
-                "identical tool call repeated "
-                f"{self.identical_tool_calls[signature]} times: {name}({normalized_args})"
-            )
         return None
 
     def observe_model_message(self, elapsed: float) -> str | None:
         self.model_messages += 1
-        if elapsed > self.max_runtime_seconds:
-            return f"runtime exceeded {self.max_runtime_seconds:.0f}s"
-        if self.model_messages > self.max_model_messages:
-            return (
-                f"model message budget exceeded "
-                f"({self.model_messages}>{self.max_model_messages})"
-            )
         return None
 
 
@@ -654,20 +626,6 @@ class RunnerTrace:
             }
         )
 
-    def record_watchdog_stop(self, stop_reason: str, elapsed: float, *, trigger: str) -> None:
-        self.record_event(
-            "watchdog_stop",
-            node="system",
-            elapsed=elapsed,
-            text=f"Stopping early: {stop_reason}",
-            attributes={
-                "stop_reason": stop_reason,
-                "watchdog.trigger": trigger,
-            },
-            status_code="ERROR",
-            status_message=stop_reason,
-        )
-
     def finish(
         self,
         *,
@@ -907,7 +865,6 @@ def compute_trace_diagnostics(
     error_spans: list[dict[str, Any]] = []
     retryable_stream_errors = 0
     retry_related_spans = 0
-    watchdog_stops = 0
 
     for record in records:
         attrs = _span_attributes(record)
@@ -930,9 +887,6 @@ def compute_trace_diagnostics(
             update_counts[node] += 1
         elif event_type == "tool_result":
             tool_result_counts[str(attrs.get("tool.name") or "?")] += 1
-        elif event_type == "watchdog_stop":
-            watchdog_stops += 1
-
         if event_type == "stream_error" and _as_bool(attrs.get("error.retryable")):
             retryable_stream_errors += 1
         searchable = " ".join(
@@ -1012,7 +966,6 @@ def compute_trace_diagnostics(
         "retry_churn": {
             "retryable_stream_errors": retryable_stream_errors,
             "retry_related_spans": retry_related_spans,
-            "watchdog_stops": watchdog_stops,
             "error_spans": len(error_spans),
         },
         "error_spans": error_spans,
@@ -1041,10 +994,6 @@ def classify_primary_trace_signal(diagnostics: dict[str, Any]) -> str:
         return "qa rejection terminal failure"
     if "identical tool call repeated" in stop_reason or repeated:
         return "repeated tool loop"
-    if "tool call budget exceeded" in stop_reason:
-        return "tool budget stop"
-    if "model message budget exceeded" in stop_reason:
-        return "model-message churn"
     if retry_churn.get("retryable_stream_errors") or retry_churn.get("retry_related_spans"):
         return "retry churn"
     if error_spans:
@@ -1053,8 +1002,6 @@ def classify_primary_trace_signal(diagnostics: dict[str, Any]) -> str:
         return f"slow node: {node_latency[0]['node']}"
     if status == "COMPLETED" and "report_json" not in artifact_paths:
         return "shallow artifact generation"
-    if status == "STOPPED_EARLY":
-        return "watchdog stop"
     return "completed trace"
 
 
@@ -1304,15 +1251,6 @@ async def run_research_loop(
                                 if stop_reason:
                                     break
                             if stop_reason:
-                                trace.record_watchdog_stop(stop_reason, elapsed, trigger="tool_call")
-                                print(
-                                    format_log_entry(
-                                        "WATCHDOG",
-                                        "system",
-                                        f"Stopping early: {stop_reason}",
-                                        elapsed,
-                                    )
-                                )
                                 break
 
                         # Handle content

@@ -1,0 +1,16 @@
+# One natural research prompt per line. The harness rotates these by pass number.
+Are people actually feeling better about the economy, or do the hard numbers tell a different story? Give me the evidence, the caveats, and a few charts I can trust.
+Should I be worried about a recession right now? I do not need a dramatic answer; I need a balanced view of the strongest signals, the false alarms, and what would change your mind.
+My team keeps saying the consumer is fine. Check that claim from a few angles and show where the national picture might hide stress in specific groups or places.
+I own a broad market ETF and a few big tech stocks. What macro risks matter most for the next year, and do any company fundamentals change the story?
+Is NVIDIA still a great business if AI spending cools off? Use public information, focus on the drivers that matter, and be clear about what cannot be known from the data.
+Compare Apple, Microsoft, and NVIDIA as long-term businesses. I care about quality, durability, valuation risk, and the main data points a patient investor should watch.
+What is going on with jobs? I keep seeing mixed headlines. Build a plain-English view with enough data to tell whether the labor market is weakening or just normalizing.
+Are prices really under control now? Look at inflation, wages, rates, and household stress, then explain the most likely policy and consumer scenarios.
+I am thinking about moving from California to Texas. Compare economic conditions, cost pressure, jobs, and quality-of-life proxies using public data where possible.
+Which US regions look healthiest right now? Do not just rank them; explain the indicators, tradeoffs, and where the data is too thin.
+Give me a dashboard-style report on whether small businesses are under pressure. Use whatever public data is reasonable and explain confidence levels.
+I need to brief non-technical executives on whether the current economy is a soft landing, hard landing, or something else. Keep it practical and visual.
+Test a common claim you hear in markets right now and tell me whether the data supports it. Pick the claim if I did not specify one, but explain why it matters.
+What should I watch over the next quarter to know if the economy is turning? Give me a short watchlist, thresholds if defensible, and charts for the key indicators.
+I want a report that challenges its own conclusion. Pick an important macro or company question, build the best evidence for both sides, and end with a decision-useful view.

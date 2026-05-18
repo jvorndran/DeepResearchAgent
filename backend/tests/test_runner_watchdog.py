@@ -64,7 +64,7 @@ def local_runner_tracing(monkeypatch):
     monkeypatch.delenv("RUNNER_REQUIRE_PHOENIX", raising=False)
 
 
-def test_watchdog_stops_on_repeated_identical_tool_call():
+def test_watchdog_records_repeated_identical_tool_call_without_stopping():
     watchdog = Watchdog(
         max_runtime_seconds=900,
         max_tool_calls=120,
@@ -78,8 +78,8 @@ def test_watchdog_stops_on_repeated_identical_tool_call():
 
     reason = watchdog.observe_tool_call("fred_get_series", {"series_id": "GDP"}, 9.0)
 
-    assert reason is not None
-    assert "identical tool call repeated" in reason
+    assert reason is None
+    assert watchdog.identical_tool_calls['fred_get_series:{"series_id": "GDP"}'] == 9
 
 
 def test_watchdog_does_not_treat_empty_required_tool_args_as_identical():
@@ -121,8 +121,8 @@ def test_watchdog_still_flags_repeated_execute_when_args_are_visible():
     assert watchdog.observe_tool_call("execute", {"cmd": "pytest"}, 2.0) is None
     reason = watchdog.observe_tool_call("execute", {"cmd": "pytest"}, 3.0)
 
-    assert reason is not None
-    assert "identical tool call repeated" in reason
+    assert reason is None
+    assert watchdog.identical_tool_calls['execute:{"cmd": "pytest"}'] == 3
 
 
 def test_watchdog_still_flags_repeated_read_file_when_args_are_visible():
@@ -139,8 +139,10 @@ def test_watchdog_still_flags_repeated_read_file_when_args_are_visible():
     assert watchdog.observe_tool_call("read_file", args, 2.0) is None
     reason = watchdog.observe_tool_call("read_file", args, 3.0)
 
-    assert reason is not None
-    assert "identical tool call repeated" in reason
+    assert reason is None
+    assert watchdog.identical_tool_calls[
+        'read_file:{"file_path": "/tmp/analysis.py", "offset": 1}'
+    ] == 3
 
 
 def test_watchdog_allows_repeated_fred_search_calls_until_search_budget():
@@ -157,8 +159,8 @@ def test_watchdog_allows_repeated_fred_search_calls_until_search_budget():
 
     reason = watchdog.observe_tool_call("fred_search", {"query": "inflation"}, 41.0)
 
-    assert reason is not None
-    assert "fred_search budget exceeded" in reason
+    assert reason is None
+    assert watchdog.fred_search_calls == 41
 
 
 def test_incomplete_streaming_tool_call_detection():
@@ -181,7 +183,7 @@ def test_uninformative_tool_args_detection_matches_empty_required_arg_tools():
     assert has_uninformative_tool_args("bls_get_series", {}) is True
 
 
-def test_watchdog_stops_on_fred_search_budget():
+def test_watchdog_records_fred_search_budget_without_stopping():
     watchdog = Watchdog(
         max_runtime_seconds=900,
         max_tool_calls=60,
@@ -195,8 +197,8 @@ def test_watchdog_stops_on_fred_search_budget():
 
     reason = watchdog.observe_tool_call("fred_search", {"query": "unemployment"}, 3.0)
 
-    assert reason is not None
-    assert "fred_search budget exceeded" in reason
+    assert reason is None
+    assert watchdog.fred_search_calls == 3
 
 
 def test_runner_marks_stream_errors_as_stopped_early(monkeypatch, tmp_path):
