@@ -831,6 +831,157 @@ def test_normalize_quant_summary_does_not_promote_legacy_signal_packets(containe
     assert summary["methods_used"] == []
 
 
+def test_normalize_quant_summary_canonicalizes_legacy_numeric_facts():
+    summary = qms.normalize_quant_execution_summary(
+        {
+            "numeric_facts": [
+                {
+                    "id": "unrate",
+                    "label": "UNRATE",
+                    "value": 4.3,
+                    "unit": "%",
+                    "precision": 1,
+                },
+                {
+                    "id": "inversion",
+                    "label": "Inversion Months",
+                    "value": 0,
+                    "unit": "months",
+                    "precision": 0,
+                },
+            ]
+        }
+    )
+
+    unrate, inversion = summary["numeric_facts"]
+    assert unrate["raw_value"] == 4.3
+    assert unrate["display_value"] == "4.3%"
+    assert unrate["source_key"] == "unrate"
+    assert unrate.get("literal_required", True) is True
+
+    assert inversion["raw_value"] == 0.0
+    assert inversion["display_value"] == "0 months"
+    assert inversion["source_key"] == "inversion"
+    assert inversion["semantic_role"] == "current_state_duration"
+    assert inversion["literal_required"] is False
+    assert "no active/current episode" in inversion["state_description"]
+
+
+def test_current_state_zero_duration_ignores_literal_required_override():
+    fact = {
+        "id": "inversion",
+        "label": "Inversion Months",
+        "value": 0,
+        "unit": "months",
+        "precision": 0,
+        "literal_required": True,
+    }
+
+    normalized = qms.normalize_numeric_facts([fact], strict=True)[0]
+
+    assert normalized["semantic_role"] == "current_state_duration"
+    assert normalized["literal_required"] is False
+    assert qms.numeric_fact_literal_required(normalized) is False
+    assert qms.numeric_fact_current_state_duration_misuse(
+        "The curve normalized after 0 months of inversion.",
+        fact | {"raw_value": 0, "semantic_role": "current_state_duration"},
+    )
+
+    helper_fact = qms.numeric_fact(
+        fact_id="inversion",
+        label="Inversion Months",
+        raw_value=0,
+        unit="months",
+        precision=0,
+        tolerance=0,
+        source_key="inversion",
+        literal_required=True,
+    )
+    assert helper_fact is not None
+    assert helper_fact["literal_required"] is False
+
+
+@pytest.mark.parametrize("literal_required", [None, 0, ""])
+def test_numeric_fact_literal_required_malformed_values_do_not_opt_out(literal_required):
+    fact = {
+        "id": "nvda_revenue_b",
+        "label": "NVDA revenue",
+        "value": 130.5,
+        "unit": "usd_b",
+        "precision": 1,
+        "subject": "NVDA",
+        "metric": "revenue_b",
+        "literal_required": literal_required,
+    }
+
+    normalized = qms.normalize_numeric_facts([fact])
+
+    assert qms.numeric_fact_literal_required(fact) is True
+    assert "literal_required" not in normalized[0]
+    assert qms.numeric_fact_literal_required(normalized[0]) is True
+    with pytest.raises(ValueError, match="literal_required"):
+        qms.normalize_numeric_facts([fact], strict=True)
+
+
+def test_numeric_fact_literal_required_false_requires_current_state_duration():
+    fact = {
+        "id": "nvda_revenue_b",
+        "label": "NVDA revenue",
+        "value": 130.5,
+        "unit": "usd_b",
+        "precision": 1,
+        "subject": "NVDA",
+        "metric": "revenue_b",
+        "literal_required": False,
+    }
+
+    normalized = qms.normalize_numeric_facts([fact])
+
+    assert qms.numeric_fact_literal_required(fact) is True
+    assert "literal_required" not in normalized[0]
+    assert qms.numeric_fact_literal_required(normalized[0]) is True
+    with pytest.raises(ValueError, match="current_state_duration"):
+        qms.normalize_numeric_facts([fact], strict=True)
+    with pytest.raises(ValueError, match="current_state_duration"):
+        qms.numeric_fact(
+            fact_id="nvda_revenue_b",
+            label="NVDA revenue",
+            raw_value=130.5,
+            unit="usd_b",
+            precision=1,
+            tolerance=0.1,
+            source_key="sec_company_facts.NVDA.revenue_b",
+            subject="NVDA",
+            metric="revenue_b",
+            literal_required=False,
+        )
+
+
+def test_zero_duration_with_explicit_non_current_role_remains_literal():
+    fact = {
+        "id": "completed_inversion_duration",
+        "label": "Completed inversion duration",
+        "value": 0,
+        "unit": "months",
+        "precision": 0,
+        "semantic_role": "historical_duration",
+    }
+
+    normalized = qms.normalize_numeric_facts([fact])[0]
+
+    assert normalized["semantic_role"] == "historical_duration"
+    assert "literal_required" not in normalized
+    assert "state_description" not in normalized
+    assert qms.numeric_fact_literal_required(normalized) is True
+
+    opt_out = dict(fact, literal_required=False)
+    normalized_opt_out = qms.normalize_numeric_facts([opt_out])[0]
+    assert "literal_required" not in normalized_opt_out
+    assert qms.numeric_fact_literal_required(normalized_opt_out) is True
+    with pytest.raises(ValueError, match="current_state_duration"):
+        qms.normalize_numeric_facts([opt_out], strict=True)
+
+
 def test_composite_regime_and_scenario_helpers_return_generic_payloads():
     frame = pd.DataFrame(
         {

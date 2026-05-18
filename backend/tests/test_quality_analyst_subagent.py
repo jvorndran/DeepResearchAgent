@@ -1932,6 +1932,7 @@ def test_submit_quality_decision_rejects_company_fundamental_numeric_drift(tmp_p
                         "source_key": "sec_company_facts.latest_fundamentals.NVDA.revenue_b",
                         "subject": "NVDA",
                         "metric": "revenue_b",
+                        "literal_required": False,
                     },
                     {
                         "id": "sec_company_facts.NVDA.cash_and_securities_b",
@@ -1941,6 +1942,7 @@ def test_submit_quality_decision_rejects_company_fundamental_numeric_drift(tmp_p
                         "source_key": "sec_company_facts.latest_fundamentals.NVDA.cash_and_securities_b",
                         "subject": "NVDA",
                         "metric": "cash_and_securities_b",
+                        "literal_required": False,
                     },
                 ],
             }
@@ -2056,6 +2058,118 @@ def test_submit_quality_decision_rejects_helper_complete_cash_and_debt_drift(tmp
     assert payload["failure_category"] == "numeric_fact_mismatch"
     assert "NVDA cash_and_securities_b" in payload["reason"]
     assert "NVDA long_term_debt_b" in payload["reason"]
+
+
+def test_submit_quality_decision_accepts_zero_duration_current_state_prose(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "numeric_facts": [
+                    {
+                        "id": "inversion",
+                        "label": "Inversion Months",
+                        "value": 0,
+                        "unit": "months",
+                        "precision": 0,
+                        "literal_required": True,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "job_id": "qa-zero-duration-good",
+                "created_at": "2026-05-14T12:00:00Z",
+                "query": "Review whether the yield curve is currently inverted.",
+                "title": "Yield Curve State",
+                "executive_summary": "The yield curve is not currently inverted.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "The yield curve is not currently inverted after a prolonged inversion "
+                    "that ended earlier in 2025."
+                ),
+                "charts": {},
+                "data_sources": [],
+                "metadata": {"analysis_type": "macro", "chart_count": 0, "word_count": 18},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "approved"
+
+
+def test_submit_quality_decision_rejects_zero_duration_as_historical_duration(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "numeric_facts": [
+                    {
+                        "id": "inversion",
+                        "label": "Inversion Months",
+                        "value": 0,
+                        "unit": "months",
+                        "precision": 0,
+                        "literal_required": True,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "job_id": "qa-zero-duration-bad",
+                "created_at": "2026-05-14T12:00:00Z",
+                "query": "Review whether the yield curve is currently inverted.",
+                "title": "Yield Curve State",
+                "executive_summary": "The curve normalized after 0 months.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "The yield curve has normalized after 0 months of inversion."
+                ),
+                "charts": {},
+                "data_sources": [],
+                "metadata": {"analysis_type": "macro", "chart_count": 0, "word_count": 11},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "numeric_fact_mismatch"
+    assert payload["required_upstream"] == "technical-writer"
+    assert "zero-duration" in payload["reason"]
 
 
 def test_submit_quality_decision_rejects_static_chart_semantics_blockers(tmp_path):

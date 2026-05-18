@@ -18,6 +18,12 @@ from langchain.tools import ToolRuntime
 from core.context import ResearchContext
 from core.report_schema import DataSource, ReportMetadata, ResearchReport
 
+from agents.quant_macro_stats.artifacts.numeric_fact_contracts import (
+    normalize_numeric_facts,
+    numeric_fact_current_state_duration_misuse,
+    numeric_fact_literal_required,
+)
+
 from ..report_artifacts import chart_marker_ids, inject_auto_report_footer
 
 from .report_validation import run_report_static_gate
@@ -1699,11 +1705,7 @@ def _numeric_facts_from_summary(parsed: dict[str, Any]) -> list[dict[str, Any]]:
     facts: list[dict[str, Any]] = []
     seen: set[str] = set()
     for candidate in candidates:
-        if not isinstance(candidate, list):
-            continue
-        for item in candidate:
-            if not isinstance(item, dict):
-                continue
+        for item in normalize_numeric_facts(candidate):
             fact_id = str(item.get("id") or item.get("source_key") or "")
             if not fact_id or fact_id in seen:
                 continue
@@ -1731,15 +1733,21 @@ def _compact_numeric_facts_payload(parsed: dict[str, Any]) -> str | None:
         ]
         if fact.get("as_of_date") is not None:
             fields.append(f"as_of={fact.get('as_of_date')}")
+        if fact.get("semantic_role"):
+            fields.append(f"semantic_role={fact.get('semantic_role')}")
+        if fact.get("literal_required") is False:
+            fields.append("literal_required=false")
+        if fact.get("state_description"):
+            fields.append(f"state_description={fact.get('state_description')}")
         rendered.append("(" + "; ".join(str(field) for field in fields) + ")")
 
     if not rendered:
         return None
     return (
-        "Display-ready numeric facts from execution_summary.json. Use each "
-        "display_value verbatim for these facts; do not round differently or "
-        "substitute raw values unless the display_value is unavailable:\n- "
-        + "\n- ".join(rendered)
+        "Display-ready numeric facts from execution_summary.json. Use "
+        "display_value verbatim when literal_required is true; when "
+        "literal_required=false, use state_description instead of forcing the "
+        "numeric display_value into prose:\n- " + "\n- ".join(rendered)
     )
 
 
@@ -2189,6 +2197,7 @@ def _numeric_fact_validation_blockers(
 
     query_and_markdown = f"{original_query}\n{markdown}".lower()
     missing: list[str] = []
+    semantic_misuse: list[str] = []
     markdown_lower = markdown.lower()
     for fact in facts:
         subject = str(fact.get("subject") or "").strip()
@@ -2198,10 +2207,25 @@ def _numeric_fact_validation_blockers(
         markers = _metric_markers_for_fact(fact)
         if markers and not any(marker in query_and_markdown for marker in markers):
             continue
+        label = " ".join(part for part in (subject, metric) if part)
+        label = label or str(
+            fact.get("label") or fact.get("id") or fact.get("source_key") or "numeric fact"
+        )
+        if numeric_fact_current_state_duration_misuse(markdown, fact):
+            semantic_misuse.append(label)
+            continue
+        if not numeric_fact_literal_required(fact):
+            continue
         if not _contains_numeric_fact_value(markdown, fact):
-            label = " ".join(part for part in (subject, metric) if part)
-            missing.append(label or str(fact.get("id") or fact.get("source_key") or "numeric fact"))
+            missing.append(label)
 
+    if semantic_misuse:
+        return [
+            "Report treats current-state zero-duration numeric_facts as historical "
+            f"durations for {', '.join(semantic_misuse[:8])}. Regenerate the "
+            "affected prose from state_description instead of saying an episode "
+            "lasted 0 months."
+        ]
     if not missing:
         return []
     return [

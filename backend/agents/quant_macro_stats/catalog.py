@@ -261,9 +261,13 @@ QUANT_HELPER_CATALOG: tuple[QuantHelperCategory, ...] = (
                 import_path="agents.quant_macro_stats",
                 signature=(
                     "numeric_fact(*, fact_id, label, raw_value, unit, precision, "
-                    "tolerance, source_key, as_of_date=None)"
+                    "tolerance, source_key, as_of_date=None, semantic_role=None, "
+                    "literal_required=None, state_description=None)"
                 ),
-                use_when="Record auditable scalar values in execution_summary.numeric_facts.",
+                use_when=(
+                    "Record auditable scalar values in execution_summary.numeric_facts; "
+                    "use semantic fields for current-state duration counters."
+                ),
                 preserves=(
                     "id",
                     "label",
@@ -273,6 +277,9 @@ QUANT_HELPER_CATALOG: tuple[QuantHelperCategory, ...] = (
                     "unit",
                     "source_key",
                     "as_of_date",
+                    "semantic_role",
+                    "literal_required",
+                    "state_description",
                 ),
             ),
             QuantHelperSpec(
