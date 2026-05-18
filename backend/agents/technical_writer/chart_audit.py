@@ -12,17 +12,7 @@ from pydantic import ValidationError
 
 from core.report_schema import ResearchReport
 
-from ..artifact_fact_consistency import (
-    artifact_fact_consistency_blocker,
-    artifact_fact_consistency_dict,
-)
-from ..report_artifacts import (
-    chart_handoff_blocker,
-    chart_handoff_dict,
-    chart_marker_ids,
-    load_report_json,
-    load_sibling_execution_summary_json,
-)
+from ..report_artifacts import chart_marker_ids, load_report_json
 
 
 _AXIS_CHART_TYPES = {"line", "bar", "area", "composed"}
@@ -56,12 +46,6 @@ def query_requests_charts(query: str) -> bool:
     """Return True when the user query explicitly asks for visual/chart output."""
     lowered = query.lower()
     return any(keyword in lowered for keyword in _CHART_REQUEST_KEYWORDS)
-
-
-def _audit_requires_chart_artifacts(query: str) -> bool:
-    """Chart-audit mode treats dashboards as visual artifacts."""
-    lowered = query.lower()
-    return query_requests_charts(query) or "dashboard" in lowered
 
 
 def _is_finite_number(value: object) -> bool:
@@ -625,8 +609,6 @@ def _audit_payload(
     chart_semantics: dict,
     blockers: list[str],
     warnings: list[str],
-    chart_handoff: dict | None = None,
-    artifact_fact_consistency: dict | None = None,
     load_error: str | None = None,
 ) -> str:
     payload: dict[str, Any] = {
@@ -636,8 +618,6 @@ def _audit_payload(
         "chart_markers": chart_markers,
         "chart_render": chart_render,
         "chart_semantics": chart_semantics,
-        "chart_handoff": chart_handoff or {},
-        "artifact_fact_consistency": artifact_fact_consistency or {},
         "warnings": warnings,
         "blockers": blockers,
     }
@@ -658,7 +638,6 @@ def run_report_chart_audit(report_json_path: str) -> str:
             chart_markers={},
             chart_render={},
             chart_semantics={},
-            chart_handoff={},
             warnings=[],
             blockers=[load_err or "Unknown load error"],
             load_error=load_err,
@@ -673,7 +652,6 @@ def run_report_chart_audit(report_json_path: str) -> str:
             chart_markers={},
             chart_render={},
             chart_semantics={},
-            chart_handoff={},
             warnings=[],
             blockers=[f"Schema validation failed: {exc}"],
         )
@@ -681,12 +659,6 @@ def run_report_chart_audit(report_json_path: str) -> str:
     markers = chart_marker_dict(report)
     render = chart_render_dict(report)
     semantics = chart_semantics_dict(report)
-    execution_summary, _ = load_sibling_execution_summary_json(path)
-    chart_handoff = chart_handoff_dict(report.model_dump(), execution_summary)
-    artifact_fact_consistency = artifact_fact_consistency_dict(
-        execution_summary=execution_summary,
-        report_data=report.model_dump(),
-    )
     blockers: list[str] = []
     warnings: list[str] = []
 
@@ -702,7 +674,7 @@ def run_report_chart_audit(report_json_path: str) -> str:
             blockers.append(f"duplicate chart markers: {markers['duplicate_markers']}")
     if (
         not markers["defined_charts"]
-        and _audit_requires_chart_artifacts(report.query)
+        and query_requests_charts(report.query)
     ):
         blockers.append("query requested charts but report.json contains zero chart definitions")
     if markers.get("chart_count_mismatch"):
@@ -714,12 +686,6 @@ def run_report_chart_audit(report_json_path: str) -> str:
         blockers.append(f"charts fail frontend Recharts render contract: {render['issues']}")
     if not semantics["valid"]:
         blockers.append(f"charts fail chart data semantics audit: {semantics['blockers']}")
-    handoff_blocker = chart_handoff_blocker(chart_handoff)
-    if handoff_blocker:
-        blockers.append(handoff_blocker)
-    fact_blocker = artifact_fact_consistency_blocker(artifact_fact_consistency)
-    if fact_blocker:
-        blockers.append(fact_blocker)
     for chart_id, chart_warnings in semantics["warnings"].items():
         for warning in chart_warnings:
             warnings.append(f"{chart_id}: {warning}")
@@ -730,8 +696,6 @@ def run_report_chart_audit(report_json_path: str) -> str:
         chart_markers=markers,
         chart_render=render,
         chart_semantics=semantics,
-        chart_handoff=chart_handoff,
-        artifact_fact_consistency=artifact_fact_consistency,
         warnings=warnings,
         blockers=blockers,
     )

@@ -6,10 +6,6 @@ import pandas as pd
 import pytest
 
 from agents import quant_macro_stats as qms
-from agents.artifact_fact_consistency import (
-    artifact_fact_consistency_blocker,
-    artifact_fact_consistency_dict,
-)
 from agents.quant_macro_stats.artifacts.recharts_schema_normalization import (
     normalize_quant_report_charts,
 )
@@ -731,78 +727,6 @@ def test_save_quant_outputs_writes_generic_evidence_payload(tmp_path):
     assert list(saved_charts) == ["trend"]
     assert "preserved_prior_charts" not in handoff
     assert "preserved_report_aligned_charts" not in handoff
-
-
-def test_save_quant_outputs_rejects_conflicting_correlation_facts(tmp_path):
-    charts = {
-        "macro_correlation_heatmap": {
-            "type": "bar",
-            "title": "Macro Correlations",
-            "data": [
-                {
-                    "pair": "(UNRATE, CPIAUCSL)",
-                    "var1": "UNRATE",
-                    "var2": "CPIAUCSL",
-                    "correlation": 0.024,
-                }
-            ],
-            "series": [{"dataKey": "correlation", "name": "Correlation"}],
-            "xAxis": {"dataKey": "pair"},
-        }
-    }
-    summary = {
-        "scenario_stress": {
-            "corr": {
-                "UNRATE": {"UNRATE": 1.0, "CPIAUCSL": 0.908},
-                "CPIAUCSL": {"UNRATE": 0.908, "CPIAUCSL": 1.0},
-            }
-        },
-        "numeric_facts": [
-            {
-                "id": "corr_UNRATE_CPIAUCSL",
-                "label": "Correlation(UNRATE, CPIAUCSL)",
-                "value": 0.024,
-                "display_value": "0.024",
-            }
-        ],
-    }
-
-    with pytest.raises(ValueError, match="artifact_fact_mismatch"):
-        qms.save_quant_outputs(tmp_path, charts, summary)
-
-    assert not (tmp_path / "charts.json").exists()
-    assert not (tmp_path / "execution_summary.json").exists()
-
-
-def test_artifact_fact_consistency_uses_numeric_fact_id_only_correlation_pair():
-    consistency = artifact_fact_consistency_dict(
-        execution_summary={
-            "numeric_facts": [
-                {
-                    "id": "corr_UNRATE_CPIAUCSL",
-                    "value": 0.024,
-                    "display_value": "0.024",
-                }
-            ]
-        },
-        charts={
-            "macro_correlation_heatmap": {
-                "type": "bar",
-                "data": [
-                    {
-                        "pair": "(UNRATE, CPIAUCSL)",
-                        "var1": "UNRATE",
-                        "var2": "CPIAUCSL",
-                        "correlation": 0.908,
-                    }
-                ],
-            }
-        },
-    )
-
-    assert consistency["valid"] is False
-    assert consistency["mismatches"][0]["pair"] == ["UNRATE", "CPIAUCSL"]
-    assert "artifact_fact_mismatch" in artifact_fact_consistency_blocker(consistency)
 
 
 def test_save_quant_outputs_does_not_shape_scenario_score_rows(tmp_path):

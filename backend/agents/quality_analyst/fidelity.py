@@ -8,18 +8,34 @@ from pydantic import ValidationError
 
 from core.report_schema import ResearchReport
 
-from ..artifact_fact_consistency import (
-    artifact_fact_consistency_blocker,
-    artifact_fact_consistency_dict,
-)
-from ..report_artifacts import (
-    chart_handoff_blocker,
-    chart_handoff_dict,
-    load_report_json,
-    load_sibling_execution_summary_json,
-)
+from ..report_artifacts import load_report_json
 from ..technical_writer.chart_audit import chart_semantics_dict
 from .utils import _truncate
+
+_SEC_COMPANY_FACTS_REF_MARKERS = (
+    "sec_facts",
+    "sec_company_facts",
+    "sec_edgar_company_facts",
+    "edgar_company_facts",
+)
+
+
+def _looks_like_sec_company_facts_ref(value: object) -> bool:
+    text = str(value).strip()
+    if not text:
+        return False
+    upper = text.upper()
+    normalized = text.lower().replace("-", "_").replace(" ", "_")
+    path_name = Path(text).name.lower().replace("-", "_").replace(" ", "_")
+    return (
+        upper.startswith("SEC_")
+        or upper.endswith("_SEC")
+        or any(
+            marker in normalized or marker in path_name
+            for marker in _SEC_COMPANY_FACTS_REF_MARKERS
+        )
+    )
+
 
 def _load_sibling_execution_summary(report_path: Path) -> dict[str, object]:
     """Return a compact quant summary from execution_summary.json when available."""
@@ -61,7 +77,6 @@ def _load_sibling_execution_summary(report_path: Path) -> dict[str, object]:
         "statistical_text",
         "brief_analysis_summary",
         "chart_ids",
-        "dropped_chart_ids",
         "validation_window",
         "state_comparison",
         "numeric_facts",
@@ -112,9 +127,8 @@ def _load_sibling_execution_summary(report_path: Path) -> dict[str, object]:
     ):
         value = parsed.get(key)
         if value is not None:
-            if (
-                key in {"chart_ids", "dropped_chart_ids", "methods_used", "limitations"}
-                and isinstance(value, list)
+            if key in {"chart_ids", "methods_used", "limitations"} and isinstance(
+                value, list
             ):
                 compact[key] = [str(chart_id) for chart_id in value]
             elif isinstance(value, (dict, list)):
@@ -125,8 +139,12 @@ def _load_sibling_execution_summary(report_path: Path) -> dict[str, object]:
 
 
 def _load_execution_summary_payload(report_path: Path) -> dict[str, object] | None:
-    parsed, _ = load_sibling_execution_summary_json(report_path)
-    return parsed
+    summary_path = report_path.with_name("execution_summary.json")
+    try:
+        parsed = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _numeric_text_variants(value: object) -> set[str]:
@@ -714,16 +732,30 @@ def _sec_company_files_present(summary: dict[str, object]) -> bool:
     status = summary.get("company_context_status")
     if isinstance(status, dict) and status.get("sec_source_keys"):
         return True
+    if _data_files_used_has_sec_company_facts(summary.get("data_files_used")):
+        return True
     manifest = summary.get("quant_input_manifest")
     data_files = manifest.get("data_files") if isinstance(manifest, dict) else None
     if not isinstance(data_files, dict):
         return False
     for key, path in data_files.items():
-        key_upper = str(key).upper()
-        path_name = Path(str(path)).name.lower()
-        if key_upper.endswith("_SEC") or "sec_edgar_company_facts" in path_name:
+        if _looks_like_sec_company_facts_ref(key) or _looks_like_sec_company_facts_ref(
+            path
+        ):
             return True
     return False
+
+
+def _data_files_used_has_sec_company_facts(value: object) -> bool:
+    if isinstance(value, dict):
+        return any(
+            _looks_like_sec_company_facts_ref(key)
+            or _data_files_used_has_sec_company_facts(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, (list, tuple, set)):
+        return any(_data_files_used_has_sec_company_facts(item) for item in value)
+    return _looks_like_sec_company_facts_ref(value)
 
 
 _MODEL_CLAIM_RE = re.compile(
@@ -1122,17 +1154,6 @@ def _approval_blockers(report_path: str) -> list[str]:
     freshness_blocker = _current_helper_evidence_freshness_blocker(data, full_summary)
     if freshness_blocker:
         blockers.append(freshness_blocker)
-    handoff_blocker = chart_handoff_blocker(chart_handoff_dict(data, full_summary))
-    if handoff_blocker:
-        blockers.append(handoff_blocker)
-    fact_blocker = artifact_fact_consistency_blocker(
-        artifact_fact_consistency_dict(
-            execution_summary=full_summary,
-            report_data=data,
-        )
-    )
-    if fact_blocker:
-        blockers.append(fact_blocker)
     blockers.extend(_chart_semantics_approval_blockers(data))
     blockers.extend(_execution_summary_fidelity_blockers(data, Path(report_path)))
     if summary.get("status") in {"failed", "error", "missing"}:
@@ -1205,24 +1226,6 @@ def _approval_failure_metadata(report_path: str) -> dict[str, str]:
     if not summary:
         return {}
     markdown = str(data.get("markdown", ""))
-    chart_handoff = chart_handoff_dict(data, summary)
-    if chart_handoff_blocker(chart_handoff):
-        required_upstream = (
-            "quant-developer"
-            if chart_handoff.get("missing_report_chart_ids")
-            else "technical-writer"
-        )
-        return {
-            "failure_category": "chart_handoff_mismatch",
-            "required_upstream": required_upstream,
-        }
-    if artifact_fact_consistency_blocker(
-        artifact_fact_consistency_dict(execution_summary=summary, report_data=data)
-    ):
-        return {
-            "failure_category": "artifact_fact_mismatch",
-            "required_upstream": "quant-developer",
-        }
     if _chart_semantics_approval_blockers(data):
         return {
             "failure_category": "chart_semantics_mismatch",

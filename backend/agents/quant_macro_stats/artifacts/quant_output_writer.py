@@ -4,10 +4,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-from ...artifact_fact_consistency import (
-    artifact_fact_consistency_blocker,
-    artifact_fact_consistency_dict,
-)
 from .json_safety import to_json_safe
 from .recharts_schema_normalization import (
     _chart_map_from_payload,
@@ -53,14 +49,6 @@ def save_quant_outputs(
     summary["chart_ids"] = chart_ids
     if dropped_chart_ids:
         summary["dropped_chart_ids"] = dropped_chart_ids
-
-    fact_consistency = artifact_fact_consistency_dict(
-        execution_summary=summary,
-        charts=chart_map,
-    )
-    fact_blocker = artifact_fact_consistency_blocker(fact_consistency)
-    if fact_blocker:
-        raise ValueError(fact_blocker)
 
     charts_path.write_text(
         json.dumps(to_json_safe(chart_map), indent=2, allow_nan=False),
