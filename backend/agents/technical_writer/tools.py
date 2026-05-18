@@ -18,6 +18,10 @@ from langchain.tools import ToolRuntime
 from core.context import ResearchContext
 from core.report_schema import DataSource, ReportMetadata, ResearchReport
 
+from ..artifact_fact_consistency import (
+    artifact_fact_consistency_blocker,
+    artifact_fact_consistency_dict,
+)
 from ..report_artifacts import (
     chart_handoff_blocker,
     chart_handoff_dict,
@@ -2807,6 +2811,10 @@ def write_research_report(
         - validation_issues: List of non-blocking warnings (may be empty)
     """
     canonical_job_id = runtime.context.job_id
+    out_dir = runtime.context.output_dir
+    if not out_dir:
+        out_dir = str(OUTPUT_BASE_DIR / canonical_job_id)
+    report_path = str((Path(out_dir) / "report.json").resolve())
     plan_context = _load_plan_context(runtime)
     if not str(charts_json_path).strip():
         charts_json_path = plan_context.get("charts_json_path", "")
@@ -2915,6 +2923,24 @@ def write_research_report(
                 execution_payload.setdefault(key, value)
             for key, value in (helper_evidence.get("diagnostics") or {}).items():
                 execution_payload.setdefault(key, value)
+    artifact_fact_consistency = artifact_fact_consistency_dict(
+        execution_summary=execution_payload,
+        charts=charts_on_disk,
+    )
+    artifact_fact_blocker = artifact_fact_consistency_blocker(artifact_fact_consistency)
+    if artifact_fact_blocker:
+        return json.dumps(
+            {
+                "status": "error",
+                "error": "artifact_fact_mismatch",
+                "failure_category": "artifact_fact_mismatch",
+                "required_upstream": "quant-developer",
+                "report_path": report_path,
+                "artifact_fact_consistency": artifact_fact_consistency,
+                "blockers": [artifact_fact_blocker],
+                "message": artifact_fact_blocker,
+            }
+        )
     numeric_fact_blockers = _numeric_fact_validation_blockers(
         execution_payload, markdown, original_query
     )
@@ -2956,10 +2982,6 @@ def write_research_report(
     # -------------------------------------------------------------------------
     # 6. Save to disk with pre-write validation
     # -------------------------------------------------------------------------
-    out_dir = runtime.context.output_dir
-    if not out_dir:
-        out_dir = str(OUTPUT_BASE_DIR / canonical_job_id)
-    report_path = str((Path(out_dir) / "report.json").resolve())
     chart_handoff = chart_handoff_dict(report.model_dump(), execution_payload)
     handoff_blocker = chart_handoff_blocker(chart_handoff)
     if handoff_blocker and chart_handoff.get("missing_report_chart_ids"):

@@ -1941,6 +1941,86 @@ def test_submit_quality_decision_rejects_missing_handoff_chart_ids(tmp_path):
     assert "missing_report_chart_ids=['savings_credit_stress']" in payload["reason"]
 
 
+def test_submit_quality_decision_rejects_artifact_fact_mismatch(tmp_path):
+    report_path = tmp_path / "report.json"
+    chart = {
+        "id": "macro_correlation_heatmap",
+        "type": "bar",
+        "title": "Macro Correlations",
+        "description": "Correlation facts by pair.",
+        "xAxisKey": "pair",
+        "series": [
+            {"dataKey": "correlation", "label": "Correlation", "color": "#2563eb"}
+        ],
+        "data": [
+            {
+                "pair": "(UNRATE, CPIAUCSL)",
+                "var1": "UNRATE",
+                "var2": "CPIAUCSL",
+                "correlation": 0.024,
+            }
+        ],
+    }
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "chart_ids": ["macro_correlation_heatmap"],
+                "scenario_stress": {
+                    "corr": {
+                        "UNRATE": {"UNRATE": 1.0, "CPIAUCSL": 0.908},
+                        "CPIAUCSL": {"UNRATE": 0.908, "CPIAUCSL": 1.0},
+                    }
+                },
+                "numeric_facts": [
+                    {
+                        "id": "corr_UNRATE_CPIAUCSL",
+                        "label": "Correlation(UNRATE, CPIAUCSL)",
+                        "value": 0.024,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "job_id": "qa-artifact-fact",
+                "created_at": "2026-05-14T12:00:00Z",
+                "query": "Include charts in the macro report.",
+                "title": "Artifact Fact Mismatch",
+                "executive_summary": "Macro correlations were charted.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "The UNRATE/CPIAUCSL correlation was 0.024.\n"
+                    "<!-- CHART:macro_correlation_heatmap -->"
+                ),
+                "charts": {"macro_correlation_heatmap": chart},
+                "data_sources": [],
+                "metadata": {"analysis_type": "macro", "chart_count": 1, "word_count": 8},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "artifact_fact_mismatch"
+    assert payload["required_upstream"] == "quant-developer"
+    assert "UNRATE/CPIAUCSL" in payload["reason"]
+
+
 def test_submit_quality_decision_rejects_recession_probability_without_composite_diagnostics(tmp_path):
     report_path = tmp_path / "report.json"
     (tmp_path / "execution_summary.json").write_text(

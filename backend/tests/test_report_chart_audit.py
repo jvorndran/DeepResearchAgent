@@ -109,6 +109,58 @@ def test_report_chart_audit_rejects_missing_handoff_chart_ids(tmp_path):
     assert "chart_handoff_mismatch" in audit["blockers"][0]
 
 
+def test_report_chart_audit_rejects_artifact_fact_mismatch(tmp_path):
+    report_path = _write_report(
+        tmp_path,
+        {
+            "id": "macro_correlation_heatmap",
+            "type": "bar",
+            "title": "Macro Correlations",
+            "description": "Correlation facts by pair.",
+            "xAxisKey": "pair",
+            "series": [
+                {"dataKey": "correlation", "label": "Correlation", "color": "#2563eb"}
+            ],
+            "data": [
+                {
+                    "pair": "(UNRATE, CPIAUCSL)",
+                    "var1": "UNRATE",
+                    "var2": "CPIAUCSL",
+                    "correlation": 0.024,
+                }
+            ],
+        },
+    )
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "chart_ids": ["macro_correlation_heatmap"],
+                "scenario_stress": {
+                    "corr": {
+                        "UNRATE": {"UNRATE": 1.0, "CPIAUCSL": 0.908},
+                        "CPIAUCSL": {"UNRATE": 0.908, "CPIAUCSL": 1.0},
+                    }
+                },
+                "numeric_facts": [
+                    {
+                        "id": "corr_UNRATE_CPIAUCSL",
+                        "label": "Correlation(UNRATE, CPIAUCSL)",
+                        "value": 0.024,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    audit = json.loads(run_report_chart_audit(str(report_path)))
+
+    assert audit["passes_audit"] is False
+    assert audit["artifact_fact_consistency"]["valid"] is False
+    assert "artifact_fact_mismatch" in audit["blockers"][0]
+
+
 def test_report_chart_audit_accepts_broad_governed_chart_families(tmp_path):
     charts = {
         "radar_profile": {

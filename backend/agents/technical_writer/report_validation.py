@@ -29,6 +29,10 @@ from pydantic import ValidationError
 
 from core.report_schema import ResearchReport
 
+from ..artifact_fact_consistency import (
+    artifact_fact_consistency_blocker,
+    artifact_fact_consistency_dict,
+)
 from ..report_artifacts import (
     chart_handoff_blocker,
     chart_handoff_dict,
@@ -92,6 +96,7 @@ def structural_blockers(
     chart_render: dict | None = None,
     chart_semantics: dict | None = None,
     chart_handoff: dict | None = None,
+    artifact_fact_consistency: dict | None = None,
     chart_required: bool = False,
 ) -> list[str]:
     blockers: list[str] = []
@@ -127,6 +132,9 @@ def structural_blockers(
     handoff_blocker = chart_handoff_blocker(chart_handoff or {})
     if handoff_blocker:
         blockers.append(handoff_blocker)
+    fact_blocker = artifact_fact_consistency_blocker(artifact_fact_consistency or {})
+    if fact_blocker:
+        blockers.append(fact_blocker)
     return blockers
 
 
@@ -182,6 +190,7 @@ def _gate_payload(
     patches_applied: list[str],
     blockers: list[str],
     chart_handoff: dict | None = None,
+    artifact_fact_consistency: dict | None = None,
     load_error: str | None = None,
 ) -> str:
     body: dict = {
@@ -192,6 +201,7 @@ def _gate_payload(
         "chart_render": chart_render or {},
         "chart_semantics": chart_semantics or {},
         "chart_handoff": chart_handoff or {},
+        "artifact_fact_consistency": artifact_fact_consistency or {},
         "warnings": warnings,
         "auto_patched": auto_patched,
         "patches_applied": patches_applied,
@@ -205,6 +215,14 @@ def _gate_payload(
 def _chart_handoff_for_report(path: Path, report: ResearchReport) -> dict:
     summary, _ = load_sibling_execution_summary_json(path)
     return chart_handoff_dict(report.model_dump(), summary)
+
+
+def _artifact_fact_consistency_for_report(path: Path, report: ResearchReport) -> dict:
+    summary, _ = load_sibling_execution_summary_json(path)
+    return artifact_fact_consistency_dict(
+        execution_summary=summary,
+        report_data=report.model_dump(),
+    )
 
 
 def run_report_static_gate(report_json_path: str, auto_patch: bool = True) -> str:
@@ -261,6 +279,7 @@ def run_report_static_gate(report_json_path: str, auto_patch: bool = True) -> st
     chart_render = chart_render_dict(report)
     chart_semantics = chart_semantics_dict(report)
     chart_handoff = _chart_handoff_for_report(path, report)
+    artifact_fact_consistency = _artifact_fact_consistency_for_report(path, report)
     scenarios = scenario_dict(report)
     warnings = content_warnings(report)
 
@@ -310,6 +329,7 @@ def run_report_static_gate(report_json_path: str, auto_patch: bool = True) -> st
             chart_render = chart_render_dict(report)
             chart_semantics = chart_semantics_dict(report)
             chart_handoff = _chart_handoff_for_report(path, report)
+            artifact_fact_consistency = _artifact_fact_consistency_for_report(path, report)
             warnings = content_warnings(report)
             scenarios = scenario_dict(report)
             blockers = structural_blockers(
@@ -318,6 +338,7 @@ def run_report_static_gate(report_json_path: str, auto_patch: bool = True) -> st
                 chart_render,
                 chart_semantics,
                 chart_handoff,
+                artifact_fact_consistency,
                 chart_required=query_requests_charts(report.query),
             )
             passes = len(blockers) == 0
@@ -329,6 +350,7 @@ def run_report_static_gate(report_json_path: str, auto_patch: bool = True) -> st
                 chart_render=chart_render,
                 chart_semantics=chart_semantics,
                 chart_handoff=chart_handoff,
+                artifact_fact_consistency=artifact_fact_consistency,
                 warnings=warnings,
                 auto_patched=True,
                 patches_applied=patches,
@@ -341,6 +363,7 @@ def run_report_static_gate(report_json_path: str, auto_patch: bool = True) -> st
         chart_render,
         chart_semantics,
         chart_handoff,
+        artifact_fact_consistency,
         chart_required=query_requests_charts(report.query),
     )
     passes = len(blockers) == 0
@@ -352,6 +375,7 @@ def run_report_static_gate(report_json_path: str, auto_patch: bool = True) -> st
         chart_render=chart_render,
         chart_semantics=chart_semantics,
         chart_handoff=chart_handoff,
+        artifact_fact_consistency=artifact_fact_consistency,
         warnings=warnings,
         auto_patched=False,
         patches_applied=[],

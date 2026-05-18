@@ -12,6 +12,10 @@ from pydantic import ValidationError
 
 from core.report_schema import ResearchReport
 
+from ..artifact_fact_consistency import (
+    artifact_fact_consistency_blocker,
+    artifact_fact_consistency_dict,
+)
 from ..report_artifacts import (
     chart_handoff_blocker,
     chart_handoff_dict,
@@ -622,6 +626,7 @@ def _audit_payload(
     blockers: list[str],
     warnings: list[str],
     chart_handoff: dict | None = None,
+    artifact_fact_consistency: dict | None = None,
     load_error: str | None = None,
 ) -> str:
     payload: dict[str, Any] = {
@@ -632,6 +637,7 @@ def _audit_payload(
         "chart_render": chart_render,
         "chart_semantics": chart_semantics,
         "chart_handoff": chart_handoff or {},
+        "artifact_fact_consistency": artifact_fact_consistency or {},
         "warnings": warnings,
         "blockers": blockers,
     }
@@ -677,6 +683,10 @@ def run_report_chart_audit(report_json_path: str) -> str:
     semantics = chart_semantics_dict(report)
     execution_summary, _ = load_sibling_execution_summary_json(path)
     chart_handoff = chart_handoff_dict(report.model_dump(), execution_summary)
+    artifact_fact_consistency = artifact_fact_consistency_dict(
+        execution_summary=execution_summary,
+        report_data=report.model_dump(),
+    )
     blockers: list[str] = []
     warnings: list[str] = []
 
@@ -707,6 +717,9 @@ def run_report_chart_audit(report_json_path: str) -> str:
     handoff_blocker = chart_handoff_blocker(chart_handoff)
     if handoff_blocker:
         blockers.append(handoff_blocker)
+    fact_blocker = artifact_fact_consistency_blocker(artifact_fact_consistency)
+    if fact_blocker:
+        blockers.append(fact_blocker)
     for chart_id, chart_warnings in semantics["warnings"].items():
         for warning in chart_warnings:
             warnings.append(f"{chart_id}: {warning}")
@@ -718,6 +731,7 @@ def run_report_chart_audit(report_json_path: str) -> str:
         chart_render=render,
         chart_semantics=semantics,
         chart_handoff=chart_handoff,
+        artifact_fact_consistency=artifact_fact_consistency,
         warnings=warnings,
         blockers=blockers,
     )
