@@ -36,6 +36,7 @@ def test_quant_macro_stats_public_exports_are_helper_only():
         "normalize_quant_execution_summary",
         "QUANT_HELPER_CATALOG",
         "format_quant_helper_catalog_for_prompt",
+        "latest_numeric_fact",
     }
     removed_report_generators = {
         "build_company_fundamental_outputs",
@@ -83,6 +84,9 @@ def test_quant_helper_catalog_is_compact_agent_context():
     assert "direct_ols_forecast(data, target_col, feature_cols" in catalog
     assert "signal_framework_backtest(data, *, component_cols" in catalog
     assert "sec_company_facts_evidence(data_files" in catalog
+    assert "latest_numeric_fact(panel, key" in catalog
+    assert "raw_value" in catalog
+    assert "display_value" in catalog
     assert "save_quant_outputs(output_dir, charts, execution_summary)" in catalog
     assert {"load_monthly_panel", "direct_ols_forecast", "save_quant_outputs"}.issubset(
         helper_names
@@ -185,81 +189,129 @@ def test_load_monthly_panel_resolves_reusable_series_specs(tmp_path):
     assert loaded.panel["UNRATE"].tolist() == [3.8, 3.9]
 
 
-def test_align_period_features_does_not_fill_monthly_tails_when_weekly_extends():
-    panel = qms.align_period_features(
+def test_latest_numeric_fact_uses_latest_finite_value_from_mixed_frequency_panel():
+    panel = pd.DataFrame(
         {
-            "PAYEMS": pd.DataFrame(
-                {
-                    "date": ["2026-03-01", "2026-04-01"],
-                    "value": [158_000.0, 158_100.0],
-                }
-            ),
-            "JTSJOL": pd.DataFrame(
-                {
-                    "date": ["2026-02-01", "2026-03-01"],
-                    "value": [7_100.0, 6_900.0],
-                }
-            ),
-            "ICSA": pd.DataFrame(
-                {
-                    "date": ["2026-05-02", "2026-05-09"],
-                    "value": [240_000.0, 250_000.0],
-                }
-            ),
-            "T5YIE": pd.DataFrame(
-                {
-                    "date": ["2026-05-14", "2026-05-15"],
-                    "value": [2.30, 2.40],
-                }
-            ),
-        },
-        frequency="M",
-        how="outer",
-        fill_method="ffill",
-        fill_limit=2,
-        max_date=None,
+            "date": pd.to_datetime(["2026-03-01", "2026-04-01", "2026-05-01"]),
+            "CPI_YOY": [3.1, 3.0, None],
+            "DGS10": [4.2, 4.3, 4.5],
+        }
     )
 
-    rows = panel.set_index(panel["date"].dt.strftime("%Y-%m"))
-    assert rows.loc["2026-04", "PAYEMS"] == 158_100.0
-    assert pd.isna(rows.loc["2026-04", "JTSJOL"])
-    assert pd.isna(rows.loc["2026-05", "PAYEMS"])
-    assert pd.isna(rows.loc["2026-05", "JTSJOL"])
-    assert rows.loc["2026-05", "ICSA"] == 245_000.0
-    assert rows.loc["2026-05", "T5YIE"] == pytest.approx(2.35)
-
-
-def test_align_period_features_carries_quarterly_values_only_within_quarter():
-    panel = qms.align_period_features(
-        {
-            "GDPC1": pd.DataFrame(
-                {
-                    "date": ["2026-01-01", "2026-04-01"],
-                    "value": [23_000.0, 23_100.0],
-                }
-            ),
-            "UNRATE": pd.DataFrame(
-                {
-                    "date": pd.date_range("2026-01-01", periods=7, freq="MS"),
-                    "value": [4.0, 4.1, 4.1, 4.2, 4.2, 4.3, 4.3],
-                }
-            ),
-        },
-        frequency="M",
-        how="outer",
-        fill_method="ffill",
-        fill_limit=3,
-        max_date=None,
+    fact = qms.latest_numeric_fact(
+        panel,
+        "CPI_YOY",
+        fact_id="macro.cpi_yoy.latest",
+        label="Latest CPI year-over-year",
+        unit="percent",
+        precision=1,
+        tolerance=0.05,
+        source_key="panel.CPI_YOY",
     )
 
-    rows = panel.set_index(panel["date"].dt.strftime("%Y-%m"))
-    assert rows.loc["2026-01", "GDPC1"] == 23_000.0
-    assert rows.loc["2026-02", "GDPC1"] == 23_000.0
-    assert rows.loc["2026-03", "GDPC1"] == 23_000.0
-    assert rows.loc["2026-04", "GDPC1"] == 23_100.0
-    assert rows.loc["2026-05", "GDPC1"] == 23_100.0
-    assert rows.loc["2026-06", "GDPC1"] == 23_100.0
-    assert pd.isna(rows.loc["2026-07", "GDPC1"])
+    assert fact == {
+        "id": "macro.cpi_yoy.latest",
+        "label": "Latest CPI year-over-year",
+        "raw_value": 3.0,
+        "display_value": "3.0%",
+        "unit": "percent",
+        "precision": 1,
+        "tolerance": 0.05,
+        "source_key": "panel.CPI_YOY",
+        "as_of_date": "2026-04",
+        "metric": "CPI_YOY",
+    }
+
+
+def test_normalize_quant_summary_rejects_malformed_numeric_facts():
+    with pytest.raises(ValueError) as error:
+        qms.normalize_quant_execution_summary(
+            {
+                "numeric_facts": [
+                    {
+                        "id": "macro.cpi_yoy.latest",
+                        "label": "Latest CPI year-over-year",
+                        "value": None,
+                        "source_key": "panel.CPI_YOY",
+                    },
+                    None,
+                ]
+            }
+        )
+
+    message = str(error.value)
+    assert "Malformed execution_summary.numeric_facts" in message
+    assert "macro.cpi_yoy.latest" in message
+    assert "raw_value" in message
+    assert "display_value" in message
+    assert "numeric_facts[1]: expected object" in message
+    assert "latest_numeric_fact(...)" in message
+
+
+def test_normalize_quant_summary_requires_facts_for_latest_scalar_snapshot():
+    with pytest.raises(ValueError) as error:
+        qms.normalize_quant_execution_summary(
+            {
+                "statistical_summary": {
+                    "latest_date": "2026-05-01",
+                    "cpi_yoy": 3.0,
+                    "core_pce": 2.8,
+                }
+            }
+        )
+
+    message = str(error.value)
+    assert "execution_summary.numeric_facts is required" in message
+    assert "statistical_summary" in message
+    assert "latest_numeric_fact(...)" in message
+
+
+def test_normalize_quant_summary_rejects_null_latest_scalar_slots_with_unrelated_fact():
+    with pytest.raises(ValueError) as error:
+        qms.normalize_quant_execution_summary(
+            {
+                "statistical_summary": {
+                    "latest_date": "2026-05-01",
+                    "cpi_yoy": None,
+                    "core_pce": None,
+                },
+                "numeric_facts": [
+                    qms.numeric_fact(
+                        fact_id="macro.unrelated.latest",
+                        label="Unrelated latest value",
+                        raw_value=1.0,
+                        unit="index",
+                        precision=1,
+                        tolerance=0.1,
+                        source_key="panel.UNRELATED",
+                    )
+                ],
+            }
+        )
+
+    message = str(error.value)
+    assert "current/latest scalar snapshots cannot include null scalar fields" in message
+    assert "statistical_summary.cpi_yoy" in message
+    assert "statistical_summary.core_pce" in message
+    assert "latest_numeric_fact(...)" in message
+
+
+def test_normalize_quant_summary_rejects_empty_facts_for_latest_scalar_snapshot():
+    with pytest.raises(ValueError) as error:
+        qms.normalize_quant_execution_summary(
+            {
+                "statistical_summary": {
+                    "latest_date": "2026-05-01",
+                    "cpi_yoy": 3.0,
+                },
+                "numeric_facts": [],
+            }
+        )
+
+    message = str(error.value)
+    assert "execution_summary.numeric_facts cannot be empty" in message
+    assert "statistical_summary" in message
+    assert "numeric_fact(...)" in message
 
 
 def test_direct_ols_forecast_and_signal_backtest_are_reusable_helpers():

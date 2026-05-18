@@ -2,6 +2,8 @@
 from copy import deepcopy
 from typing import Any, Iterable
 
+from .._utils import finite_number as _finite
+
 
 _COMPACT_HANDOFF_KEYS = (
     "historical_window_coverage",
@@ -58,6 +60,11 @@ _OBSOLETE_PRESERVATION_KEYS = frozenset(
         "supplemental_validation_only",
     }
 )
+
+_NUMERIC_FACT_TEXT_FIELDS = ("id", "label", "display_value", "unit", "source_key")
+_NUMERIC_FACT_FINITE_FIELDS = ("raw_value", "tolerance")
+_CURRENT_SCALAR_FACT_CONTAINERS = ("statistical_summary",)
+_CURRENT_SCALAR_DATE_FIELDS = ("latest_date",)
 
 
 def normalize_quant_execution_summary(execution_summary: dict[str, Any]) -> dict[str, Any]:
@@ -134,6 +141,134 @@ def _collect_validation_methods(summary: dict[str, Any]) -> None:
                     methods.append(method)
 
 
+def _non_empty_text(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _is_current_scalar_fact_slot(value: Any) -> bool:
+    if isinstance(value, bool):
+        return False
+    return value is None or _finite(value) is not None
+
+
+def _current_scalar_fact_slots(summary: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    containers: dict[str, dict[str, Any]] = {}
+    for key in _CURRENT_SCALAR_FACT_CONTAINERS:
+        value = summary.get(key)
+        if not isinstance(value, dict):
+            continue
+        has_current_date = any(
+            value.get(date_field) is not None for date_field in _CURRENT_SCALAR_DATE_FIELDS
+        )
+        if not has_current_date:
+            continue
+        scalar_fact_slots = {
+            field: field_value
+            for field, field_value in value.items()
+            if field not in _CURRENT_SCALAR_DATE_FIELDS
+            and _is_current_scalar_fact_slot(field_value)
+        }
+        if scalar_fact_slots:
+            containers[key] = scalar_fact_slots
+    return containers
+
+
+def _current_scalar_fact_containers(summary: dict[str, Any]) -> list[str]:
+    return list(_current_scalar_fact_slots(summary))
+
+
+def _format_container_fields(fields_by_container: dict[str, list[str]]) -> str:
+    return ", ".join(
+        f"{container}.{field}"
+        for container, fields in fields_by_container.items()
+        for field in fields
+    )
+
+
+def _reject_null_current_scalar_slots(summary: dict[str, Any]) -> None:
+    null_slots = {
+        container: [field for field, value in fields.items() if value is None]
+        for container, fields in _current_scalar_fact_slots(summary).items()
+    }
+    null_slots = {container: fields for container, fields in null_slots.items() if fields}
+    if not null_slots:
+        return
+
+    raise ValueError(
+        "execution_summary current/latest scalar snapshots cannot include null "
+        "scalar fields: "
+        + _format_container_fields(null_slots)
+        + ". Use latest_numeric_fact(...) to emit latest finite observations with "
+        "their own as_of_date, or remove the null scalar fields before "
+        "save_quant_outputs(...)."
+    )
+
+
+def _validate_numeric_facts(summary: dict[str, Any]) -> None:
+    _reject_null_current_scalar_slots(summary)
+    required_current_containers = _current_scalar_fact_containers(summary)
+    if "numeric_facts" not in summary:
+        if required_current_containers:
+            raise ValueError(
+                "execution_summary.numeric_facts is required when current/latest "
+                "scalar containers are present ("
+                + ", ".join(required_current_containers)
+                + "). Build display-ready facts with latest_numeric_fact(...) or "
+                "numeric_fact(...) before save_quant_outputs(...), or remove the "
+                "current scalar snapshot if no scalar fact evidence is required."
+            )
+        return
+
+    facts = summary.get("numeric_facts")
+    if not isinstance(facts, list):
+        raise ValueError(
+            "execution_summary.numeric_facts must be a list of canonical numeric "
+            "fact objects built with numeric_fact(...) or latest_numeric_fact(...)."
+        )
+    if required_current_containers and not facts:
+        raise ValueError(
+            "execution_summary.numeric_facts cannot be empty when current/latest "
+            "scalar containers are present ("
+            + ", ".join(required_current_containers)
+            + "). Build display-ready facts with latest_numeric_fact(...) or "
+            "numeric_fact(...) before save_quant_outputs(...), or remove the "
+            "current scalar snapshot if no scalar fact evidence is required."
+        )
+
+    errors: list[str] = []
+    for index, fact in enumerate(facts):
+        fallback_id = f"numeric_facts[{index}]"
+        if not isinstance(fact, dict):
+            errors.append(f"{fallback_id}: expected object")
+            continue
+
+        fact_id = str(fact.get("id") or "").strip()
+        label = fact_id or fallback_id
+        missing_text = [
+            field for field in _NUMERIC_FACT_TEXT_FIELDS if not _non_empty_text(fact.get(field))
+        ]
+        non_finite = [
+            field for field in _NUMERIC_FACT_FINITE_FIELDS if _finite(fact.get(field)) is None
+        ]
+        if missing_text or non_finite:
+            problems = []
+            if missing_text:
+                problems.append(f"missing non-empty {', '.join(missing_text)}")
+            if non_finite:
+                problems.append(f"missing finite {', '.join(non_finite)}")
+            errors.append(f"{label}: {'; '.join(problems)}")
+
+    if errors:
+        raise ValueError(
+            "Malformed execution_summary.numeric_facts: "
+            + "; ".join(errors)
+            + ". Use numeric_fact(...) or latest_numeric_fact(...) from "
+            "agents.quant_macro_stats to build facts with raw_value, "
+            "display_value, tolerance, and source_key; keep numeric_facts empty "
+            "only when no scalar fact evidence is required."
+        )
+
+
 def _iter_nested_mappings(*values: Any, max_depth: int = 3) -> Iterable[dict[str, Any]]:
     """Yield mapping payloads reachable from helper handoff containers."""
 
@@ -152,4 +287,5 @@ def _iter_nested_mappings(*values: Any, max_depth: int = 3) -> Iterable[dict[str
 _SUMMARY_NORMALIZATION_RULES = (
     _drop_obsolete_preservation_flags,
     _collect_validation_methods,
+    _validate_numeric_facts,
 )

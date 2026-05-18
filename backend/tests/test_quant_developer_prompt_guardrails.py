@@ -35,6 +35,9 @@ def test_quant_prompt_requires_analysis_script_not_prebuilt_report_tools():
     assert "source coverage" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "# HELPER SELECTION CATALOG" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "direct_ols_forecast(data, target_col, feature_cols" in QUANT_DEVELOPER_SYSTEM_PROMPT
+    assert "latest_numeric_fact(panel, key" in QUANT_DEVELOPER_SYSTEM_PROMPT
+    assert "raw_value" in QUANT_DEVELOPER_SYSTEM_PROMPT
+    assert "display_value" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "save_quant_outputs(output_dir, charts, execution_summary)" in QUANT_DEVELOPER_SYSTEM_PROMPT
 
     removed_surfaces = [
@@ -256,42 +259,6 @@ execution_summary = {{"forecast_table": [], "signal_false_positive_windows": fal
     assert response.status == "error"
     assert "signal framework hit/miss evidence requires `signal_framework_backtest`" in response.content
     assert "already composes reusable forecast evidence rows" in response.content
-
-
-def test_period_alignment_guardrail_blocks_claims_and_jolts_without_helper(tmp_path):
-    claims_path = tmp_path / "icsa.csv"
-    jolts_path = tmp_path / "jtsjol.csv"
-    claims_path.write_text("date,value\n2026-05-09,240000\n", encoding="utf-8")
-    jolts_path.write_text("date,value\n2026-03-01,6900\n", encoding="utf-8")
-    content = f'''
-DATA_FILES = {{"ICSA": {str(claims_path)!r}, "JTSJOL": {str(jolts_path)!r}}}
-panel = {{}}
-'''
-
-    response = _blocked_write_response(tmp_path, content)
-
-    assert response.status == "error"
-    assert "Blocked mixed-frequency FRED analysis script" in response.content
-    assert 'fill_scope="lower_frequency"' in response.content
-    assert "monthly/JOLTS tails missing" in response.content
-
-
-def test_period_alignment_guardrail_blocks_treasury_and_jolts_without_helper(tmp_path):
-    t5yie_path = tmp_path / "t5yie.csv"
-    jolts_path = tmp_path / "jtsjol.csv"
-    t5yie_path.write_text("date,value\n2026-05-15,2.35\n", encoding="utf-8")
-    jolts_path.write_text("date,value\n2026-03-01,6900\n", encoding="utf-8")
-    content = f'''
-DATA_FILES = {{"T5YIE": {str(t5yie_path)!r}, "JTSJOL": {str(jolts_path)!r}}}
-panel = {{}}
-'''
-
-    response = _blocked_write_response(tmp_path, content)
-
-    assert response.status == "error"
-    assert "Blocked mixed-frequency FRED analysis script" in response.content
-    assert 'fill_scope="lower_frequency"' in response.content
-    assert "monthly/JOLTS tails missing" in response.content
 
 
 def test_macro_guardrail_blocks_removed_output_preservation_surfaces(tmp_path):
