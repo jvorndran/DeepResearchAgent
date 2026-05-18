@@ -1542,6 +1542,103 @@ def test_save_quant_outputs_ignores_report_aligned_preservation_flags(tmp_path):
     assert "preserved_report_aligned_charts" not in saved_summary
 
 
+def test_save_quant_outputs_drops_ambiguous_grouped_axis_chart_with_issue(tmp_path):
+    charts = {
+        "margin_comparison": {
+            "type": "line",
+            "title": "Margin Comparison",
+            "xAxisKey": "fiscal_year",
+            "data": [
+                {"fiscal_year": 2024, "ticker": "AAPL", "value": 45.0},
+                {"fiscal_year": 2024, "ticker": "AAPL", "value": 31.0},
+                {"fiscal_year": 2024, "ticker": "MSFT", "value": 44.0},
+            ],
+            "series": [
+                {"dataKey": "value", "label": "AAPL", "color": "#3b82f6"},
+                {"dataKey": "value", "label": "MSFT", "color": "#f59e0b"},
+            ],
+            "config": {"groupBy": "ticker"},
+        }
+    }
+
+    handoff = qms.save_quant_outputs(
+        tmp_path,
+        charts,
+        {"methods_used": ["unit_test_method"]},
+    )
+    saved_summary = json.loads((tmp_path / "execution_summary.json").read_text())
+    saved_charts = json.loads((tmp_path / "charts.json").read_text())
+
+    expected_issue = (
+        "dropped unsupported groupBy=ticker chart: duplicate finite values "
+        "for fiscal_year/ticker pairs"
+    )
+    assert saved_charts == {}
+    assert handoff["chart_ids"] == []
+    assert handoff["dropped_chart_ids"] == ["margin_comparison"]
+    assert saved_summary["chart_ids"] == []
+    assert saved_summary["dropped_chart_ids"] == ["margin_comparison"]
+    assert saved_summary["chart_normalization_issues"] == {
+        "margin_comparison": [expected_issue]
+    }
+    assert handoff["chart_normalization_issues"] == {
+        "margin_comparison": [expected_issue]
+    }
+
+
+def test_save_quant_outputs_drops_multi_datakey_grouped_axis_chart_with_issue(tmp_path):
+    charts = {
+        "multi_metric_peer_chart": {
+            "type": "bar",
+            "title": "Peer Metrics",
+            "xAxisKey": "fiscal_year",
+            "data": [
+                {
+                    "fiscal_year": 2024,
+                    "ticker": "AAPL",
+                    "revenue_growth": 6.0,
+                    "operating_margin": 31.5,
+                },
+                {
+                    "fiscal_year": 2024,
+                    "ticker": "MSFT",
+                    "revenue_growth": 15.7,
+                    "operating_margin": 44.6,
+                },
+            ],
+            "series": [
+                {"dataKey": "revenue_growth", "label": "Revenue Growth"},
+                {"dataKey": "operating_margin", "label": "Operating Margin"},
+            ],
+            "config": {"groupBy": "ticker"},
+        }
+    }
+
+    handoff = qms.save_quant_outputs(
+        tmp_path,
+        charts,
+        {"methods_used": ["unit_test_method"]},
+    )
+    saved_summary = json.loads((tmp_path / "execution_summary.json").read_text())
+    saved_charts = json.loads((tmp_path / "charts.json").read_text())
+
+    expected_issue = (
+        "dropped unsupported groupBy=ticker chart: multiple series dataKeys "
+        "cannot be pivoted (revenue_growth, operating_margin)"
+    )
+    assert saved_charts == {}
+    assert handoff["chart_ids"] == []
+    assert handoff["dropped_chart_ids"] == ["multi_metric_peer_chart"]
+    assert saved_summary["chart_ids"] == []
+    assert saved_summary["dropped_chart_ids"] == ["multi_metric_peer_chart"]
+    assert saved_summary["chart_normalization_issues"] == {
+        "multi_metric_peer_chart": [expected_issue]
+    }
+    assert handoff["chart_normalization_issues"] == {
+        "multi_metric_peer_chart": [expected_issue]
+    }
+
+
 def test_normalize_quant_report_charts_returns_dropped_ids():
     result = normalize_quant_report_charts(
         {
@@ -1557,3 +1654,45 @@ def test_normalize_quant_report_charts_returns_dropped_ids():
 
     assert result["chart_ids"] == ["usable"]
     assert result["dropped_chart_ids"] == ["blank"]
+
+
+def test_normalize_quant_report_charts_pivots_grouped_axis_long_form():
+    result = normalize_quant_report_charts(
+        {
+            "cagr_summary": {
+                "type": "bar",
+                "title": "5-Year CAGR Comparison",
+                "xAxisKey": "metric",
+                "data": [
+                    {"metric": "Revenue", "ticker": "AAPL", "cagr": 6.2},
+                    {"metric": "Revenue", "ticker": "MSFT", "cagr": 12.1},
+                    {"metric": "FCF", "ticker": "AAPL", "cagr": 8.4},
+                    {"metric": "FCF", "ticker": "MSFT", "cagr": 9.7},
+                ],
+                "series": [
+                    {"dataKey": "cagr", "label": "AAPL", "color": "#3b82f6"},
+                    {"dataKey": "cagr", "label": "MSFT", "color": "#f59e0b"},
+                ],
+                "config": {"groupBy": "ticker"},
+            }
+        }
+    )
+
+    chart = result["charts"]["cagr_summary"]
+
+    assert result["chart_ids"] == ["cagr_summary"]
+    assert result["dropped_chart_ids"] == []
+    assert chart["series"] == [
+        {"dataKey": "AAPL", "label": "AAPL", "color": "#3b82f6"},
+        {"dataKey": "MSFT", "label": "MSFT", "color": "#f59e0b"},
+    ]
+    assert chart["data"] == [
+        {"metric": "Revenue", "AAPL": 6.2, "MSFT": 12.1},
+        {"metric": "FCF", "AAPL": 8.4, "MSFT": 9.7},
+    ]
+    assert "config" not in chart
+    assert result["chart_normalization_issues"] == {
+        "cagr_summary": [
+            "converted unsupported groupBy=ticker long-form cagr chart into wide series columns"
+        ]
+    }

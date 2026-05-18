@@ -56,6 +56,7 @@ _COMPACT_HANDOFF_KEYS = (
     "numeric_facts",
     "chart_provenance",
     "generated_by",
+    "chart_normalization_issues",
 )
 
 _COMMON_VALIDATION_CONTAINER_KEYS = (

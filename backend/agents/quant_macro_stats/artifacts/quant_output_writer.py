@@ -48,7 +48,9 @@ def save_quant_outputs(
     charts_path = output_path / "charts.json"
     summary_path = output_path / "execution_summary.json"
 
-    chart_map, dropped_chart_ids = _drop_empty_chart_definitions(_chart_map_from_payload(charts))
+    chart_map, dropped_chart_ids, chart_normalization_issues = _drop_empty_chart_definitions(
+        _chart_map_from_payload(charts)
+    )
     chart_ids = list(chart_map.keys())
 
     summary = normalize_quant_execution_summary(execution_summary)
@@ -62,6 +64,19 @@ def save_quant_outputs(
     summary["chart_ids"] = chart_ids
     if dropped_chart_ids:
         summary["dropped_chart_ids"] = dropped_chart_ids
+    if chart_normalization_issues:
+        existing_issues = summary.get("chart_normalization_issues")
+        merged_issues: dict[str, Any] = {}
+        if not isinstance(existing_issues, dict):
+            existing_issues = {}
+        for chart_id, issues in existing_issues.items():
+            if isinstance(issues, list):
+                merged_issues[str(chart_id)] = list(issues)
+            else:
+                merged_issues[str(chart_id)] = [issues]
+        for chart_id, issues in chart_normalization_issues.items():
+            merged_issues.setdefault(chart_id, []).extend(issues)
+        summary["chart_normalization_issues"] = merged_issues
 
     fact_consistency = artifact_fact_consistency_dict(
         execution_summary=summary,

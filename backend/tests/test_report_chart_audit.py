@@ -573,6 +573,34 @@ def test_report_chart_audit_rejects_duplicate_axis_rows(tmp_path):
     ]
 
 
+def test_report_chart_audit_rejects_duplicate_axis_series_data_keys(tmp_path):
+    report_path = _write_report(
+        tmp_path,
+        {
+            "id": "peer_growth",
+            "type": "bar",
+            "title": "Peer Growth",
+            "description": "Peer growth comparison.",
+            "xAxisKey": "year",
+            "series": [
+                {"dataKey": "value", "label": "AAPL", "color": "#3b82f6"},
+                {"dataKey": "value", "label": "MSFT", "color": "#f59e0b"},
+            ],
+            "data": [
+                {"year": "2024", "value": 6.0},
+                {"year": "2025", "value": 8.0},
+            ],
+        },
+    )
+
+    audit = json.loads(run_report_chart_audit(str(report_path)))
+
+    assert audit["passes_audit"] is False
+    assert audit["chart_semantics"]["blockers"]["peer_growth"] == [
+        "duplicate axis series dataKey values are ambiguous: value"
+    ]
+
+
 def test_report_chart_audit_rejects_reference_bands_outside_plotted_dates(tmp_path):
     report_path = _write_report(
         tmp_path,

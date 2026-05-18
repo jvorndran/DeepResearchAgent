@@ -124,6 +124,27 @@ def _chart_series_keys(chart: dict[str, Any]) -> list[str]:
     return []
 
 
+def _chart_group_by_key(chart: dict[str, Any]) -> str | None:
+    for source in (chart, chart.get("config"), chart.get("layout")):
+        if not isinstance(source, dict):
+            continue
+        group_key = source.get("groupBy") or source.get("group_by")
+        if isinstance(group_key, str) and group_key.strip():
+            return group_key.strip()
+    return None
+
+
+def _dedupe_preserving_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        deduped.append(value)
+    return deduped
+
+
 def _is_positive_finite(value: Any) -> bool:
     numeric = _finite_float(value)
     return numeric is not None and numeric > 0
@@ -418,6 +439,163 @@ def _repair_axis_chart_x_aliases(chart: dict[str, Any]) -> dict[str, Any]:
     return chart
 
 
+def _strip_group_by_fields(chart: dict[str, Any]) -> None:
+    chart.pop("groupBy", None)
+    chart.pop("group_by", None)
+    config = chart.get("config")
+    if isinstance(config, dict):
+        config.pop("groupBy", None)
+        config.pop("group_by", None)
+        if not config:
+            chart.pop("config", None)
+
+
+def _normalize_grouped_axis_chart(
+    chart: dict[str, Any],
+    group_by_key: str | None,
+) -> tuple[dict[str, Any] | None, list[str]]:
+    """Pivot unsupported long-form groupBy axis charts into wide series."""
+
+    if not group_by_key:
+        return chart, []
+
+    chart_type = _canonical_chart_type(chart.get("type")) or _canonical_chart_type(
+        chart.get("chart_type")
+    )
+    if chart_type not in {"line", "bar", "area", "composed"}:
+        return chart, []
+
+    data = chart.get("data")
+    x_key = chart.get("xAxisKey") or chart.get("xKey") or chart.get("x_key")
+    series = chart.get("series")
+    if (
+        not isinstance(data, list)
+        or not data
+        or not isinstance(x_key, str)
+        or not x_key
+        or not isinstance(series, list)
+        or not series
+    ):
+        return None, [
+            f"dropped unsupported groupBy={group_by_key} chart: missing axis data, xAxisKey, or series"
+        ]
+
+    series_keys: list[str] = []
+    for item in series:
+        if not isinstance(item, dict):
+            return None, [
+                f"dropped unsupported groupBy={group_by_key} chart: "
+                "every series must declare one shared value dataKey"
+            ]
+        key = item.get("dataKey") or item.get("key")
+        if not isinstance(key, str) or not key.strip():
+            return None, [
+                f"dropped unsupported groupBy={group_by_key} chart: "
+                "every series must declare one shared value dataKey"
+            ]
+        series_keys.append(key.strip())
+
+    unique_series_keys = _dedupe_preserving_order(series_keys)
+    if len(unique_series_keys) != 1:
+        listed_keys = ", ".join(unique_series_keys[:4])
+        if len(unique_series_keys) > 4:
+            listed_keys = f"{listed_keys}, ..."
+        return None, [
+            f"dropped unsupported groupBy={group_by_key} chart: "
+            f"multiple series dataKeys cannot be pivoted ({listed_keys})"
+        ]
+    value_key = unique_series_keys[0]
+
+    rows_by_x: dict[str, dict[str, Any]] = {}
+    x_value_by_label: dict[str, Any] = {}
+    x_order: list[str] = []
+    group_order_from_data: list[str] = []
+    seen_pairs: set[tuple[str, str]] = set()
+    duplicate_pairs: set[tuple[str, str]] = set()
+
+    for row in data:
+        if not isinstance(row, dict):
+            return None, [
+                f"dropped unsupported groupBy={group_by_key} chart: every row must be an object"
+            ]
+        x_value = row.get(x_key)
+        group_value = row.get(group_by_key)
+        x_label = str(x_value).strip() if x_value is not None else ""
+        group_label = str(group_value).strip() if group_value is not None else ""
+        if not x_label or not group_label:
+            return None, [
+                f"dropped unsupported groupBy={group_by_key} chart: rows must include {x_key} and {group_by_key}"
+            ]
+        numeric_value = _finite_float(row.get(value_key))
+        if numeric_value is None:
+            continue
+
+        pair = (x_label, group_label)
+        if pair in seen_pairs:
+            duplicate_pairs.add(pair)
+            continue
+        seen_pairs.add(pair)
+        if x_label not in rows_by_x:
+            rows_by_x[x_label] = {x_key: x_value}
+            x_value_by_label[x_label] = x_value
+            x_order.append(x_label)
+        if group_label not in group_order_from_data:
+            group_order_from_data.append(group_label)
+        rows_by_x[x_label][group_label] = numeric_value
+
+    if duplicate_pairs:
+        return None, [
+            f"dropped unsupported groupBy={group_by_key} chart: duplicate finite values for {x_key}/{group_by_key} pairs"
+        ]
+    if not rows_by_x or not group_order_from_data:
+        return None, [
+            f"dropped unsupported groupBy={group_by_key} chart: no finite {value_key} values to pivot"
+        ]
+
+    preferred_group_order = [
+        str(item.get("label") or item.get("name") or "").strip()
+        for item in series
+        if isinstance(item, dict)
+        and str(item.get("label") or item.get("name") or "").strip()
+    ]
+    group_order = [
+        group
+        for group in _dedupe_preserving_order(
+            preferred_group_order + group_order_from_data
+        )
+        if group in group_order_from_data
+    ]
+    pivoted_series: list[dict[str, Any]] = []
+    for index, group_label in enumerate(group_order):
+        source = (
+            series[index]
+            if index < len(series) and isinstance(series[index], dict)
+            else {}
+        )
+        item: dict[str, Any] = {
+            "dataKey": group_label,
+            "label": source.get("label") or source.get("name") or group_label,
+            "color": source.get("color") or "#2563eb",
+        }
+        for field in ("type", "yAxisId", "stackId", "shape", "strokeDasharray"):
+            if source.get(field) is not None:
+                item[field] = source[field]
+        pivoted_series.append(item)
+
+    chart["series"] = pivoted_series
+    chart["data"] = [
+        {
+            **{x_key: x_value_by_label[x_label]},
+            **{group: rows_by_x[x_label].get(group) for group in group_order},
+        }
+        for x_label in x_order
+    ]
+    _strip_group_by_fields(chart)
+    return chart, [
+        f"converted unsupported groupBy={group_by_key} long-form {value_key} chart into wide series columns"
+    ]
+
+
 def _collapse_duplicate_axis_rows(chart: dict[str, Any]) -> dict[str, Any]:
     data = chart.get("data")
     x_key = chart.get("xAxisKey") or chart.get("xKey") or chart.get("x_key")
@@ -629,15 +807,25 @@ def _collapse_same_scale_dual_axes(chart: dict[str, Any]) -> dict[str, Any]:
     return chart
 
 
-def _drop_empty_chart_definitions(chart_map: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+def _drop_empty_chart_definitions(
+    chart_map: dict[str, Any],
+) -> tuple[dict[str, Any], list[str], dict[str, list[str]]]:
     """Remove charts that cannot satisfy the frontend render contract."""
 
     filtered: dict[str, Any] = {}
     dropped: list[str] = []
+    normalization_issues: dict[str, list[str]] = {}
     for chart_id, chart in chart_map.items():
         if isinstance(chart, dict):
+            group_by_key = _chart_group_by_key(chart)
             chart = _canonicalize_axis_chart_schema(chart)
             chart = _repair_axis_chart_x_aliases(chart)
+            chart, grouped_issues = _normalize_grouped_axis_chart(chart, group_by_key)
+            if grouped_issues:
+                normalization_issues[chart_id] = grouped_issues
+            if chart is None:
+                dropped.append(chart_id)
+                continue
             chart = _collapse_duplicate_axis_rows(chart)
             chart = _normalize_axis_chart_extent(chart)
             chart = _collapse_same_scale_dual_axes(chart)
@@ -645,7 +833,7 @@ def _drop_empty_chart_definitions(chart_map: dict[str, Any]) -> tuple[dict[str, 
             dropped.append(chart_id)
             continue
         filtered[chart_id] = chart
-    return filtered, dropped
+    return filtered, dropped, normalization_issues
 
 
 def _declared_since_year(key: str) -> int | None:
@@ -696,13 +884,14 @@ def normalize_quant_report_charts(
 ) -> dict[str, Any]:
     """Return a renderable Recharts map plus IDs dropped by schema cleanup."""
 
-    chart_map, dropped_chart_ids = _drop_empty_chart_definitions(
+    chart_map, dropped_chart_ids, normalization_issues = _drop_empty_chart_definitions(
         _chart_map_from_payload(charts)
     )
     return {
         "charts": chart_map,
         "chart_ids": list(chart_map),
         "dropped_chart_ids": dropped_chart_ids,
+        "chart_normalization_issues": normalization_issues,
     }
 
 
