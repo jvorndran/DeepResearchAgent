@@ -690,6 +690,98 @@ def test_submit_quality_decision_rejects_claimed_analog_window_without_evidence(
     assert any("computed analog windows" in fix for fix in payload["required_fixes"])
 
 
+def test_submit_quality_decision_allows_historical_coverage_year_language(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "methods_used": ["rate-cut event study"],
+                "limitations": ["FRED S&P 500 observations begin in 2016."],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Test whether the first Fed cut is bullish for stocks.",
+                "title": "Fed Cut Event Study",
+                "executive_summary": "Recent data are supportive but limited.",
+                "markdown": (
+                    "## Caveats\n"
+                    "Historical analog coverage is limited to FRED data from 2016 onward.\n"
+                    "The 1995 and 2001 easing cycles are not covered by this dataset."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 24},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Coverage caveats are stated.",
+            }
+        )
+    )
+
+    assert payload["status"] == "approved"
+
+
+def test_submit_quality_decision_allows_event_study_cycle_years(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "cycles_analyzed": [
+                    {"first_cut_year": 2019, "horizon_months": 6},
+                    {"first_cut_year": 2020, "horizon_months": 6},
+                    {"first_cut_year": 2024, "horizon_months": 6},
+                ],
+                "aggregate_summary": {"cycle_count": 3},
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Test whether the first Fed cut is bullish for stocks.",
+                "title": "Fed Cut Event Study",
+                "executive_summary": "The recent event-study sample is small.",
+                "markdown": (
+                    "## Evidence\n"
+                    "The event-study sample includes the 2019, 2020, and 2024 "
+                    "rate-cut cycles."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 18},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Cycle years describe the event-study sample.",
+            }
+        )
+    )
+
+    assert payload["status"] == "approved"
+
+
 def test_submit_quality_decision_counts_ranking_rows_as_window_coverage(tmp_path):
     report_path = tmp_path / "report.json"
     (tmp_path / "execution_summary.json").write_text(
