@@ -17,10 +17,6 @@ public data via tools `bls_search_known_series`, `bls_get_series`.
   `save_data` afterward.
 - BLS Public Data API v1 requires no key but has limited metadata. Use returned
   curated metadata for direct-BLS versus FRED source differences.
-- For production/nonsupervisory earnings, keep the source ID and units explicit:
-  `CES0500000008` is average hourly earnings (`dollars per hour`), while
-  `CES0500000030` is average weekly earnings (`dollars per week`). Do not
-  substitute the weekly series for an hourly wage comparison.
 - `bls_get_series` normalizes partial or over-wide no-key year windows to one
   explicit 10-year-or-smaller direct-source check and returns the requested
   versus applied window in metadata. Do not retry the same BLS objective after

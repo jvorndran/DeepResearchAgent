@@ -8,8 +8,8 @@ future PDF export pipeline.
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal, Union
-from pydantic import BaseModel, ConfigDict, Field
+from typing import Annotated, Literal, Union
+from pydantic import BaseModel, Field
 
 # =============================================================================
 # CHART MODELS
@@ -34,21 +34,6 @@ class ReferenceArea(BaseModel):
     fillOpacity: float | None = None
 
 
-class ChartProvenance(BaseModel):
-    model_config = ConfigDict(extra="allow")
-
-    source_series: list[str] | dict[str, Any] | None = None
-    source_files: list[str] | dict[str, Any] | None = None
-    raw_window: dict[str, Any] | None = None
-    raw_latest_observation: str | dict[str, Any] | None = None
-    displayed_window: dict[str, Any] | None = None
-    displayed_latest_label: str | dict[str, Any] | None = None
-    frequency: str | None = None
-    resampling: str | dict[str, Any] | None = None
-    normalization: dict[str, Any] | None = None
-    limitations: list[str] | str | None = None
-
-
 class AxisSeries(BaseModel):
     dataKey: str
     label: str
@@ -71,7 +56,6 @@ class AxisChartDef(BaseModel):
     layout: Literal["horizontal", "vertical"] | None = None
     referenceLines: list[ReferenceLine] | None = None
     referenceAreas: list[ReferenceArea] | None = None
-    provenance: ChartProvenance | None = None
 
 
 class ScatterChartDef(BaseModel):
@@ -88,7 +72,6 @@ class ScatterChartDef(BaseModel):
     sizeKey: str | None = None
     colorKey: str | None = None
     nameKey: str | None = None
-    provenance: ChartProvenance | None = None
 
 
 class PieSlice(BaseModel):
@@ -104,7 +87,6 @@ class PieChartDef(BaseModel):
     description: str
     data: list[PieSlice]
     innerRadius: float | str | None = None
-    provenance: ChartProvenance | None = None
 
 
 class RadarChartDef(BaseModel):
@@ -115,7 +97,6 @@ class RadarChartDef(BaseModel):
     angleKey: str
     series: list[AxisSeries]
     data: list[dict]
-    provenance: ChartProvenance | None = None
 
 
 class SegmentDatum(BaseModel):
@@ -134,7 +115,6 @@ class RadialBarChartDef(BaseModel):
     dataKey: str | None = None
     innerRadius: float | str | None = None
     outerRadius: float | str | None = None
-    provenance: ChartProvenance | None = None
 
 
 class FunnelChartDef(BaseModel):
@@ -145,7 +125,6 @@ class FunnelChartDef(BaseModel):
     data: list[SegmentDatum]
     dataKey: str | None = None
     nameKey: str | None = None
-    provenance: ChartProvenance | None = None
 
 
 class HierarchyDatum(BaseModel):
@@ -164,7 +143,6 @@ class TreemapChartDef(BaseModel):
     description: str
     data: list[HierarchyDatum]
     valueKey: Literal["size", "value"] | None = None
-    provenance: ChartProvenance | None = None
 
 
 class SankeyNode(BaseModel):
@@ -192,7 +170,6 @@ class SankeyChartDef(BaseModel):
     title: str
     description: str
     data: SankeyData
-    provenance: ChartProvenance | None = None
 
 
 class SunburstChartDef(BaseModel):
@@ -202,7 +179,6 @@ class SunburstChartDef(BaseModel):
     description: str
     data: HierarchyDatum
     valueKey: Literal["value", "size"] | None = None
-    provenance: ChartProvenance | None = None
 
 
 ChartDef = Annotated[
@@ -267,7 +243,6 @@ class ResearchReport(BaseModel):
 __all__ = [
     "ReferenceLine",
     "ReferenceArea",
-    "ChartProvenance",
     "AxisSeries",
     "AxisChartDef",
     "ScatterChartDef",

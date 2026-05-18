@@ -31,7 +31,6 @@ _CHART_REQUEST_KEYWORDS = (
     "charts",
     "chart pack",
     "chart-pack",
-    "recession-dashboard",
     "plot",
     "plots",
     "renderable",
@@ -40,17 +39,6 @@ _CHART_REQUEST_KEYWORDS = (
     "visual-evidence",
     "visualize",
     "overlay",
-)
-_MACRO_DATA_SOURCE_PROVIDERS = (
-    "fred",
-    "bls",
-    "bureau of labor statistics",
-    "world bank",
-    "census",
-    "bea",
-    "bureau of economic analysis",
-    "oecd",
-    "imf",
 )
 
 
@@ -91,318 +79,6 @@ def _parse_timestamp(value: Any) -> pd.Timestamp | None:
     if pd.isna(parsed):
         return None
     return pd.Timestamp(parsed)
-
-
-def _looks_like_month_label(value: Any) -> bool:
-    if not isinstance(value, str):
-        return False
-    parts = value.split("-")
-    return (
-        len(parts) == 2
-        and len(parts[0]) == 4
-        and len(parts[1]) == 2
-        and parts[0].isdigit()
-        and parts[1].isdigit()
-    )
-
-
-def _same_display_label(expected: Any, actual: Any) -> bool:
-    expected_text = str(expected).strip()
-    actual_text = str(actual).strip()
-    if expected_text == actual_text:
-        return True
-
-    expected_timestamp = _parse_timestamp(expected)
-    actual_timestamp = _parse_timestamp(actual)
-    if expected_timestamp is None or actual_timestamp is None:
-        return False
-    if expected_timestamp.normalize() == actual_timestamp.normalize():
-        return True
-    if _looks_like_month_label(expected) or _looks_like_month_label(actual):
-        return expected_timestamp.to_period("M") == actual_timestamp.to_period("M")
-    return False
-
-
-def _meaningful_provenance(provenance: Any) -> bool:
-    if not isinstance(provenance, dict):
-        return False
-    return any(value not in (None, "", [], {}) for value in provenance.values())
-
-
-def _is_macro_chart_report(report: ResearchReport) -> bool:
-    analysis_type = str(report.metadata.analysis_type or "").lower()
-    if "macro" in analysis_type:
-        return True
-
-    for source in report.data_sources:
-        provider = str(source.provider or "").lower()
-        if any(keyword in provider for keyword in _MACRO_DATA_SOURCE_PROVIDERS):
-            return True
-    return False
-
-
-def _display_window_value(window: Any, endpoint: str) -> Any:
-    if not isinstance(window, dict):
-        return None
-    aliases = {
-        "start": ("start", "from", "begin", "first"),
-        "end": ("end", "to", "last", "latest"),
-    }[endpoint]
-    for key in aliases:
-        value = window.get(key)
-        if value not in (None, ""):
-            return value
-    return None
-
-
-def _raw_latest_items(raw_latest: Any) -> list[tuple[str | None, Any]]:
-    if isinstance(raw_latest, dict):
-        return [
-            (str(key), value)
-            for key, value in raw_latest.items()
-            if value not in (None, "", [], {})
-        ]
-    if raw_latest not in (None, "", [], {}):
-        return [(None, raw_latest)]
-    return []
-
-
-def _raw_items_for_target(
-    raw_items: list[tuple[str | None, Any]],
-    target_key: str | None,
-) -> list[tuple[str | None, Any]]:
-    if target_key is None:
-        return raw_items if len(raw_items) == 1 else []
-
-    normalized_target = target_key.lower()
-    matched = [
-        (series, value)
-        for series, value in raw_items
-        if series is not None and series.lower() == normalized_target
-    ]
-    if matched:
-        return matched
-    return raw_items if len(raw_items) == 1 else []
-
-
-def _format_raw_latest_name(series: str | None) -> str:
-    if series:
-        return f"raw_latest_observation.{series}"
-    return "raw_latest_observation"
-
-
-def _display_outpaces_raw(displayed: Any, raw_latest: Any) -> bool:
-    displayed_timestamp = _parse_timestamp(displayed)
-    raw_timestamp = _parse_timestamp(raw_latest)
-    if displayed_timestamp is None or raw_timestamp is None:
-        return False
-    if (
-        _looks_like_month_label(displayed) or _looks_like_month_label(raw_latest)
-    ) and displayed_timestamp.to_period("M") == raw_timestamp.to_period("M"):
-        return False
-    return displayed_timestamp.normalize() > raw_timestamp.normalize()
-
-
-def _series_aliases(series: dict[str, Any]) -> list[str]:
-    aliases: list[str] = []
-    for key in ("dataKey", "label", "name"):
-        value = series.get(key)
-        if isinstance(value, str) and value.strip():
-            aliases.append(value.strip())
-    return aliases
-
-
-def _add_series_latest_alias(
-    latest_by_alias: dict[str, Any],
-    alias: Any,
-    last_x: Any,
-) -> None:
-    if alias is None:
-        return
-    if not isinstance(alias, str):
-        alias = str(alias)
-    alias = alias.strip()
-    if alias:
-        latest_by_alias[alias.lower()] = last_x
-
-
-def _series_latest_x_by_alias(
-    chart: dict[str, Any],
-    data: list[Any],
-    x_axis_key: str,
-    provenance: dict[str, Any],
-) -> dict[str, Any]:
-    series = chart.get("series")
-    if not isinstance(series, list):
-        return {}
-
-    latest_by_alias: dict[str, Any] = {}
-    series_entries: list[tuple[list[str], Any]] = []
-    for item in series:
-        if not isinstance(item, dict):
-            continue
-        data_key = item.get("dataKey")
-        if not isinstance(data_key, str) or not data_key.strip():
-            continue
-
-        last_x = None
-        for row in data:
-            if (
-                isinstance(row, dict)
-                and row.get(x_axis_key) not in (None, "")
-                and _is_finite_number(row.get(data_key))
-            ):
-                last_x = row.get(x_axis_key)
-        if last_x is None:
-            continue
-
-        aliases = _series_aliases(item)
-        if not aliases:
-            continue
-        series_entries.append((aliases, last_x))
-        for alias in aliases:
-            _add_series_latest_alias(latest_by_alias, alias, last_x)
-
-    source_series = provenance.get("source_series")
-    if isinstance(source_series, dict):
-        for source_key, source_value in source_series.items():
-            key = str(source_key).strip()
-            value = str(source_value).strip()
-            if not key or not value:
-                continue
-            for aliases, last_x in series_entries:
-                normalized_aliases = {alias.lower() for alias in aliases}
-                if key.lower() in normalized_aliases:
-                    _add_series_latest_alias(latest_by_alias, value, last_x)
-                if value.lower() in normalized_aliases:
-                    _add_series_latest_alias(latest_by_alias, key, last_x)
-    elif isinstance(source_series, list) and len(source_series) == len(series_entries):
-        for source_key, (_, last_x) in zip(source_series, series_entries, strict=False):
-            _add_series_latest_alias(latest_by_alias, source_key, last_x)
-
-    return latest_by_alias
-
-
-def _series_latest_x(
-    latest_by_alias: dict[str, Any],
-    series_key: str | None,
-) -> Any:
-    if series_key is None:
-        return None
-    return latest_by_alias.get(series_key.strip().lower())
-
-
-def _raw_latest_display_targets(
-    provenance: dict[str, Any],
-    last_x: Any,
-    latest_by_alias: dict[str, Any],
-) -> list[tuple[str, Any, str | None]]:
-    displayed_latest = provenance.get("displayed_latest_label")
-    targets: list[tuple[str, Any, str | None]] = []
-    if isinstance(displayed_latest, dict):
-        for series, value in displayed_latest.items():
-            if value in (None, "", [], {}):
-                continue
-            series_key = str(series)
-            series_last_x = _series_latest_x(latest_by_alias, series_key)
-            if series_last_x is None or _same_display_label(value, series_last_x):
-                targets.append(
-                    (f"displayed_latest_label.{series}", value, series_key)
-                )
-    elif displayed_latest not in (None, "", [], {}):
-        if _same_display_label(displayed_latest, last_x):
-            targets.append(("displayed_latest_label", displayed_latest, None))
-
-    if targets:
-        return targets
-
-    displayed_window = provenance.get("displayed_window")
-    end_value = _display_window_value(displayed_window, "end")
-    if end_value is not None and _same_display_label(end_value, last_x):
-        return [("displayed_window.end", end_value, None)]
-
-    return [("last x-axis value", last_x, None)]
-
-
-def _raw_latest_blockers(
-    provenance: dict[str, Any],
-    last_x: Any,
-    latest_by_alias: dict[str, Any],
-) -> list[str]:
-    raw_items = _raw_latest_items(provenance.get("raw_latest_observation"))
-    if not raw_items:
-        return []
-
-    blockers: list[str] = []
-    for target_name, displayed, target_key in _raw_latest_display_targets(
-        provenance,
-        last_x,
-        latest_by_alias,
-    ):
-        for series, raw_latest in _raw_items_for_target(raw_items, target_key):
-            if _display_outpaces_raw(displayed, raw_latest):
-                blockers.append(
-                    f"{target_name}={displayed} outpaces "
-                    f"{_format_raw_latest_name(series)}={raw_latest}"
-                )
-    return blockers
-
-
-def _provenance_display_blockers(
-    chart: dict[str, Any],
-    data: list[Any],
-    x_axis_key: str,
-) -> list[str]:
-    provenance = chart.get("provenance")
-    if not _meaningful_provenance(provenance):
-        return []
-
-    x_values = [
-        row.get(x_axis_key)
-        for row in data
-        if isinstance(row, dict) and row.get(x_axis_key) not in (None, "")
-    ]
-    if not x_values:
-        return []
-
-    first_x = x_values[0]
-    last_x = x_values[-1]
-    blockers: list[str] = []
-    latest_by_alias = _series_latest_x_by_alias(chart, data, x_axis_key, provenance)
-    displayed_window = provenance.get("displayed_window")
-    start_value = _display_window_value(displayed_window, "start")
-    end_value = _display_window_value(displayed_window, "end")
-    if start_value is not None and not _same_display_label(start_value, first_x):
-        blockers.append(
-            f"displayed_window.start={start_value} does not match first x-axis value {first_x}"
-        )
-    if end_value is not None and not _same_display_label(end_value, last_x):
-        blockers.append(
-            f"displayed_window.end={end_value} does not match last x-axis value {last_x}"
-        )
-
-    displayed_latest = provenance.get("displayed_latest_label")
-    if isinstance(displayed_latest, dict):
-        for series, value in displayed_latest.items():
-            if value in (None, "", [], {}):
-                continue
-            series_last_x = _series_latest_x(latest_by_alias, str(series))
-            if series_last_x is None:
-                continue
-            if not _same_display_label(value, series_last_x):
-                blockers.append(
-                    "displayed_latest_label."
-                    f"{series}={value} does not match latest finite x-axis value "
-                    f"{series_last_x}"
-                )
-    elif displayed_latest not in (None, "") and not _same_display_label(
-        displayed_latest, last_x
-    ):
-        blockers.append(
-            f"displayed_latest_label={displayed_latest} does not match last x-axis value {last_x}"
-        )
-    blockers.extend(_raw_latest_blockers(provenance, last_x, latest_by_alias))
-    return blockers
 
 
 def _finite_values(data: list[Any], key: str) -> list[float]:
@@ -787,7 +463,6 @@ def chart_semantics_dict(report: ResearchReport) -> dict:
 
     blockers: dict[str, list[str]] = {}
     warnings: dict[str, list[str]] = {}
-    macro_chart_report = _is_macro_chart_report(report)
 
     for chart_id, chart_model in report.charts.items():
         chart = chart_model.model_dump()
@@ -798,8 +473,6 @@ def chart_semantics_dict(report: ResearchReport) -> dict:
 
         if chart_type not in _SUPPORTED_CHART_TYPES:
             chart_blockers.append(f"unsupported chart type {chart_type}")
-        if macro_chart_report and not _meaningful_provenance(chart.get("provenance")):
-            chart_warnings.append("macro chart lacks provenance metadata")
 
         if chart_type in _AXIS_CHART_TYPES and isinstance(data, list):
             x_axis_key = chart.get("xAxisKey")
@@ -878,9 +551,6 @@ def chart_semantics_dict(report: ResearchReport) -> dict:
                 ref_blockers, ref_warnings = _audit_axis_references(chart, data, x_axis_key)
                 chart_blockers.extend(ref_blockers)
                 chart_warnings.extend(ref_warnings)
-                chart_blockers.extend(
-                    _provenance_display_blockers(chart, data, x_axis_key)
-                )
 
         if chart_type == "pie" and isinstance(data, list):
             non_positive = [

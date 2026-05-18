@@ -263,41 +263,6 @@ QUANT_HELPER_CATALOG: tuple[QuantHelperCategory, ...] = (
                 preserves=("id", "label", "value", "display_value", "source_key"),
             ),
             QuantHelperSpec(
-                name="chart_provenance",
-                import_path="agents.quant_macro_stats",
-                signature="chart_provenance(source_series=..., raw_window=..., displayed_window=...)",
-                use_when=(
-                    "Attach raw source dates, displayed labels, resampling, and "
-                    "normalization metadata to each chart before saving."
-                ),
-                preserves=(
-                    "source_series",
-                    "raw_latest_observation",
-                    "displayed_latest_label",
-                    "normalization",
-                ),
-            ),
-            QuantHelperSpec(
-                name="source_unit_metadata",
-                import_path="agents.quant_macro_stats",
-                signature="source_unit_metadata(source_key, source_file=..., units=...)",
-                use_when=(
-                    "Record source units before direct gaps, differences, ratios, or "
-                    "overlays across wage, price, rate, or index series."
-                ),
-                preserves=("source_key", "series_id", "units", "unit_family", "unit_basis"),
-            ),
-            QuantHelperSpec(
-                name="unit_comparison",
-                import_path="agents.quant_macro_stats",
-                signature="unit_comparison(comparison_id, sources, operation='difference')",
-                use_when=(
-                    "Validate that compared source_unit_metadata records share a "
-                    "compatible unit, or document an explicit conversion."
-                ),
-                preserves=("status", "compatible", "sources", "conversion"),
-            ),
-            QuantHelperSpec(
                 name="attach_methods_used",
                 import_path="agents.quant_macro_stats",
                 signature="attach_methods_used(charts, methods)",

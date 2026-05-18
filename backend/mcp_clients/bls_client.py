@@ -60,36 +60,6 @@ KNOWN_BLS_SERIES: dict[str, BLSSeriesInfo] = {
         seasonal_adjustment="seasonally adjusted",
         source_note="Current Employment Statistics nominal average hourly earnings.",
     ),
-    "CES0500000008": BLSSeriesInfo(
-        series_id="CES0500000008",
-        title=(
-            "Average Hourly Earnings of Production and Nonsupervisory Employees, "
-            "Total Private"
-        ),
-        category="wages",
-        frequency="monthly",
-        units="dollars per hour",
-        seasonal_adjustment="seasonally adjusted",
-        source_note=(
-            "Current Employment Statistics nominal average hourly earnings for "
-            "production and nonsupervisory employees."
-        ),
-    ),
-    "CES0500000030": BLSSeriesInfo(
-        series_id="CES0500000030",
-        title=(
-            "Average Weekly Earnings of Production and Nonsupervisory Employees, "
-            "Total Private"
-        ),
-        category="wages",
-        frequency="monthly",
-        units="dollars per week",
-        seasonal_adjustment="seasonally adjusted",
-        source_note=(
-            "Current Employment Statistics nominal average weekly earnings for "
-            "production and nonsupervisory employees."
-        ),
-    ),
     "CUSR0000SA0": BLSSeriesInfo(
         series_id="CUSR0000SA0",
         title="Consumer Price Index for All Urban Consumers: All Items",
@@ -123,24 +93,6 @@ _SEARCH_TERMS: dict[str, tuple[str, ...]] = {
     "LNS14000000": ("unemployment", "unrate", "labor market", "jobless"),
     "CES0000000001": ("payroll", "nonfarm", "employment", "jobs"),
     "CES0500000003": ("average hourly earnings", "wages", "earnings", "pay"),
-    "CES0500000008": (
-        "average hourly earnings",
-        "production nonsupervisory",
-        "production and nonsupervisory",
-        "hourly production wages",
-        "wages",
-        "earnings",
-        "pay",
-    ),
-    "CES0500000030": (
-        "average weekly earnings",
-        "production nonsupervisory",
-        "production and nonsupervisory",
-        "weekly production wages",
-        "wages",
-        "earnings",
-        "pay",
-    ),
     "CUSR0000SA0": ("cpi", "inflation", "consumer price", "prices"),
     "WPUFD4": ("ppi", "producer price", "final demand"),
     "PRS85006092": ("productivity", "labor productivity", "nonfarm business"),
@@ -153,7 +105,7 @@ def search_known_bls_series(query: str, *, limit: int = 8) -> list[dict[str, Any
     if not normalized_query:
         return []
 
-    scored_results: list[tuple[int, dict[str, Any]]] = []
+    results: list[dict[str, Any]] = []
     for series_id, info in KNOWN_BLS_SERIES.items():
         haystack = " ".join(
             (
@@ -165,14 +117,11 @@ def search_known_bls_series(query: str, *, limit: int = 8) -> list[dict[str, Any
                 " ".join(_SEARCH_TERMS.get(series_id, ())),
             )
         )
-        tokens = normalized_query.split()
-        token_score = sum(1 for token in tokens if token in haystack)
-        phrase_bonus = len(tokens) + 1 if normalized_query in haystack else 0
-        score = phrase_bonus + token_score
-        if score:
-            scored_results.append((score, series_info_to_dict(info)))
+        if normalized_query in haystack or any(
+            token in haystack for token in normalized_query.split()
+        ):
+            results.append(series_info_to_dict(info))
 
-    results = [item for _, item in sorted(scored_results, key=lambda item: item[0], reverse=True)]
     return results[: max(1, min(int(limit), len(KNOWN_BLS_SERIES)))]
 
 

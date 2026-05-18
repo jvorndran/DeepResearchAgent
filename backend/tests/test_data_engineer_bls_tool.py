@@ -79,37 +79,6 @@ class FakeBLSRecordingClient:
         }
 
 
-class FakeBLSWeeklyWageClient:
-    def get_series(self, series_ids, *, start_year=None, end_year=None):
-        return {
-            "status": "success",
-            "provider": "BLS Public Data",
-            "series": [
-                {
-                    "series_id": "CES0500000030",
-                    "metadata": {
-                        "series_id": "CES0500000030",
-                        "title": (
-                            "Average Weekly Earnings of Production and "
-                            "Nonsupervisory Employees, Total Private"
-                        ),
-                        "units": "dollars per week",
-                        "frequency": "monthly",
-                        "source": "BLS Public Data API",
-                    },
-                    "observations": [
-                        {
-                            "date": "2025-12-01",
-                            "year": 2025,
-                            "period": "M12",
-                            "value": "1072.67",
-                        }
-                    ],
-                }
-            ],
-        }
-
-
 def test_bls_year_window_infers_missing_end_then_bounds_to_no_key_window():
     start, end, metadata = normalize_bls_no_key_year_window(
         2000,
@@ -192,31 +161,6 @@ def test_bls_get_series_normalizes_wide_no_key_window_before_client_call(
         "end_year": 2025,
     }
     assert "use FRED for long-history macro coverage" in result["metadata"]["coverage_note"]
-
-
-def test_bls_get_series_saves_weekly_wage_units_in_csv_and_metadata(
-    tmp_path, monkeypatch
-):
-    monkeypatch.setattr(tools, "BLSPublicDataClient", lambda: FakeBLSWeeklyWageClient())
-    monkeypatch.setattr(tools, "DATA_STORAGE_DIR", tmp_path)
-    runtime = SimpleNamespace(context=SimpleNamespace(job_id="job-bls"))
-
-    result = json.loads(
-        tools.bls_get_series.func(
-            series_ids=["CES0500000030"],
-            start_year=2025,
-            end_year=2025,
-            runtime=runtime,
-        )
-    )
-
-    csv_path = result["data_files"]["CES0500000030"]
-    csv_text = (tmp_path / "job-bls" / "CES0500000030_bls_public_2025_2025_job-bls.csv").read_text(
-        encoding="utf-8"
-    )
-    assert csv_path.endswith("CES0500000030_bls_public_2025_2025_job-bls.csv")
-    assert result["metadata"]["series"]["CES0500000030"]["units"] == "dollars per week"
-    assert "dollars per week" in csv_text
 
 
 def test_bls_get_series_marks_daily_quota_as_terminal(monkeypatch):

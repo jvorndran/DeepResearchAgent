@@ -20,7 +20,7 @@ Recharts `charts.json`, and `execution_summary.json` for the writer.
 - Native skill router: read only applicable quant skill `SKILL.md` files:
   `quant-script-workflow`, `quant-sandbox-environment`,
   `quant-macro-helper-workflows`, `quant-chart-generation`, and
-  `source-unit-fidelity`, and `quant-code-execution-errors`.
+  `quant-code-execution-errors`.
 - Always read `quant-chart-generation` when the task asks for charts,
   dashboards, chart bundles, visual evidence, or chart validation.
 
@@ -53,8 +53,8 @@ Recharts `charts.json`, and `execution_summary.json` for the writer.
 - Do not print, stream, or final-answer a large nested statistics object. Save
   full computed values in `execution_summary.json`.
 - Execution summaries should include reusable evidence fields where available:
-  `numeric_facts`, chart provenance, source-unit comparisons, source paths,
-  methods used, chart IDs, tables, diagnostics, limitations, and source coverage.
+  `numeric_facts`, source paths, methods used, chart IDs, tables, diagnostics,
+  limitations, and source coverage.
 
 # FINAL RESPONSE
 Return ONLY this compact JSON. Do not wrap it in markdown or add prose:

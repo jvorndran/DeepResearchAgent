@@ -3,15 +3,11 @@
 from __future__ import annotations
 
 from .artifacts import (
-    chart_provenance,
     display_value,
     normalize_quant_execution_summary,
     normalize_quant_report_charts,
     numeric_fact,
     save_quant_outputs,
-    source_unit_metadata,
-    source_unit_metadata_from_csv,
-    unit_comparison,
 )
 from .catalog import (
     QUANT_HELPER_CATALOG,
@@ -137,7 +133,6 @@ __all__ = [
     "build_analog_evidence",
     "build_composite_predictive_indicator",
     "chart_records",
-    "chart_provenance",
     "classify_recession_regime",
     "compare_analog_windows",
     "direct_ols_forecast",
@@ -181,12 +176,9 @@ __all__ = [
     "sec_company_facts_evidence",
     "sec_ticker_from_source",
     "signal_framework_backtest",
-    "source_unit_metadata",
-    "source_unit_metadata_from_csv",
     "stress_score_series",
     "summarize_sec_company_facts",
     "to_json_safe",
-    "unit_comparison",
     "walk_forward_ols_backtest",
     "window_coverage",
 ]

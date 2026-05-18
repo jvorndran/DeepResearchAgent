@@ -177,32 +177,3 @@ def test_search_known_bls_series_returns_curated_metadata_without_network():
 
     assert results[0]["series_id"] == "CES0000000001"
     assert results[0]["source"] == "BLS Public Data API"
-
-
-def test_search_known_bls_series_distinguishes_hourly_and_weekly_wage_metadata():
-    hourly = search_known_bls_series("production nonsupervisory hourly earnings")
-    weekly = search_known_bls_series("production nonsupervisory weekly earnings")
-
-    assert hourly[0]["series_id"] == "CES0500000008"
-    assert hourly[0]["units"] == "dollars per hour"
-    assert weekly[0]["series_id"] == "CES0500000030"
-    assert weekly[0]["units"] == "dollars per week"
-
-
-def test_bls_client_direct_fetch_preserves_known_weekly_wage_units():
-    session = FakeSession(
-        FakeResponse(
-            {
-                "status": "REQUEST_SUCCEEDED",
-                "Results": {"series": [_series_payload("CES0500000030", "1072.67")]},
-            }
-        )
-    )
-
-    result = BLSPublicDataClient(session=session).get_series(
-        "CES0500000030", start_year=2025, end_year=2025
-    )
-
-    metadata = result["series"][0]["metadata"]
-    assert metadata["title"].startswith("Average Weekly Earnings")
-    assert metadata["units"] == "dollars per week"

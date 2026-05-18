@@ -3,7 +3,6 @@
 import ast
 import json
 import re
-import shlex
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -24,17 +23,13 @@ from .constants import (
     _MAX_ANALYSIS_SCRIPT_CHARS,
     _MAX_ANALYSIS_SCRIPT_LINES,
     _TRUNCATED_ARGUMENT_MARKERS,
-    _HANDOFF_FIELDS,
-    PYTHON_EXECUTABLE,
 )
 from .handoff import (
-    _has_execute_after_latest_analysis_script_write,
     _job_id_from_runtime,
     _has_successful_quant_handoff,
     _has_written_analysis_script,
     _is_final_prewrite_opportunity,
     _latest_successful_quant_handoff_content,
-    _latest_written_analysis_script_path,
     _prewrite_failure_handoff,
     _should_stop_prewrite_loop,
 )
@@ -166,35 +161,6 @@ def _pseudo_write_file_tool_call(content: str) -> dict[str, object] | None:
         },
         "id": f"call_quant_pseudo_write_file_{uuid.uuid4().hex[:8]}",
     }
-
-
-def _execute_written_script_tool_call(script_path: str) -> dict[str, object]:
-    return {
-        "name": "execute",
-        "args": {
-            "command": f"{shlex.quote(PYTHON_EXECUTABLE)} {shlex.quote(script_path)}",
-        },
-        "id": f"call_quant_execute_written_script_{uuid.uuid4().hex[:8]}",
-    }
-
-
-def _response_has_tool_calls(response: ModelResponse) -> bool:
-    for message in getattr(response, "result", []) or []:
-        if getattr(message, "tool_calls", None):
-            return True
-    return False
-
-
-def _response_has_compact_handoff(response: ModelResponse) -> bool:
-    for message in getattr(response, "result", []) or []:
-        content = str(getattr(message, "content", "") or "")
-        try:
-            payload = json.loads(content)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(payload, dict) and all(field in payload for field in _HANDOFF_FIELDS):
-            return True
-    return False
 
 
 def _balanced_brace_block(text: str, start: int) -> str | None:
@@ -534,8 +500,6 @@ class QuantModelCallContext:
     data_files: dict[str, str]
     query: str
     latest_successful_handoff: str | None
-    latest_written_analysis_script_path: str | None
-    has_execute_after_latest_analysis_script_write: bool
     has_successful_handoff: bool
     has_written_analysis_script: bool
     should_stop_prewrite_loop: bool
@@ -568,7 +532,6 @@ class QuantModelCallContext:
             runtime_query,
         )
         latest_handoff = _latest_successful_quant_handoff_content(messages)
-        latest_script_path = _latest_written_analysis_script_path(messages)
         return cls(
             request=request,
             messages=messages,
@@ -581,10 +544,6 @@ class QuantModelCallContext:
             data_files=_data_files_from_text(full_text) or {},
             query=query,
             latest_successful_handoff=latest_handoff,
-            latest_written_analysis_script_path=latest_script_path,
-            has_execute_after_latest_analysis_script_write=(
-                _has_execute_after_latest_analysis_script_write(messages)
-            ),
             has_successful_handoff=latest_handoff is not None,
             has_written_analysis_script=_has_written_analysis_script(messages),
             should_stop_prewrite_loop=_should_stop_prewrite_loop(messages),
@@ -759,16 +718,6 @@ class QuantDeveloperToolBoundaryMiddleware(AgentMiddleware):
                     structured_response=structured_response,
                 ),
             )
-        if self._should_force_execute_written_script(context, response):
-            return QuantModelResponseDecision.respond(
-                context,
-                self._tool_call_model_response(
-                    _execute_written_script_tool_call(
-                        context.latest_written_analysis_script_path or ""
-                    ),
-                    structured_response=structured_response,
-                ),
-            )
         if not context.can_recover_before_write:
             return QuantModelResponseDecision.respond(context, response)
 
@@ -810,25 +759,6 @@ class QuantDeveloperToolBoundaryMiddleware(AgentMiddleware):
             )
 
         return QuantModelResponseDecision.respond(context, response)
-
-    @staticmethod
-    def _should_force_execute_written_script(
-        context: QuantModelCallContext,
-        response: ModelResponse,
-    ) -> bool:
-        if not context.has_written_analysis_script or context.has_successful_handoff:
-            return False
-        if not context.latest_written_analysis_script_path:
-            return False
-        if context.has_execute_after_latest_analysis_script_write:
-            return False
-        if "execute" not in context.available_tool_names:
-            return False
-        if _response_has_tool_calls(response):
-            return False
-        if _response_has_compact_handoff(response):
-            return False
-        return True
 
     @staticmethod
     def _tool_call_model_response(

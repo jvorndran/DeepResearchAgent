@@ -17,6 +17,29 @@ def _write_series(path: Path, values: list[tuple[str, float]]) -> str:
     return str(path)
 
 
+def _write_nvda_sec_company_facts(path: Path) -> str:
+    pd.DataFrame(
+        {
+            "fiscal_year": [2025, 2026],
+            "revenue": [130_497_000_000, 215_938_000_000],
+            "gross_profit": [97_858_000_000, 153_865_000_000],
+            "operating_income": [81_453_000_000, 136_859_000_000],
+            "net_income": [72_880_000_000, 120_224_000_000],
+            "operating_cash_flow": [64_089_000_000, 118_200_000_000],
+            "capital_expenditures": [3_236_000_000, 21_524_000_000],
+            "cash_and_equivalents": [8_589_000_000, 8_589_000_000],
+            "marketable_securities_current": [1_716_000_000, 2_016_000_000],
+            "long_term_debt": [8_463_000_000, 7_469_000_000],
+            "stockholders_equity": [65_000_000_000, 79_000_000_000],
+            "assets": [111_601_000_000, 124_092_000_000],
+            "liabilities": [32_274_000_000, 45_000_000_000],
+            "diluted_eps": [2.94, 4.90],
+            "shares": [24_700_000_000, 24_514_000_000],
+        }
+    ).to_csv(path, index=False)
+    return str(path)
+
+
 def test_quant_macro_stats_public_exports_are_helper_only():
     required_exports = {
         "align_period_features",
@@ -36,10 +59,6 @@ def test_quant_macro_stats_public_exports_are_helper_only():
         "normalize_quant_execution_summary",
         "QUANT_HELPER_CATALOG",
         "format_quant_helper_catalog_for_prompt",
-        "chart_provenance",
-        "source_unit_metadata",
-        "source_unit_metadata_from_csv",
-        "unit_comparison",
     }
     removed_report_generators = {
         "build_company_fundamental_outputs",
@@ -87,9 +106,6 @@ def test_quant_helper_catalog_is_compact_agent_context():
     assert "direct_ols_forecast(data, target_col, feature_cols" in catalog
     assert "signal_framework_backtest(data, *, component_cols" in catalog
     assert "sec_company_facts_evidence(data_files" in catalog
-    assert "chart_provenance(source_series=..." in catalog
-    assert "source_unit_metadata(source_key, source_file=..." in catalog
-    assert "unit_comparison(comparison_id, sources" in catalog
     assert "save_quant_outputs(output_dir, charts, execution_summary)" in catalog
     assert {"load_monthly_panel", "direct_ols_forecast", "save_quant_outputs"}.issubset(
         helper_names
@@ -736,154 +752,87 @@ def test_save_quant_outputs_writes_generic_evidence_payload(tmp_path):
     assert "preserved_report_aligned_charts" not in handoff
 
 
-def test_save_quant_outputs_preserves_chart_provenance_and_generator_path(
-    tmp_path, monkeypatch
-):
-    code_dir = tmp_path / "code"
-    code_dir.mkdir()
-    script_path = code_dir / "analysis_v2.py"
-    script_path.write_text("# generated script\n", encoding="utf-8")
-    monkeypatch.setattr("sys.argv", [str(script_path)])
-    provenance = qms.chart_provenance(
-        source_series=["T10Y2Y"],
-        source_files={"T10Y2Y": tmp_path / "t10y2y.csv"},
-        raw_window={"start": "2026-05-01", "end": "2026-05-15"},
-        raw_latest_observation={"T10Y2Y": "2026-05-15"},
-        displayed_window={"start": "2026-05", "end": "2026-05"},
-        displayed_latest_label="2026-05",
-        frequency="daily",
-        resampling="monthly last observation with month labels",
-        normalization={"base_date": "2016-01", "base_value": 100},
-        limitations=["partial latest month"],
-    )
+def test_save_quant_outputs_auto_attaches_sec_helper_evidence(tmp_path):
+    sec_path = Path(_write_nvda_sec_company_facts(tmp_path / "NVDA_sec_edgar_company_facts.csv"))
     charts = {
-        "yield_spread": {
+        "income_statement": {
             "type": "line",
-            "title": "Yield Spread",
-            "data": [{"date": "2026-05", "spread": 0.5}],
-            "series": [{"dataKey": "spread", "name": "Spread"}],
-            "xAxis": {"dataKey": "date"},
-            "provenance": provenance,
+            "title": "Revenue",
+            "data": [{"fiscal_year": "2026", "revenue": 215_938_000_000}],
+            "series": [{"dataKey": "revenue", "name": "Revenue"}],
+            "xAxis": {"dataKey": "fiscal_year"},
         }
     }
-
-    handoff = qms.save_quant_outputs(tmp_path, charts, {"methods_used": ["unit"]})
-    saved_summary = json.loads((tmp_path / "execution_summary.json").read_text())
-    saved_charts = json.loads((tmp_path / "charts.json").read_text())
-
-    assert saved_charts["yield_spread"]["provenance"]["raw_latest_observation"] == {
-        "T10Y2Y": "2026-05-15"
+    manual_fact_source_keys = [
+        "sec_company_facts",
+        "NVDA_SEC",
+        str(sec_path),
+        sec_path.name,
+        sec_path.stem,
+    ]
+    summary = {
+        "title": "NVIDIA AI spending resilience",
+        "source_files": {"sec_company_facts": str(sec_path)},
+        "quant_input_manifest": {"data_files": {"NVDA_SEC": str(sec_path)}},
+        "methods_used": ["manual_sec_summary"],
+        "numeric_facts": [
+            qms.numeric_fact(
+                fact_id=f"manual_revenue_{index}",
+                label="Latest revenue",
+                raw_value=215_938_000_000,
+                unit="$M",
+                precision=0,
+                tolerance=0.1,
+                source_key=source_key,
+            )
+            for index, source_key in enumerate(manual_fact_source_keys)
+        ]
+        + [
+            qms.numeric_fact(
+                fact_id="fred_latest",
+                label="FRED latest",
+                raw_value=4.5,
+                unit="percent",
+                precision=1,
+                tolerance=0.1,
+                source_key="FRED.FEDFUNDS",
+            )
+        ],
     }
-    assert saved_summary["chart_provenance"]["yield_spread"]["displayed_latest_label"] == (
-        "2026-05"
-    )
-    assert saved_summary["generated_by"]["script_path"] == str(script_path)
-    assert handoff["chart_provenance"]["yield_spread"]["frequency"] == "daily"
-    assert handoff["generated_by"]["script_path"] == str(script_path)
 
-
-def test_source_unit_helpers_flag_hourly_weekly_wage_mismatch(tmp_path):
-    hourly_path = tmp_path / "hourly.csv"
-    weekly_path = tmp_path / "weekly.csv"
-    pd.DataFrame(
-        [
-            {
-                "date": "2025-12-01",
-                "value": 37.02,
-                "series_id": "CES0500000008",
-                "title": "Average Hourly Earnings of Production and Nonsupervisory Employees",
-                "units": "dollars per hour",
-            }
-        ]
-    ).to_csv(hourly_path, index=False)
-    pd.DataFrame(
-        [
-            {
-                "date": "2025-12-01",
-                "value": 1072.67,
-                "series_id": "CES0500000030",
-                "title": "Average Weekly Earnings of Production and Nonsupervisory Employees",
-                "units": "dollars per week",
-            }
-        ]
-    ).to_csv(weekly_path, index=False)
-
-    hourly = qms.source_unit_metadata("prod_hourly", source_file=hourly_path)
-    weekly = qms.source_unit_metadata("prod_weekly", source_file=weekly_path)
-    comparison = qms.unit_comparison(
-        "production_wage_gap",
-        [hourly, weekly],
-        operation="difference",
-        metric="production/nonsupervisory earnings gap",
-    )
-
-    assert hourly["unit_basis"] == "hour"
-    assert weekly["unit_basis"] == "week"
-    assert comparison["status"] == "failed"
-    assert comparison["compatible"] is False
-    assert "Convert compared sources to a common unit" in comparison["error"]
-
-
-def test_save_quant_outputs_preserves_source_unit_metadata_from_source_files(tmp_path):
-    weekly_path = tmp_path / "CES0500000030.csv"
-    pd.DataFrame(
-        [
-            {
-                "date": "2025-12-01",
-                "value": 1072.67,
-                "series_id": "CES0500000030",
-            }
-        ]
-    ).to_csv(weekly_path, index=False)
-
-    charts = {
-        "weekly_wages": {
-            "type": "line",
-            "title": "Weekly Wages",
-            "data": [{"date": "2025-12-01", "wages": 1072.67}],
-            "series": [{"dataKey": "wages", "name": "Wages"}],
-            "xAxis": {"dataKey": "date"},
-        }
-    }
-    handoff = qms.save_quant_outputs(
-        tmp_path,
-        charts,
-        {
-            "methods_used": ["unit_test_method"],
-            "source_files": {"weekly_wages": str(weekly_path)},
-        },
-    )
+    handoff = qms.save_quant_outputs(tmp_path, charts, summary)
     saved_summary = json.loads((tmp_path / "execution_summary.json").read_text())
 
-    source_units = saved_summary["source_unit_metadata"]
-    assert source_units[0]["series_id"] == "CES0500000030"
-    assert source_units[0]["units"] == "dollars per week"
-    assert source_units[0]["unit_basis"] == "week"
-    assert handoff["source_unit_metadata"][0]["unit_family"] == "currency_per_time"
+    fact_ids = {fact["id"] for fact in saved_summary["numeric_facts"]}
+    assert saved_summary["latest_fundamentals"]["NVDA"]["revenue_b"] == pytest.approx(215.938)
+    assert saved_summary["latest_fundamentals"]["NVDA"]["cash_and_securities_b"] == pytest.approx(10.605)
+    assert saved_summary["latest_fundamentals"]["NVDA"]["long_term_debt_b"] == pytest.approx(7.469)
+    assert saved_summary["company_history_rows"][-1]["ticker"] == "NVDA"
+    assert saved_summary["source_coverage"]["sec_company_facts"]["status"] == "covered"
+    assert "sec_company_fundamentals" in saved_summary["methods_used"]
+    assert not any(fact_id.startswith("manual_revenue_") for fact_id in fact_ids)
+    assert "fred_latest" in fact_ids
+    assert "sec_company_facts.NVDA.revenue_b" in fact_ids
+    assert handoff["latest_fundamentals"]["NVDA"]["revenue_b"] == pytest.approx(215.938)
 
 
-def test_save_quant_outputs_rejects_failed_source_unit_comparison(tmp_path):
-    hourly = qms.source_unit_metadata(
-        "all_hourly",
-        series_id="CES0500000003",
-        title="Average Hourly Earnings of All Employees, Total Private",
-        units="dollars per hour",
-    )
-    weekly = qms.source_unit_metadata(
-        "prod_weekly",
-        series_id="CES0500000030",
-        title="Average Weekly Earnings of Production and Nonsupervisory Employees",
-        units="dollars per week",
-    )
-    comparison = qms.unit_comparison("wage_divergence", [hourly, weekly])
+def test_save_quant_outputs_rejects_unbuildable_sec_helper_evidence(tmp_path):
+    missing_path = tmp_path / "NVDA_sec_edgar_company_facts.csv"
 
-    with pytest.raises(ValueError, match="wage_divergence failed source-unit validation"):
+    with pytest.raises(ValueError, match="SEC company-facts files are present"):
         qms.save_quant_outputs(
             tmp_path,
-            {"wages": {"type": "line", "data": [{"date": "2025", "value": 1}]}},
+            {},
             {
-                "source_unit_metadata": [hourly, weekly],
-                "unit_comparisons": [comparison],
+                "source_files": {"NVDA_SEC": str(missing_path)},
+                "numeric_facts": [
+                    {
+                        "id": "latest_revenue",
+                        "display_value": "215,938,000,000",
+                        "raw_value": 215_938_000_000,
+                        "source_key": "NVDA_SEC",
+                    }
+                ],
             },
         )
 

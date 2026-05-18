@@ -35,18 +35,11 @@ triggers: [chart, Recharts, AxisChartDef, ScatterChartDef, PieChartDef, TreemapC
    series are genuinely the most insightful views.
 11. **Method labels:** For deterministic macro statistics, include `methods_used`
    on each relevant chart definition and in `execution_summary.json`.
-12. **Provenance:** For charts that resample, index, normalize, or truncate
-   source data, attach `provenance` from
-   `chart_provenance(...)`: raw source window/latest observation, displayed
-   window/latest label, frequency/resampling, normalization base, and
-   limitations.
-13. **Saving artifacts:** Prefer
+12. **Saving artifacts:** Prefer
    `save_quant_outputs(output_dir, charts, execution_summary)` from
    `agents.quant_macro_stats`. It writes strict JSON, derives `chart_ids` from
-   the saved chart map, mirrors chart provenance into
-   `execution_summary.json`, saves the actual generating script path when
-   available, and returns the compact handoff to print. Never import
-   `agents.quant_utils`.
+   the saved chart map, saves `execution_summary.json`, and returns the compact
+   handoff to print. Never import `agents.quant_utils`.
 
 ## AxisChart (Line, Bar, Area, Composed)
 ```json

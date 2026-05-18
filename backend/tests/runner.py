@@ -834,39 +834,12 @@ def _as_bool(value: Any) -> bool:
     return bool(value)
 
 
-def _generated_script_path(output_dir: Path, summary_path: Path) -> Path | None:
-    try:
-        summary = json.loads(summary_path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return None
-    generated_by = summary.get("generated_by")
-    if not isinstance(generated_by, dict):
-        return None
-    raw_script_path = generated_by.get("script_path")
-    if not isinstance(raw_script_path, str) or not raw_script_path.strip():
-        return None
-
-    try:
-        script_path = Path(raw_script_path).expanduser().resolve()
-        script_path.relative_to((output_dir / "code").resolve())
-    except (OSError, ValueError):
-        return None
-    if not script_path.exists():
-        return None
-    return script_path
-
-
 def discover_artifacts(output_dir: Path) -> dict[str, str]:
-    summary_path = output_dir / "execution_summary.json"
-    analysis_path = _generated_script_path(output_dir, summary_path)
-    if analysis_path is None:
-        analysis_path = output_dir / "code" / "analysis.py"
-
     candidates = {
         "report_json": output_dir / "report.json",
-        "execution_summary_json": summary_path,
+        "execution_summary_json": output_dir / "execution_summary.json",
         "charts_json": output_dir / "charts.json",
-        "analysis_py": analysis_path,
+        "analysis_py": output_dir / "code" / "analysis.py",
     }
     return {name: str(path) for name, path in candidates.items() if path.exists()}
 
