@@ -19,6 +19,8 @@ as a human-readable index and is not part of the DeepAgents metadata scan.
   forecast/backtest/regime/scenario/analog routes, and pandas/FRED safety.
 - `quant-chart-generation`: canonical Recharts JSON schema and chart output
   constraints.
+- `source-unit-fidelity`: source-unit metadata and comparison contracts for
+  wage, price, rate, or index gaps/divergences.
 - `quant-code-execution-errors`: focused traceback repair rules after Python
   execution failures.
 

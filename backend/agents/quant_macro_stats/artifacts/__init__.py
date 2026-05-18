@@ -8,6 +8,11 @@ from .numeric_fact_contracts import (
 )
 from .quant_output_writer import save_quant_outputs
 from .recharts_schema_normalization import normalize_quant_report_charts
+from .source_unit_fidelity import (
+    source_unit_metadata,
+    source_unit_metadata_from_csv,
+    unit_comparison,
+)
 
 __all__ = [
     "chart_provenance",
@@ -16,4 +21,7 @@ __all__ = [
     "normalize_quant_report_charts",
     "numeric_fact",
     "save_quant_outputs",
+    "source_unit_metadata",
+    "source_unit_metadata_from_csv",
+    "unit_comparison",
 ]

@@ -1884,6 +1884,222 @@ def test_submit_quality_decision_rejects_static_chart_semantics_blockers(tmp_pat
     assert "duplicate x-axis rows" in payload["reason"]
 
 
+def test_submit_quality_decision_rejects_mixed_hourly_weekly_wage_gap(tmp_path):
+    hourly_path = tmp_path / "CES0500000003.csv"
+    weekly_path = tmp_path / "CES0500000030.csv"
+    hourly_path.write_text(
+        "date,value,series_id,units\n2025-12-01,37.02,CES0500000003,dollars per hour\n",
+        encoding="utf-8",
+    )
+    weekly_path.write_text(
+        "date,value,series_id\n2025-12-01,1072.67,CES0500000030\n",
+        encoding="utf-8",
+    )
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "source_files": {
+                    "all_hourly": str(hourly_path),
+                    "prod_weekly": str(weekly_path),
+                },
+                "statistical_summary": {"wage_divergence_latest": -802.27},
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Assess whether the consumer is fine using wage evidence.",
+                "title": "Consumer Wage Stress",
+                "executive_summary": "The wage gap is widening.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "A widening real wage gap between all employees and production workers "
+                    "shows hidden stress."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 18},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "source_unit_mismatch"
+    assert payload["required_upstream"] == "quantitative-developer"
+    assert "incompatible unit bases" in payload["reason"]
+    assert "dollars per hour" in payload["reason"]
+    assert "dollars per week" in payload["reason"]
+
+
+def test_submit_quality_decision_rejects_mixed_hourly_weekly_wage_chart_overlay(tmp_path):
+    hourly_path = tmp_path / "CES0500000003.csv"
+    weekly_path = tmp_path / "CES0500000030.csv"
+    hourly_path.write_text(
+        "date,value,series_id,units\n2025-12-01,37.02,CES0500000003,dollars per hour\n",
+        encoding="utf-8",
+    )
+    weekly_path.write_text(
+        "date,value,series_id\n2025-12-01,1072.67,CES0500000030\n",
+        encoding="utf-8",
+    )
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "source_files": {
+                    "all_hourly": str(hourly_path),
+                    "prod_weekly": str(weekly_path),
+                },
+                "statistical_summary": {"latest_all": 37.02, "latest_prod": 1072.67},
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Assess earnings levels for consumer stress.",
+                "title": "Consumer Earnings Stress",
+                "executive_summary": "The labor signal is mixed.",
+                "markdown": "## Executive Summary\nThe labor signal is mixed.",
+                "charts": {
+                    "earnings_levels": {
+                        "id": "earnings_levels",
+                        "type": "line",
+                        "title": "Hourly Earnings Levels",
+                        "description": "All employees and production workers.",
+                        "xAxisKey": "date",
+                        "series": [
+                            {"dataKey": "all_hourly", "label": "All employees"},
+                            {"dataKey": "prod_weekly", "label": "Production workers"},
+                        ],
+                        "data": [
+                            {
+                                "date": "2025-12-01",
+                                "all_hourly": 37.02,
+                                "prod_weekly": 1072.67,
+                            }
+                        ],
+                    }
+                },
+                "data_sources": [],
+                "metadata": {"word_count": 8},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "source_unit_mismatch"
+    assert "direct wage chart overlays" in payload["reason"]
+    assert "earnings_levels" in payload["reason"]
+
+
+def test_submit_quality_decision_allows_same_unit_wage_gap_contract(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "source_unit_metadata": [
+                    {
+                        "source_key": "all_hourly",
+                        "series_id": "CES0500000003",
+                        "units": "dollars per hour",
+                        "unit_family": "currency_per_time",
+                        "unit_basis": "hour",
+                        "measure": "wage",
+                    },
+                    {
+                        "source_key": "prod_hourly",
+                        "series_id": "CES0500000008",
+                        "units": "dollars per hour",
+                        "unit_family": "currency_per_time",
+                        "unit_basis": "hour",
+                        "measure": "wage",
+                    },
+                ],
+                "unit_comparisons": [
+                    {
+                        "id": "hourly_wage_gap",
+                        "status": "passed",
+                        "compatible": True,
+                        "sources": [
+                            {
+                                "source_key": "all_hourly",
+                                "units": "dollars per hour",
+                                "unit_family": "currency_per_time",
+                                "unit_basis": "hour",
+                                "measure": "wage",
+                            },
+                            {
+                                "source_key": "prod_hourly",
+                                "units": "dollars per hour",
+                                "unit_family": "currency_per_time",
+                                "unit_basis": "hour",
+                                "measure": "wage",
+                            },
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Assess the hourly wage gap.",
+                "title": "Hourly Wage Gap",
+                "executive_summary": "Same-unit wage comparison.",
+                "markdown": "## Executive Summary\nThe hourly wage gap is computed from hourly series.",
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 10},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "approved"
+
+
 def test_submit_quality_decision_rejects_recession_probability_without_composite_diagnostics(tmp_path):
     report_path = tmp_path / "report.json"
     (tmp_path / "execution_summary.json").write_text(

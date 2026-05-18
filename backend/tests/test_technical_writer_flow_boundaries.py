@@ -152,6 +152,68 @@ def test_plan_report_structure_surfaces_generic_company_helper_evidence(tmp_path
     assert "valuation_market_data" in result["execution_summary_for_draft"]
 
 
+def test_plan_report_structure_surfaces_source_unit_comparison_status(tmp_path):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text(
+        json.dumps(
+            {
+                "real_wages": {
+                    "id": "real_wages",
+                    "type": "line",
+                    "title": "Real Wages",
+                    "xAxisKey": "date",
+                    "series": [{"dataKey": "all_hourly", "label": "All hourly"}],
+                    "data": [{"date": "2025-12", "all_hourly": 37.02}],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    execution_summary = {
+        "source_unit_metadata": [
+            {
+                "source_key": "all_hourly",
+                "series_id": "CES0500000003",
+                "units": "dollars per hour",
+                "unit_family": "currency_per_time",
+                "unit_basis": "hour",
+            },
+            {
+                "source_key": "prod_weekly",
+                "series_id": "CES0500000030",
+                "units": "dollars per week",
+                "unit_family": "currency_per_time",
+                "unit_basis": "week",
+            },
+        ],
+        "unit_comparisons": [
+            {
+                "id": "wage_gap",
+                "status": "failed",
+                "compatible": False,
+                "metric": "real wage gap",
+                "error": "hourly and weekly wage sources are incompatible",
+            }
+        ],
+    }
+
+    result = json.loads(
+        plan_report_structure.func(
+            query_type="macro_indicator",
+            charts_json_path=str(charts_path),
+            execution_summary=json.dumps(execution_summary),
+            original_query="Challenge the consumer is fine using wage evidence.",
+            runtime=_Runtime(),
+        )
+    )
+
+    draft = result["execution_summary_for_draft"]
+    assert "Source-unit contract from execution_summary.json" in draft
+    assert "all_hourly; series_id=CES0500000003; units=dollars per hour" in draft
+    assert "wage_gap; status=failed; compatible=False" in draft
+    assert result["helper_evidence_for_draft"]["unit_comparisons"][0]["id"] == "wage_gap"
+
+
 def test_plan_report_structure_surfaces_chart_facts_for_draft(tmp_path):
     charts_path = tmp_path / "charts.json"
     charts_path.write_text(
