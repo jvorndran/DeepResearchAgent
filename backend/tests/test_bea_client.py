@@ -80,6 +80,7 @@ def test_bea_client_fetches_allowlisted_nipa_table_and_filters_lines():
     assert result["status"] == "success"
     assert result["provider"] == "BEA Data API"
     assert result["requires_api_key"] is True
+    assert result["raw_response"] == _bea_payload()
     assert result["request"] == {
         "dataset": "NIPA",
         "table_name": "T10105",
@@ -100,6 +101,9 @@ def test_bea_client_fetches_allowlisted_nipa_table_and_filters_lines():
     assert row["release_cadence"]
     assert row["revision_policy"]
     assert len(row["response_hash"]) == 64
+    assert result["metadata"]["response_hash"] == row["response_hash"]
+    assert result["metadata"]["method"] == "GET"
+    assert result["metadata"]["freshness_policy"] == row["revision_policy"]
     assert session.calls == [
         {
             "url": BEA_API_URL,

@@ -6,12 +6,33 @@ from agents.data_engineer.provider_retry import normalize_bls_no_key_year_window
 from mcp_clients.bls_client import BLSPublicDataError
 
 
+def _bls_snapshot_metadata(series_ids, *, start_year=None, end_year=None):
+    request_body = {"seriesid": list(series_ids)}
+    if start_year is not None and end_year is not None:
+        request_body.update({"startyear": str(start_year), "endyear": str(end_year)})
+    return {
+        "raw_response": {"status": "REQUEST_SUCCEEDED", "Results": {"series": []}},
+        "metadata": {
+            "endpoint": "https://api.bls.gov/publicAPI/v1/timeseries/data/",
+            "method": "POST",
+            "request_body": request_body,
+            "year_window": [start_year, end_year]
+            if start_year is not None and end_year is not None
+            else None,
+            "retrieved_at": "2026-05-19T00:00:00+00:00",
+            "response_hash": "b" * 64,
+            "freshness_policy": "Latest available BLS public time-series observations.",
+        },
+    }
+
+
 class FakeBLSClient:
     def get_series(self, series_ids, *, start_year=None, end_year=None):
         year = int(end_year or 2025)
         return {
             "status": "success",
             "provider": "BLS Public Data",
+            **_bls_snapshot_metadata(series_ids, start_year=start_year, end_year=end_year),
             "series": [
                 {
                     "series_id": "LNS14000000",
@@ -58,6 +79,7 @@ class FakeBLSRecordingClient:
         return {
             "status": "success",
             "provider": "BLS Public Data",
+            **_bls_snapshot_metadata(series_ids, start_year=start_year, end_year=end_year),
             "series": [
                 {
                     "series_id": "CUSR0000SA0",
@@ -84,6 +106,7 @@ class FakeBLSWeeklyWageClient:
         return {
             "status": "success",
             "provider": "BLS Public Data",
+            **_bls_snapshot_metadata(series_ids, start_year=start_year, end_year=end_year),
             "series": [
                 {
                     "series_id": "CES0500000030",
@@ -155,6 +178,8 @@ def test_bls_get_series_uses_distinct_paths_for_split_year_windows(
     assert first_path.endswith("LNS14000000_bls_public_2000_2009_job-bls.csv")
     assert second_path.endswith("LNS14000000_bls_public_2010_2019_job-bls.csv")
     assert first_path != second_path
+    assert first["source_snapshots"]["LNS14000000"]["provider"] == "BLS"
+    assert first["source_snapshots"]["LNS14000000"]["source_keys"] == ["LNS14000000"]
     assert (tmp_path / "job-bls" / "LNS14000000_bls_public_2000_2009_job-bls.csv").exists()
     assert (tmp_path / "job-bls" / "LNS14000000_bls_public_2010_2019_job-bls.csv").exists()
 

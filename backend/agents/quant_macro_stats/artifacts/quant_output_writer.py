@@ -129,6 +129,7 @@ def save_quant_outputs(
         source_files=evidence_bundle.artifacts.source_files,
         data_files=evidence_bundle.artifacts.data_files,
         base_dir=output_path,
+        source_snapshots=evidence_bundle.artifacts.source_snapshots,
     )
     evidence_bundle_bytes = finalize_evidence_bundle_fingerprint_bytes(
         evidence_bundle

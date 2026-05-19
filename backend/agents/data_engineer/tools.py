@@ -30,7 +30,7 @@ from .provider_retry import (
     census_error_response,
     normalize_bls_no_key_year_window,
 )
-from .storage import _run_async, _save_data_to_storage
+from .storage import _run_async, _save_data_to_storage, save_source_snapshot
 from .paths import DATA_STORAGE_DIR
 
 
@@ -410,13 +410,35 @@ def bea_get_nipa_table(
             / f"bea_nipa_{table.lower()}_{frequency_code}_{year_slug}{line_suffix}_{job_id}.csv"
         )
         saved = _run_async(_save_data_to_storage(result["rows"], file_path))
-
         table_descriptor = result["table"]
+        snapshot = save_source_snapshot(
+            storage_dir=DATA_STORAGE_DIR / job_id,
+            provider="BEA",
+            source_id=data_key,
+            source_keys=[data_key],
+            endpoint=result["metadata"]["endpoint"],
+            method=result["metadata"].get("method", "GET"),
+            request_params=result["metadata"].get("request_params") or {},
+            response_payload=result.get("raw_response") or result["rows"],
+            retrieved_at=result["metadata"]["retrieved_at"],
+            freshness_policy=result["metadata"].get("freshness_policy")
+            or table_descriptor["revision_policy"],
+            metadata={
+                "data_file_key": data_key,
+                "table_name": table,
+                "line_numbers": line_numbers_filter,
+                "local_filter": {"line_numbers": line_numbers_filter},
+            },
+        )
+
         return json.dumps(
             {
                 "status": "success",
                 "provider": "BEA Data API",
                 "data_files": {data_key: saved["storage_path"]},
+                "source_snapshots": {
+                    data_key: snapshot.model_dump(mode="json", exclude_none=True)
+                },
                 "row_counts": {data_key: int(saved["row_count"])},
                 "metadata": {
                     "data_type": "bea_nipa_table",
@@ -426,7 +448,7 @@ def bea_get_nipa_table(
                     "table": table_descriptor,
                     "line_numbers": line_numbers_filter,
                     "retrieved_at": result["metadata"]["retrieved_at"],
-                    "response_hash": result["metadata"]["response_hash"],
+                    "response_hash": snapshot.response_sha256,
                     "source_descriptor": {
                         "provider": "BEA",
                         "source": "BEA NIPA Data API",
@@ -545,8 +567,30 @@ def bls_get_series(
             "requires_api_key": False,
             "series": {},
         }
+        source_snapshots: dict[str, dict[str, Any]] = {}
         if window_metadata:
             metadata.update(window_metadata)
+
+        request_key_parts = list(parsed_ids)
+        if applied_start_year is not None and applied_end_year is not None:
+            request_key_parts.extend([str(applied_start_year), str(applied_end_year)])
+        snapshot_key = "BLS_PUBLIC_" + "_".join(
+            _slug_for_filename(part).upper() for part in request_key_parts
+        )
+        snapshot = save_source_snapshot(
+            storage_dir=DATA_STORAGE_DIR / job_id,
+            provider="BLS",
+            source_id=snapshot_key,
+            source_keys=[series["series_id"] for series in result["series"]],
+            endpoint=result["metadata"]["endpoint"],
+            method=result["metadata"].get("method", "POST"),
+            request_body=result["metadata"].get("request_body") or {},
+            response_payload=result.get("raw_response") or result["series"],
+            retrieved_at=result["metadata"]["retrieved_at"],
+            freshness_policy=result["metadata"]["freshness_policy"],
+            metadata={"year_window": result["metadata"].get("year_window")},
+        )
+        snapshot_payload = snapshot.model_dump(mode="json", exclude_none=True)
 
         for series in result["series"]:
             series_id = series["series_id"]
@@ -570,12 +614,14 @@ def bls_get_series(
             data_files[series_id] = saved["storage_path"]
             row_counts[series_id] = int(saved["row_count"])
             metadata["series"][series_id] = series_metadata
+            source_snapshots[series_id] = snapshot_payload
 
         return json.dumps(
             {
                 "status": "success",
                 "provider": "BLS Public Data",
                 "data_files": data_files,
+                "source_snapshots": source_snapshots,
                 "row_counts": row_counts,
                 "metadata": metadata,
             }

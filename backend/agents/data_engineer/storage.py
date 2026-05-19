@@ -7,10 +7,84 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from mcp_clients.provider_payload import provider_payload_sha256
 from .paths import BACKEND_DIR
 
 logger = logging.getLogger(__name__)
+
+_SECRET_KEY_FRAGMENTS = (
+    "api_key",
+    "apikey",
+    "authorization",
+    "bearer",
+    "client_secret",
+    "password",
+    "secret",
+    "token",
+    "user_id",
+    "userid",
+)
+
+
+class SourceSnapshotDescriptor(BaseModel):
+    """Typed descriptor for a persisted raw provider response snapshot."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    snapshot_id: str
+    provider: str
+    source_id: str | None = None
+    source_keys: list[str] = Field(default_factory=list)
+    endpoint: str
+    method: str
+    request_params: dict[str, Any] = Field(default_factory=dict)
+    request_body: dict[str, Any] = Field(default_factory=dict)
+    retrieved_at: str
+    freshness_policy: str
+    response_sha256: str
+    path: str
+    byte_count: int = Field(ge=0)
+    content_type: str = "application/json"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator(
+        "snapshot_id",
+        "provider",
+        "endpoint",
+        "method",
+        "retrieved_at",
+        "freshness_policy",
+        "path",
+        "content_type",
+    )
+    @classmethod
+    def _text_required(cls, value: str, info: Any) -> str:
+        text = str(value).strip()
+        if not text:
+            raise ValueError(f"{info.field_name} is required")
+        return text
+
+    @field_validator("response_sha256")
+    @classmethod
+    def _sha256_hex(cls, value: str) -> str:
+        text = str(value).strip().lower()
+        if len(text) != 64 or any(char not in "0123456789abcdef" for char in text):
+            raise ValueError("response_sha256 must be a 64-character lowercase hex digest")
+        return text
+
+    @field_validator("source_keys")
+    @classmethod
+    def _source_keys_are_text(cls, value: list[str]) -> list[str]:
+        out = []
+        seen = set()
+        for item in value:
+            text = str(item).strip()
+            if text and text not in seen:
+                seen.add(text)
+                out.append(text)
+        return out
 
 
 def _resolve_pointer_path(pointer_path: str) -> Path | None:
@@ -116,3 +190,126 @@ async def _save_data_to_storage(data: Any, file_path: Path) -> dict:
         "columns": df.columns.tolist(),
         "size_bytes": file_path.stat().st_size,
     }
+
+
+def save_source_snapshot(
+    *,
+    storage_dir: Path,
+    provider: str,
+    endpoint: str,
+    method: str,
+    response_payload: Any,
+    retrieved_at: str,
+    freshness_policy: str,
+    source_id: str | None = None,
+    source_keys: list[str] | tuple[str, ...] | None = None,
+    request_params: dict[str, Any] | None = None,
+    request_body: dict[str, Any] | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> SourceSnapshotDescriptor:
+    """Persist a raw provider response envelope and return its typed descriptor."""
+
+    clean_provider = str(provider).strip()
+    clean_source_id = str(source_id).strip() if source_id is not None else None
+    clean_source_keys = _clean_text_list(source_keys or ())
+    if clean_source_id is None and clean_source_keys:
+        clean_source_id = clean_source_keys[0]
+
+    response_sha256 = provider_payload_sha256(response_payload)
+    source_slug = _slug_for_snapshot_path(clean_source_id or "-".join(clean_source_keys))
+    provider_slug = _slug_for_snapshot_path(clean_provider)
+    snapshot_id = f"{provider_slug}:{source_slug}:{response_sha256[:16]}"
+    snapshot_dir = storage_dir / "source_snapshots"
+    snapshot_path = snapshot_dir / f"{provider_slug}_{source_slug}_{response_sha256}.json"
+
+    envelope = {
+        "schema_version": 1,
+        "snapshot_type": "raw_provider_response",
+        "snapshot_id": snapshot_id,
+        "provider": clean_provider,
+        "source_id": clean_source_id,
+        "source_keys": clean_source_keys,
+        "endpoint": str(endpoint).strip(),
+        "method": str(method).strip().upper(),
+        "request_params": _redact_secrets(request_params or {}),
+        "request_body": _redact_secrets(request_body or {}),
+        "retrieved_at": str(retrieved_at).strip(),
+        "freshness_policy": str(freshness_policy).strip(),
+        "response_sha256": response_sha256,
+        "content_type": "application/json",
+        "metadata": _redact_secrets(metadata or {}),
+        "raw_response": response_payload,
+    }
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    snapshot_path.write_bytes(_canonical_snapshot_bytes(envelope))
+
+    return SourceSnapshotDescriptor(
+        snapshot_id=snapshot_id,
+        provider=clean_provider,
+        source_id=clean_source_id,
+        source_keys=clean_source_keys,
+        endpoint=str(endpoint).strip(),
+        method=str(method).strip().upper(),
+        request_params=_redact_secrets(request_params or {}),
+        request_body=_redact_secrets(request_body or {}),
+        retrieved_at=str(retrieved_at).strip(),
+        freshness_policy=str(freshness_policy).strip(),
+        response_sha256=response_sha256,
+        path=snapshot_path.resolve().as_posix(),
+        byte_count=snapshot_path.stat().st_size,
+        content_type="application/json",
+        metadata=_redact_secrets(metadata or {}),
+    )
+
+
+def _canonical_snapshot_bytes(payload: dict[str, Any]) -> bytes:
+    return (
+        json.dumps(
+            payload,
+            sort_keys=True,
+            indent=2,
+            ensure_ascii=False,
+            allow_nan=False,
+            default=str,
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def _clean_text_list(values: list[str] | tuple[str, ...]) -> list[str]:
+    out = []
+    seen = set()
+    for value in values:
+        text = str(value).strip()
+        if text and text not in seen:
+            seen.add(text)
+            out.append(text)
+    return out
+
+
+def _redact_secrets(value: Any) -> Any:
+    if isinstance(value, dict):
+        out = {}
+        for key, child in value.items():
+            key_text = str(key)
+            if _is_secret_key(key_text):
+                out[key_text] = "[REDACTED]"
+            else:
+                out[key_text] = _redact_secrets(child)
+        return out
+    if isinstance(value, list):
+        return [_redact_secrets(child) for child in value]
+    if isinstance(value, tuple):
+        return [_redact_secrets(child) for child in value]
+    return value
+
+
+def _is_secret_key(key: str) -> bool:
+    normalized = key.lower().replace("-", "_").replace(" ", "_")
+    return any(fragment in normalized for fragment in _SECRET_KEY_FRAGMENTS)
+
+
+def _slug_for_snapshot_path(value: str | None) -> str:
+    text = str(value or "snapshot").strip().lower()
+    slug = "".join(char if char.isalnum() else "_" for char in text)
+    return "_".join(part for part in slug.split("_") if part) or "snapshot"

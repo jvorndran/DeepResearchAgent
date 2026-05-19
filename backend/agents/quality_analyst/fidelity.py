@@ -179,6 +179,7 @@ def _load_sibling_execution_summary(report_path: Path) -> dict[str, object]:
         "company_macro_sensitivity",
         "diagnostics",
         "source_coverage",
+        "source_snapshots",
         "source_files",
         "source_unit_metadata",
         "unit_comparisons",
@@ -237,6 +238,9 @@ def _load_sibling_evidence_bundle(report_path: Path) -> dict[str, object]:
             )
             if (value := artifacts.get(key)) is not None
         }
+        source_snapshots = artifacts.get("source_snapshots")
+        if isinstance(source_snapshots, dict):
+            compact["artifacts"]["source_snapshot_keys"] = list(source_snapshots)[:20]
 
     validation = parsed.get("validation")
     if isinstance(validation, dict):

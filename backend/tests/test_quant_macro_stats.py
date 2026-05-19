@@ -1371,6 +1371,26 @@ def test_save_quant_outputs_writes_generic_evidence_payload(tmp_path):
 def test_save_quant_outputs_writes_artifact_fingerprint_manifest(tmp_path):
     source_path = tmp_path / "fred_unrate.csv"
     source_path.write_text("date,value\n2024-01,1.0\n", encoding="utf-8")
+    snapshot_path = tmp_path / "fred_unrate_snapshot.json"
+    snapshot_path.write_text(
+        json.dumps({"raw_response": {"observations": [{"date": "2024-01"}]}}),
+        encoding="utf-8",
+    )
+    snapshot_descriptor = {
+        "snapshot_id": "fred:unrate:" + "c" * 16,
+        "provider": "FRED",
+        "source_id": "FRED",
+        "source_keys": ["FRED"],
+        "endpoint": "https://api.stlouisfed.org/fred/series/observations",
+        "method": "GET",
+        "request_params": {"series_id": "UNRATE"},
+        "retrieved_at": "2026-05-19T00:00:00+00:00",
+        "freshness_policy": "Latest available FRED observation payload.",
+        "response_sha256": "c" * 64,
+        "path": str(snapshot_path),
+        "byte_count": snapshot_path.stat().st_size,
+        "content_type": "application/json",
+    }
     charts = {
         "trend": {
             "type": "line",
@@ -1384,6 +1404,7 @@ def test_save_quant_outputs_writes_artifact_fingerprint_manifest(tmp_path):
     summary = {
         "methods_used": ["unit_test_method"],
         "source_files": {"FRED": str(source_path)},
+        "source_snapshots": {"FRED": snapshot_descriptor},
         "numeric_facts": [
             qms.numeric_fact(
                 fact_id="latest_value",
@@ -1408,6 +1429,7 @@ def test_save_quant_outputs_writes_artifact_fingerprint_manifest(tmp_path):
         "charts_json",
         "execution_summary_json",
         "source_files:FRED",
+        "source_snapshots:FRED",
         "evidence_bundle_json",
     }
     assert fingerprints["charts_json"]["sha256"] == sha256_bytes(
@@ -1423,6 +1445,13 @@ def test_save_quant_outputs_writes_artifact_fingerprint_manifest(tmp_path):
         source_path.read_bytes()
     )
     assert fingerprints["source_files:FRED"]["content_type"] == "text/csv"
+    assert fingerprints["source_snapshots:FRED"]["sha256"] == sha256_bytes(
+        snapshot_path.read_bytes()
+    )
+    assert fingerprints["source_snapshots:FRED"]["role"] == "source_snapshot"
+    assert saved_bundle["artifacts"]["source_snapshots"]["FRED"]["path"] == str(
+        snapshot_path
+    )
     assert fingerprints["evidence_bundle_json"]["self_excluded"] is True
     assert fingerprints["evidence_bundle_json"]["sha256"] == sha256_bytes(
         evidence_bundle_self_excluded_bytes(saved_bundle)

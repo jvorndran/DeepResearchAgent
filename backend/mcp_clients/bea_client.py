@@ -1,7 +1,6 @@
 """Typed BEA NIPA public data client."""
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -11,6 +10,7 @@ from typing import Any
 import requests
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from .provider_payload import provider_payload_sha256
 
 BEA_API_URL = "https://apps.bea.gov/api/data"
 DEFAULT_TIMEOUT = 20
@@ -267,15 +267,18 @@ class BEANIPAClient:
                 "year": request.year,
                 "line_numbers": list(request.line_numbers or []),
             },
+            "raw_response": payload,
             "rows": rows,
             "row_count": len(rows),
             "metadata": {
                 "authentication": "BEA UserID",
                 "endpoint": BEA_API_URL,
+                "method": "GET",
                 "request_params": params,
                 "line_numbers": list(request.line_numbers or []),
                 "retrieved_at": retrieved_at,
                 "response_hash": response_hash,
+                "freshness_policy": descriptor.revision_policy,
                 "table": descriptor.model_dump(),
                 "handoff_guidance": (
                     "BEA NIPA rows preserve table, line, frequency, units, release cadence, "
@@ -492,10 +495,7 @@ def _error_text(value: Any) -> str | None:
 
 
 def _response_hash(payload: dict[str, Any]) -> str:
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode(
-        "utf-8"
-    )
-    return hashlib.sha256(encoded).hexdigest()
+    return provider_payload_sha256(payload)
 
 
 def _coerce_number(value: Any) -> int | float | None:

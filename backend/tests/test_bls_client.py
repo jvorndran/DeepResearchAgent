@@ -69,9 +69,21 @@ def test_bls_client_fetches_single_series_no_key_payload():
     assert result["status"] == "success"
     assert result["provider"] == "BLS Public Data"
     assert result["requires_api_key"] is False
+    assert result["raw_response"]["status"] == "REQUEST_SUCCEEDED"
     assert result["series"][0]["series_id"] == "LNS14000000"
     assert result["series"][0]["metadata"]["title"] == "Unemployment Rate"
-    assert result["series"][0]["observations"][0]["value"] == "4.1"
+    observation = result["series"][0]["observations"][0]
+    assert observation["value"] == "4.1"
+    assert observation["provider"] == "BLS"
+    assert observation["source_url"] == BLS_V1_URL
+    assert len(observation["response_hash"]) == 64
+    assert result["metadata"]["response_hash"] == observation["response_hash"]
+    assert result["metadata"]["method"] == "POST"
+    assert result["metadata"]["request_body"] == {
+        "seriesid": ["LNS14000000"],
+        "startyear": "2024",
+        "endyear": "2025",
+    }
     assert session.calls == [
         {
             "url": BLS_V1_URL,

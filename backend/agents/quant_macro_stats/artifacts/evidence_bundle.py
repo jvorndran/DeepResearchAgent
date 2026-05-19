@@ -9,6 +9,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from agents.data_engineer.storage import SourceSnapshotDescriptor
 from mcp_clients.market_data_provider import MARKET_VALUATION_SOURCE_ID
 from mcp_clients.sec_edgar_contract import SEC_COMPANY_FACT_PROVENANCE_CONTRACT
 
@@ -339,6 +340,7 @@ class EvidenceArtifacts(_EvidenceModel):
     generated_by: dict[str, Any] = Field(default_factory=dict)
     source_files: dict[str, str] = Field(default_factory=dict)
     data_files: dict[str, str] = Field(default_factory=dict)
+    source_snapshots: dict[str, SourceSnapshotDescriptor] = Field(default_factory=dict)
     fingerprints: list[ArtifactFingerprint] = Field(default_factory=list)
 
     @field_validator("charts_json", "execution_summary_json", "evidence_bundle_json")
@@ -495,6 +497,7 @@ def build_evidence_bundle(
             generated_by=_clean_mapping(summary.get("generated_by")) or {},
             source_files=_path_mapping(summary.get("source_files")),
             data_files=_data_file_mapping(summary),
+            source_snapshots=_source_snapshot_mapping(summary),
         ),
     )
 
@@ -662,6 +665,19 @@ def _source_descriptors(
         **_data_file_mapping(summary),
     }.items():
         merge(source_id, source_file=source_file)
+
+    for source_id, snapshot in _source_snapshot_mapping(summary).items():
+        snapshot_payload = _source_snapshot_payload(snapshot)
+        if not snapshot_payload:
+            continue
+        merge(
+            source_id,
+            provider=snapshot_payload.get("provider"),
+            source_url=snapshot_payload.get("endpoint"),
+            source_file=snapshot_payload.get("path"),
+            revision_policy=snapshot_payload.get("freshness_policy"),
+            metadata={"source_snapshot": snapshot_payload},
+        )
 
     for chart_id, provenance in _chart_provenance_items(charts or {}, summary):
         for source_id in _source_ids_from_chart_provenance(provenance):
@@ -1585,6 +1601,35 @@ def _data_file_mapping(summary: Mapping[str, Any]) -> dict[str, str]:
     if isinstance(manifest, Mapping):
         data_files.update(_path_mapping(manifest.get("data_files")))
     return data_files
+
+
+def _source_snapshot_mapping(summary: Mapping[str, Any]) -> dict[str, Any]:
+    source_snapshots = _snapshot_descriptor_mapping(summary.get("source_snapshots"))
+    manifest = summary.get("quant_input_manifest")
+    if isinstance(manifest, Mapping):
+        source_snapshots.update(
+            _snapshot_descriptor_mapping(manifest.get("source_snapshots"))
+        )
+    return source_snapshots
+
+
+def _snapshot_descriptor_mapping(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    out: dict[str, Any] = {}
+    for key, descriptor in value.items():
+        if not _has_value(key) or not isinstance(descriptor, Mapping):
+            continue
+        out[str(key)] = dict(descriptor)
+    return out
+
+
+def _source_snapshot_payload(value: Any) -> dict[str, Any]:
+    if isinstance(value, SourceSnapshotDescriptor):
+        return value.model_dump(mode="json", exclude_none=True)
+    if isinstance(value, Mapping):
+        return {str(key): to_json_safe(child) for key, child in value.items()}
+    return {}
 
 
 def _path_mapping(value: Any) -> dict[str, str]:

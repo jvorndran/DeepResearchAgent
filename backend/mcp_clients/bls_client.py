@@ -4,15 +4,22 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 import requests
+
+from .provider_payload import provider_payload_sha256
 
 
 BLS_V1_URL = "https://api.bls.gov/publicAPI/v1/timeseries/data/"
 DEFAULT_TIMEOUT = 20
 MAX_NO_KEY_SERIES = 25
 MAX_NO_KEY_YEAR_SPAN = 10
+_FRESHNESS_POLICY = (
+    "Latest available BLS public time-series observations; series are updated "
+    "on provider release schedules and may be revised."
+)
 
 _SERIES_ID_RE = re.compile(r"^[A-Z0-9_#-]{3,32}$")
 
@@ -231,6 +238,8 @@ class BLSPublicDataClient:
             payload.update({"startyear": str(years[0]), "endyear": str(years[1])})
 
         response_payload = self._post_json(payload)
+        response_hash = provider_payload_sha256(response_payload)
+        retrieved_at = datetime.now(UTC).isoformat()
         status = str(response_payload.get("status", ""))
         if status != "REQUEST_SUCCEEDED":
             raise BLSPublicDataError(self._provider_error_message(response_payload))
@@ -252,6 +261,12 @@ class BLSPublicDataClient:
                 raise BLSPublicDataError(
                     f"BLS series {series_id} returned no observations for the requested window."
                 )
+            for observation in observations:
+                observation["provider"] = "BLS"
+                observation["source"] = "BLS Public Data API"
+                observation["source_url"] = BLS_V1_URL
+                observation["retrieved_at"] = retrieved_at
+                observation["response_hash"] = response_hash
             output_series.append(
                 {
                     "series_id": series_id,
@@ -276,10 +291,16 @@ class BLSPublicDataClient:
             "source": "BLS Public Data API v1 no-registration endpoint",
             "requires_api_key": False,
             "series": output_series,
+            "raw_response": response_payload,
             "metadata": {
                 "authentication": "none",
                 "endpoint": BLS_V1_URL,
+                "method": "POST",
+                "request_body": payload,
                 "year_window": list(years) if years else None,
+                "retrieved_at": retrieved_at,
+                "response_hash": response_hash,
+                "freshness_policy": _FRESHNESS_POLICY,
                 "known_series_metadata": "curated local map; API v1 data payload has limited metadata",
             },
         }

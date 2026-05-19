@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
 
@@ -21,7 +22,7 @@ class ArtifactFingerprint(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     artifact_id: str
-    role: Literal["canonical_json", "source_file", "data_file"]
+    role: Literal["canonical_json", "source_file", "data_file", "source_snapshot"]
     path: str
     algorithm: Literal["sha256"] = "sha256"
     sha256: str
@@ -68,7 +69,7 @@ def sha256_bytes(content: bytes) -> str:
 def fingerprint_bytes(
     *,
     artifact_id: str,
-    role: Literal["canonical_json", "source_file", "data_file"],
+    role: Literal["canonical_json", "source_file", "data_file", "source_snapshot"],
     path: str | Path,
     content: bytes,
     content_type: str,
@@ -90,7 +91,7 @@ def fingerprint_bytes(
 def fingerprint_file(
     *,
     artifact_id: str,
-    role: Literal["source_file", "data_file"],
+    role: Literal["source_file", "data_file", "source_snapshot"],
     path: str | Path,
     base_dir: Path,
     source_key: str,
@@ -126,6 +127,7 @@ def build_artifact_fingerprints(
     source_files: dict[str, str],
     data_files: dict[str, str],
     base_dir: Path,
+    source_snapshots: dict[str, Any] | None = None,
 ) -> list[ArtifactFingerprint]:
     """Build fingerprints for canonical quant outputs and referenced input files."""
 
@@ -160,6 +162,21 @@ def build_artifact_fingerprints(
             fingerprint_file(
                 artifact_id=f"data_files:{source_key}",
                 role="data_file",
+                path=path,
+                base_dir=base_dir,
+                source_key=source_key,
+            )
+        )
+    for source_key, descriptor in sorted((source_snapshots or {}).items()):
+        path = _source_snapshot_path(descriptor)
+        if not path:
+            raise ValueError(
+                f"Cannot fingerprint source snapshot {source_key!r}; descriptor missing path"
+            )
+        fingerprints.append(
+            fingerprint_file(
+                artifact_id=f"source_snapshots:{source_key}",
+                role="source_snapshot",
                 path=path,
                 base_dir=base_dir,
                 source_key=source_key,
@@ -331,3 +348,15 @@ def _content_type_for_path(path: Path) -> str:
     if suffix == ".csv":
         return "text/csv"
     return "application/octet-stream"
+
+
+def _source_snapshot_path(descriptor: Any) -> str | None:
+    if hasattr(descriptor, "model_dump"):
+        descriptor = descriptor.model_dump(mode="json", exclude_none=True)
+    if not isinstance(descriptor, Mapping):
+        return None
+    path = descriptor.get("path")
+    if path is None:
+        return None
+    text = str(path).strip()
+    return text or None

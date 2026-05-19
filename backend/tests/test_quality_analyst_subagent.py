@@ -77,6 +77,7 @@ def _write_fingerprinted_evidence_artifacts(
     chart_ids,
     *,
     source_files=None,
+    source_snapshots=None,
 ):
     charts = {
         chart_id: {"id": chart_id, "data": [{"x": 1}]}
@@ -124,6 +125,7 @@ def _write_fingerprinted_evidence_artifacts(
                 "execution_summary_json": str(tmp_path / "execution_summary.json"),
                 "evidence_bundle_json": str(tmp_path / "evidence_bundle.json"),
                 "source_files": source_files or {},
+                "source_snapshots": source_snapshots or {},
             },
         }
     )
@@ -136,6 +138,7 @@ def _write_fingerprinted_evidence_artifacts(
         source_files=bundle.artifacts.source_files,
         data_files=bundle.artifacts.data_files,
         base_dir=tmp_path,
+        source_snapshots=bundle.artifacts.source_snapshots,
     )
     (tmp_path / "evidence_bundle.json").write_bytes(
         finalize_evidence_bundle_fingerprint_bytes(bundle)
@@ -554,6 +557,53 @@ def test_submit_quality_decision_rejects_missing_artifact_fingerprint_file(tmp_p
     assert payload["status"] == "rejected"
     assert "artifact fingerprints do not match current files" in payload["reason"]
     assert "source_files:FRED missing or unreadable" in payload["reason"]
+    assert payload["failure_category"] == "evidence_bundle_invalid"
+    assert payload["required_upstream"] == "quant-developer"
+
+
+def test_submit_quality_decision_rejects_missing_source_snapshot_fingerprint_file(tmp_path):
+    snapshot_path = tmp_path / "source_snapshot.json"
+    snapshot_path.write_text(
+        json.dumps({"raw_response": {"observations": [{"date": "2024-01"}]}}),
+        encoding="utf-8",
+    )
+    _write_fingerprinted_evidence_artifacts(
+        tmp_path,
+        ["chart_unrate"],
+        source_snapshots={
+            "FRED": {
+                "snapshot_id": "fred:unrate:" + "c" * 16,
+                "provider": "FRED",
+                "source_id": "FRED",
+                "source_keys": ["FRED"],
+                "endpoint": "https://api.stlouisfed.org/fred/series/observations",
+                "method": "GET",
+                "request_params": {"series_id": "UNRATE"},
+                "retrieved_at": "2026-05-19T00:00:00+00:00",
+                "freshness_policy": "Latest available FRED observation payload.",
+                "response_sha256": "c" * 64,
+                "path": str(snapshot_path),
+                "byte_count": snapshot_path.stat().st_size,
+                "content_type": "application/json",
+            }
+        },
+    )
+    snapshot_path.unlink()
+    report_path = _write_simple_report(tmp_path)
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert "artifact fingerprints do not match current files" in payload["reason"]
+    assert "source_snapshots:FRED missing or unreadable" in payload["reason"]
     assert payload["failure_category"] == "evidence_bundle_invalid"
     assert payload["required_upstream"] == "quant-developer"
 

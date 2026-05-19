@@ -51,10 +51,22 @@ class FakeBEAClient:
                     "response_hash": "a" * 64,
                 }
             ],
+            "raw_response": {"BEAAPI": {"Results": {"Data": [{"LineNumber": "1"}]}}},
             "metadata": {
+                "endpoint": "https://apps.bea.gov/api/data",
+                "method": "GET",
+                "request_params": {
+                    "method": "GetData",
+                    "DataSetName": "NIPA",
+                    "TableName": "T10105",
+                    "Frequency": "Q",
+                    "Year": "2025",
+                    "ResultFormat": "JSON",
+                },
                 "line_numbers": [1],
                 "retrieved_at": "2026-05-19T00:00:00+00:00",
                 "response_hash": "a" * 64,
+                "freshness_policy": "Latest available BEA NIPA estimates; subject to revisions.",
             },
         }
 
@@ -86,6 +98,11 @@ def test_bea_get_nipa_table_saves_rows_and_returns_data_files_contract(
     assert result["data_files"][data_key].endswith(
         "bea_nipa_t10105_q_2025_lines_1_job-bea.csv"
     )
+    snapshot = result["source_snapshots"][data_key]
+    assert snapshot["provider"] == "BEA"
+    assert snapshot["source_keys"] == [data_key]
+    assert snapshot["path"].endswith(".json")
+    assert (tmp_path / "job-bea" / "source_snapshots").exists()
     assert result["row_counts"] == {data_key: 1}
     assert result["metadata"]["requires_api_key"] is True
     assert result["metadata"]["data_type"] == "bea_nipa_table"

@@ -1,10 +1,11 @@
 import json
+from pathlib import Path
 
 import pytest
 
 from agents.data_engineer.tools import extract_schema
 from agents.data_engineer import tools as data_engineer_tools
-from agents.data_engineer.storage import _save_data_to_storage
+from agents.data_engineer.storage import _save_data_to_storage, save_source_snapshot
 
 
 @pytest.mark.asyncio
@@ -98,3 +99,28 @@ def test_existing_auto_file_path_pointer_can_reference_storage_auto_dir(tmp_path
     assert result["row_count"] == 1
     assert result["columns"] == ["date", "value", "series_id"]
     assert "without re-saving" in result["note"]
+
+
+def test_save_source_snapshot_writes_redacted_content_addressed_envelope(tmp_path):
+    descriptor = save_source_snapshot(
+        storage_dir=tmp_path / "job-123",
+        provider="BEA",
+        source_id="BEA_NIPA_T10105_Q",
+        source_keys=["BEA_NIPA_T10105_Q"],
+        endpoint="https://apps.bea.gov/api/data",
+        method="GET",
+        request_params={"UserID": "secret-key", "TableName": "T10105"},
+        response_payload={"BEAAPI": {"Results": {"Data": [{"LineNumber": "1"}]}}},
+        retrieved_at="2026-05-19T00:00:00+00:00",
+        freshness_policy="Latest available BEA NIPA estimates.",
+    )
+
+    snapshot_path = tmp_path / "job-123" / "source_snapshots"
+    assert descriptor.path.startswith(snapshot_path.as_posix())
+    assert descriptor.snapshot_id.startswith("bea:bea_nipa_t10105_q:")
+    assert len(descriptor.response_sha256) == 64
+    assert descriptor.byte_count > 0
+    payload = json.loads(Path(descriptor.path).read_text(encoding="utf-8"))
+    assert payload["request_params"]["UserID"] == "[REDACTED]"
+    assert payload["response_sha256"] == descriptor.response_sha256
+    assert payload["raw_response"]["BEAAPI"]["Results"]["Data"][0]["LineNumber"] == "1"
