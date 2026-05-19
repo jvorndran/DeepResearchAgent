@@ -8,6 +8,9 @@ Usage: scripts/codex_improve_loop.sh [--dry-run] [MAX_ITERS]
 Runs the simplified agent improvement loop:
   run -> analyze -> plan -> build -> review -> fix/review until approved
 
+Approved passes are committed and pushed so each iteration builds on the last
+approved repository state.
+
 Options:
   --dry-run, --prompt-only  Write stub artifacts and summaries without running the agent or Codex.
   -h, --help               Show this help text.
@@ -69,6 +72,11 @@ RUNNER_MAX_IDENTICAL_TOOL_CALLS="${RUNNER_MAX_IDENTICAL_TOOL_CALLS:-25}"
 RUNNER_MAX_FRED_SEARCH_CALLS="${RUNNER_MAX_FRED_SEARCH_CALLS:-100}"
 RUNNER_MAX_MODEL_MESSAGES="${RUNNER_MAX_MODEL_MESSAGES:-5000}"
 
+IMPROVE_LOOP_AUTO_COMMIT="${IMPROVE_LOOP_AUTO_COMMIT:-1}"
+IMPROVE_LOOP_AUTO_PUSH="${IMPROVE_LOOP_AUTO_PUSH:-1}"
+IMPROVE_LOOP_GIT_REMOTE="${IMPROVE_LOOP_GIT_REMOTE:-origin}"
+IMPROVE_LOOP_STOP_ON_DIRTY_UNAPPROVED="${IMPROVE_LOOP_STOP_ON_DIRTY_UNAPPROVED:-1}"
+
 if [[ -n "${PYTHON:-}" ]]; then
   PYTHON_BIN="$PYTHON"
 elif command -v python >/dev/null 2>&1; then
@@ -99,6 +107,11 @@ if [[ -n "${CODEX_MODEL:-}" ]]; then
 fi
 
 cd "$REPO_ROOT"
+CURRENT_GIT_BRANCH="$(git branch --show-current 2>/dev/null || true)"
+if [[ -z "$CURRENT_GIT_BRANCH" ]]; then
+  printf 'Cannot auto-commit improve loop passes from detached HEAD. Check out a branch first.\n' >&2
+  exit 2
+fi
 mkdir -p "$RUN_DIR"
 
 require_loop_files() {
@@ -695,6 +708,105 @@ write_test_evidence() {
   } > "$output_file"
 }
 
+git_status_porcelain() {
+  git status --porcelain --untracked-files=normal -- .
+}
+
+has_git_changes() {
+  [[ -n "$(git_status_porcelain)" ]]
+}
+
+write_git_finalization() {
+  local output_file="$1"
+  local status="$2"
+  local detail="$3"
+  local commit_sha="${4:-}"
+
+  {
+    printf 'status: %s\n' "$status"
+    printf 'detail: %s\n' "$detail"
+    printf 'remote: %s\n' "$IMPROVE_LOOP_GIT_REMOTE"
+    printf 'branch: %s\n' "$CURRENT_GIT_BRANCH"
+    if [[ -n "$commit_sha" ]]; then
+      printf 'commit: %s\n' "$commit_sha"
+    fi
+  } > "$output_file"
+}
+
+commit_and_push_pass() {
+  local pass_num="$1"
+  local pass_dir="$2"
+
+  if [[ "$DRY_RUN" == "1" || "$IMPROVE_LOOP_AUTO_COMMIT" != "1" ]]; then
+    write_git_finalization "$pass_dir/git-finalization.txt" "skipped" "Git auto-commit disabled for this run."
+    return 0
+  fi
+
+  if ! has_git_changes; then
+    write_git_finalization "$pass_dir/git-finalization.txt" "skipped" "No repository changes to commit."
+    printf 'No repository changes to commit for approved pass %s.\n' "$pass_num"
+    return 0
+  fi
+
+  local target tests title body commit_sha
+  target="$(summary_value "IMPROVE_TARGET" "$pass_dir/analysis-summary.md")"
+  [[ -n "$target" ]] || target="approved improvement"
+  target="${target//$'\n'/ }"
+  tests="$(summary_value "IMPROVE_TESTS_RUN" "$pass_dir/build-summary.md")"
+  [[ -n "$tests" ]] || tests="see pass summary"
+
+  title="codex improve pass ${pass_num}: ${target}"
+  body="$(cat <<BODY
+Run: $RUN_ID
+Pass: $pass_num
+Target: $target
+Summary: $pass_dir/summary.md
+Tests: $tests
+BODY
+)"
+
+  git add -A -- .
+  if git diff --cached --quiet -- .; then
+    write_git_finalization "$pass_dir/git-finalization.txt" "skipped" "No staged changes after git add."
+    printf 'No staged changes to commit for approved pass %s.\n' "$pass_num"
+    return 0
+  fi
+
+  git commit -m "$title" -m "$body"
+  commit_sha="$(git rev-parse HEAD)"
+  printf '%s\n' "$commit_sha" > "$pass_dir/git-commit.txt"
+
+  if [[ "$IMPROVE_LOOP_AUTO_PUSH" == "1" ]]; then
+    git push "$IMPROVE_LOOP_GIT_REMOTE" "HEAD:$CURRENT_GIT_BRANCH"
+    write_git_finalization "$pass_dir/git-finalization.txt" "pushed" "Committed and pushed approved pass." "$commit_sha"
+    printf 'Committed and pushed approved pass %s: %s\n' "$pass_num" "$commit_sha"
+  else
+    write_git_finalization "$pass_dir/git-finalization.txt" "committed" "Committed approved pass; push disabled." "$commit_sha"
+    printf 'Committed approved pass %s without push: %s\n' "$pass_num" "$commit_sha"
+  fi
+}
+
+finalize_git_for_pass() {
+  local pass_num="$1"
+  local pass_dir="$2"
+  local final_review_result="$3"
+
+  if [[ "$final_review_result" == "approved" ]]; then
+    commit_and_push_pass "$pass_num" "$pass_dir"
+    return 0
+  fi
+
+  write_git_finalization "$pass_dir/git-finalization.txt" "skipped" "Pass was not approved; no commit attempted."
+  if [[ "$IMPROVE_LOOP_STOP_ON_DIRTY_UNAPPROVED" == "1" ]] && has_git_changes; then
+    {
+      printf 'Pass %s ended with review result %s and left uncommitted changes.\n' "$pass_num" "$final_review_result"
+      printf 'Stopping before the next pass so unapproved work is not overwritten or built upon.\n'
+      printf 'Inspect: %s/current-diff.patch\n' "$pass_dir"
+    } >&2
+    return 1
+  fi
+}
+
 write_pass_summary() {
   local pass_dir="$1"
   local pass_num="$2"
@@ -788,6 +900,9 @@ printf 'Improve loop run directory: %s\n' "$RUN_DIR"
 printf 'Memory: %s\n' "$MEMORY_FILE"
 printf 'Codex reasoning effort: %s\n' "$CODEX_REASONING_EFFORT"
 printf 'Dry run: %s\n' "$DRY_RUN"
+printf 'Git auto-commit: %s\n' "$IMPROVE_LOOP_AUTO_COMMIT"
+printf 'Git auto-push: %s\n' "$IMPROVE_LOOP_AUTO_PUSH"
+printf 'Git push target: %s/%s\n' "$IMPROVE_LOOP_GIT_REMOTE" "$CURRENT_GIT_BRANCH"
 printf 'Latest rollup: %s\n' "$LATEST_SUMMARY"
 
 for i in $(seq "$START_ITER" "$end_iter"); do
@@ -908,6 +1023,7 @@ for i in $(seq "$START_ITER" "$end_iter"); do
   write_pass_summary "$pass_dir" "$i" "$started" "$ended" "$final_review_summary" "$final_review_result" "$fix_attempts"
   update_memory "$i" "$pass_dir" "$pass_dir/run-summary.md" "$pass_dir/analysis-summary.md" "$pass_dir/build-summary.md" "$pass_dir/summary.md"
   update_latest_summary
+  finalize_git_for_pass "$i" "$pass_dir" "$final_review_result"
 
   printf '\nPass %s final review result: %s\n' "$i" "$final_review_result"
   printf 'Pass summary: %s\n' "$pass_dir/summary.md"

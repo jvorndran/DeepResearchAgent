@@ -1,43 +1,345 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BACKLOG_FILE="$REPO_ROOT/docs/free-agent-feature-backlog.md"
-REQUESTED_ITERS="${1:-}"
-CODEX_SANDBOX_MODE="${CODEX_SANDBOX_MODE:-danger-full-access}"
+usage() {
+  cat <<'USAGE'
+Usage: scripts/codex_feature_loop.sh [--dry-run] [--allow-dirty-start] [MAX_FEATURES]
 
-cd "$REPO_ROOT"
+Runs a roadmap feature implementation loop:
+  analyze roadmap -> plan -> build -> review -> fix/review until approved
 
-CODEX_MODEL_ARGS=()
-if [[ -n "${CODEX_MODEL:-}" ]]; then
-  CODEX_MODEL_ARGS=(--model "$CODEX_MODEL")
-fi
+Approved feature passes are committed and pushed to the currently checked-out
+branch so each feature builds on the last approved repository state.
 
-mapfile -t FEATURE_NAMES < <(awk '/^### / { sub(/^### /, ""); print }' "$BACKLOG_FILE")
-if [[ "${#FEATURE_NAMES[@]}" -eq 0 ]]; then
-  printf 'No feature headings found in %s\n' "$BACKLOG_FILE" >&2
-  exit 1
-fi
+Options:
+  --dry-run, --prompt-only   Write stub artifacts and summaries without running Codex.
+  --allow-dirty-start        Do not require a clean worktree before starting.
+                             Use carefully: approved commits may include existing changes.
+  -h, --help                 Show this help text.
 
-MAX_ITERS="${REQUESTED_ITERS:-${#FEATURE_NAMES[@]}}"
-
-extract_feature_section() {
-  local feature_name="$1"
-  awk -v feature="$feature_name" '
-    $0 == "### " feature { capture = 1; print; next }
-    capture && /^### / { exit }
-    capture { print }
-  ' "$BACKLOG_FILE"
+Useful environment variables:
+  FEATURE_LOOP_TARGET        Preferred roadmap feature or heading to implement first.
+  ROADMAP_FILE               Roadmap markdown file to implement.
+  FEATURE_LOOP_AUTO_COMMIT   1 to commit approved passes, 0 to skip. Default: 1.
+  FEATURE_LOOP_AUTO_PUSH     1 to push approved passes, 0 to skip. Default: 1.
+USAGE
 }
 
-extract_evaluation_query() {
-  sed -n 's/^- Evaluation query: //p' | head -1
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REQUESTED_ITERS="${MAX_FEATURES:-}"
+DRY_RUN="${DRY_RUN:-0}"
+ALLOW_DIRTY_START="${FEATURE_LOOP_ALLOW_DIRTY_START:-0}"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run|--prompt-only)
+      DRY_RUN=1
+      shift
+      ;;
+    --allow-dirty-start)
+      ALLOW_DIRTY_START=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      if [[ -z "$REQUESTED_ITERS" ]]; then
+        REQUESTED_ITERS="$1"
+        shift
+      else
+        printf 'Unexpected argument: %s\n\n' "$1" >&2
+        usage >&2
+        exit 2
+      fi
+      ;;
+  esac
+done
+
+MAX_FEATURES="${REQUESTED_ITERS:-1}"
+START_FEATURE="${START_FEATURE:-1}"
+MAX_FIX_ATTEMPTS="${MAX_FIX_ATTEMPTS:-3}"
+CODEX_SANDBOX_MODE="${CODEX_SANDBOX_MODE:-danger-full-access}"
+CODEX_REASONING_EFFORT="${CODEX_REASONING_EFFORT:-xhigh}"
+LOG_ROOT="${LOG_ROOT:-$REPO_ROOT/logs/feature-loop}"
+RUN_ID="${RUN_ID:-$(date +%Y%m%d-%H%M%S)}"
+RUN_DIR="$LOG_ROOT/runs/$RUN_ID"
+LATEST_SUMMARY="$LOG_ROOT/latest-summary.md"
+MEMORY_FILE="$LOG_ROOT/memory.md"
+ROADMAP_FILE="${ROADMAP_FILE:-$REPO_ROOT/docs/agent-improvement-feature-roadmap.md}"
+PROMPT_DIR="$REPO_ROOT/scripts/feature_loop/prompts"
+
+FEATURE_LOOP_AUTO_COMMIT="${FEATURE_LOOP_AUTO_COMMIT:-1}"
+FEATURE_LOOP_AUTO_PUSH="${FEATURE_LOOP_AUTO_PUSH:-1}"
+FEATURE_LOOP_GIT_REMOTE="${FEATURE_LOOP_GIT_REMOTE:-origin}"
+FEATURE_LOOP_STOP_ON_DIRTY_UNAPPROVED="${FEATURE_LOOP_STOP_ON_DIRTY_UNAPPROVED:-1}"
+
+for value_name in MAX_FEATURES START_FEATURE; do
+  value="${!value_name}"
+  if ! [[ "$value" =~ ^[0-9]+$ ]] || [[ "$value" -lt 1 ]]; then
+    printf '%s must be a positive integer, got %s\n' "$value_name" "$value" >&2
+    exit 2
+  fi
+done
+
+if ! [[ "$MAX_FIX_ATTEMPTS" =~ ^[0-9]+$ ]]; then
+  printf 'MAX_FIX_ATTEMPTS must be a non-negative integer, got %s\n' "$MAX_FIX_ATTEMPTS" >&2
+  exit 2
+fi
+
+CODEX_MODEL_ARGS=(
+  -c "model_reasoning_effort=\"$CODEX_REASONING_EFFORT\""
+  -c "plan_mode_reasoning_effort=\"$CODEX_REASONING_EFFORT\""
+)
+if [[ -n "${CODEX_MODEL:-}" ]]; then
+  CODEX_MODEL_ARGS=(--model "$CODEX_MODEL" "${CODEX_MODEL_ARGS[@]}")
+fi
+
+cd "$REPO_ROOT"
+CURRENT_GIT_BRANCH="$(git branch --show-current 2>/dev/null || true)"
+if [[ -z "$CURRENT_GIT_BRANCH" ]]; then
+  printf 'Cannot auto-commit feature loop passes from detached HEAD. Check out a branch first.\n' >&2
+  exit 2
+fi
+
+git_status_porcelain() {
+  git status --porcelain --untracked-files=normal -- .
+}
+
+has_git_changes() {
+  [[ -n "$(git_status_porcelain)" ]]
+}
+
+if [[ "$DRY_RUN" != "1" && "$ALLOW_DIRTY_START" != "1" ]] && has_git_changes; then
+  {
+    printf 'Refusing to start feature loop with a dirty worktree.\n'
+    printf 'Commit/stash current changes, or rerun with --allow-dirty-start.\n'
+    printf 'Current status:\n'
+    git status --short
+  } >&2
+  exit 2
+fi
+
+mkdir -p "$RUN_DIR"
+
+require_loop_files() {
+  local missing=0
+  local template
+  [[ -s "$ROADMAP_FILE" ]] || { printf 'Missing roadmap file: %s\n' "$ROADMAP_FILE" >&2; missing=1; }
+  for template in analyze plan build review fix; do
+    [[ -s "$PROMPT_DIR/$template.md" ]] || {
+      printf 'Missing prompt template: %s\n' "$PROMPT_DIR/$template.md" >&2
+      missing=1
+    }
+  done
+  [[ "$missing" -eq 0 ]] || exit 2
+}
+
+summary_value() {
+  local key="$1"
+  local file="$2"
+  [[ -s "$file" ]] || return 0
+  awk -v key="$key" '
+    {
+      line = $0
+      sub(/\r$/, "", line)
+      sub(/^[[:space:]]*/, "", line)
+      sub(/^[-*][[:space:]]+/, "", line)
+      prefix = key ":"
+      if (index(line, prefix) == 1) {
+        value = substr(line, length(prefix) + 1)
+        sub(/^[[:space:]]*/, "", value)
+        print value
+        exit
+      }
+    }
+  ' "$file"
+}
+
+memory_lines() {
+  local prefix="$1"
+  local limit="$2"
+  grep -E "^- ${prefix}:" "$MEMORY_FILE" 2>/dev/null | tail -n "$limit" || true
+}
+
+emit_or_none() {
+  local lines="$1"
+  if [[ -n "$lines" ]]; then
+    printf '%s\n' "$lines"
+  else
+    printf -- '- none\n'
+  fi
+}
+
+ensure_memory() {
+  mkdir -p "$(dirname "$MEMORY_FILE")"
+  if [[ ! -f "$MEMORY_FILE" ]]; then
+    cat > "$MEMORY_FILE" <<'MEMORY'
+# Feature Loop Memory
+
+## Last 10 Approved Features / Files / Tests
+- none
+
+## Blocked Features Needing Human Attention
+- none
+
+## Known Environment Blockers
+- none
+
+## Next Feature Signal
+- none
+MEMORY
+  fi
+}
+
+write_feature_request() {
+  local pass_num="$1"
+  local output_file="$2"
+  {
+    printf '# Feature Implementation Request\n\n'
+    printf 'Run ID: %s\n' "$RUN_ID"
+    printf 'Feature pass: %s\n' "$pass_num"
+    printf 'Roadmap file: %s\n' "$ROADMAP_FILE"
+    printf 'Current branch: %s\n' "$CURRENT_GIT_BRANCH"
+    printf '\n## Target Agent Flow\n\n'
+    printf 'planner -> source recipe -> typed fetch -> validated transforms -> evidence bundle -> chart/report projection -> QA\n'
+    printf '\n## Preferred Target\n\n'
+    if [[ -n "${FEATURE_LOOP_TARGET:-}" ]]; then
+      printf '%s\n' "$FEATURE_LOOP_TARGET"
+    else
+      printf 'Select the next highest-leverage unimplemented roadmap feature.\n'
+    fi
+    printf '\n## Implementation Rule\n\n'
+    printf 'Implement one coherent feature slice. Do not attempt the entire roadmap in one pass.\n'
+  } > "$output_file"
+}
+
+write_prompt() {
+  local phase="$1"
+  local output_file="$2"
+  local pass_dir="$3"
+  local template="$PROMPT_DIR/$phase.md"
+
+  {
+    printf '# Phase Context\n\n'
+    printf -- '- Repository root: %s\n' "$REPO_ROOT"
+    printf -- '- Pass directory: %s\n' "$pass_dir"
+    printf -- '- Roadmap file: %s\n' "$ROADMAP_FILE"
+    printf -- '- Memory path: %s\n' "$MEMORY_FILE"
+    printf -- '- Current branch: %s\n' "$CURRENT_GIT_BRANCH"
+    printf '\nUse files from the pass directory. Do not expect artifact contents in this prompt.\n'
+    printf '\n## Files To Inspect\n\n'
+    printf -- '- `feature-request.md`\n'
+    printf -- '- `%s`\n' "$ROADMAP_FILE"
+    printf -- '- `%s`\n' "$MEMORY_FILE"
+    case "$phase" in
+      plan)
+        printf -- '- `analysis-summary.md`\n'
+        printf -- '- relevant source files and nearby tests\n'
+        ;;
+      build)
+        printf -- '- `plan-summary.md`\n'
+        printf -- '- `analysis-summary.md`\n'
+        ;;
+      review)
+        printf -- '- `analysis-summary.md`\n'
+        printf -- '- `plan-summary.md`\n'
+        printf -- '- `build-summary.md` and latest `fix-*-summary.md` if present\n'
+        printf -- '- `current-diff.patch`\n'
+        printf -- '- `current-status.txt`\n'
+        printf -- '- `test-evidence.md`\n'
+        ;;
+      fix)
+        printf -- '- latest `review-*-summary.md`\n'
+        printf -- '- `plan-summary.md`\n'
+        printf -- '- `analysis-summary.md`\n'
+        printf -- '- `current-diff.patch`\n'
+        printf -- '- `current-status.txt`\n'
+        printf -- '- `test-evidence.md`\n'
+        ;;
+    esac
+    printf '\n# Phase Instructions\n\n'
+    cat "$template"
+  } > "$output_file"
+}
+
+dry_run_review_result() {
+  local attempt="$1"
+  local sequence="${DRY_RUN_REVIEW_SEQUENCE:-changes_requested,approved}"
+  local -a results
+  IFS=',' read -r -a results <<< "$sequence"
+  local index=$((attempt - 1))
+  if [[ "$index" -ge "${#results[@]}" ]]; then
+    index=$((${#results[@]} - 1))
+  fi
+  printf '%s' "${results[$index]}"
+}
+
+dry_run_phase_summary() {
+  local phase="$1"
+  local output_file="$2"
+  local attempt="${3:-1}"
+  case "$phase" in
+    analyze)
+      cat > "$output_file" <<'SUMMARY'
+FEATURE_ANALYSIS_RESULT: feature_selected
+FEATURE_TARGET: dry-run feature
+FEATURE_ROADMAP_SECTION: dry-run section
+FEATURE_FLOW_STAGE: cross-cutting
+FEATURE_NEXT_SIGNAL: Dry-run plan should select a small implementation slice.
+SUMMARY
+      ;;
+    plan)
+      cat > "$output_file" <<'SUMMARY'
+FEATURE_PLAN_RESULT: planned
+FEATURE_TARGET: dry-run feature
+FEATURE_PLAN_FILES: none
+FEATURE_PLAN_TESTS: none
+FEATURE_NEXT_SIGNAL: Dry-run build should patch the selected feature.
+SUMMARY
+      ;;
+    build)
+      cat > "$output_file" <<'SUMMARY'
+FEATURE_BUILD_RESULT: patched
+FEATURE_TARGET: dry-run feature
+FEATURE_FILES_CHANGED: none
+FEATURE_TESTS_RUN: none
+FEATURE_NEXT_SIGNAL: Dry-run review should inspect the stub feature diff.
+SUMMARY
+      ;;
+    review)
+      local result
+      result="$(dry_run_review_result "$attempt")"
+      cat > "$output_file" <<SUMMARY
+FEATURE_REVIEW_RESULT: $result
+FEATURE_REVIEW_FINDINGS: dry-run finding for attempt $attempt
+FEATURE_NEXT_SIGNAL: Dry-run review attempt $attempt returned $result.
+SUMMARY
+      ;;
+    fix)
+      cat > "$output_file" <<'SUMMARY'
+FEATURE_FIX_RESULT: patched
+FEATURE_TARGET: dry-run feature
+FEATURE_FILES_CHANGED: none
+FEATURE_TESTS_RUN: none
+FEATURE_NEXT_SIGNAL: Dry-run fix summary is ready for re-review.
+SUMMARY
+      ;;
+  esac
 }
 
 run_codex_phase() {
-  local phase_name="$1"
+  local phase="$1"
   local output_file="$2"
-  local prompt="$3"
+  local prompt_file="$3"
+  local attempt="${4:-1}"
+
+  if [[ "$DRY_RUN" == "1" ]]; then
+    printf 'Dry run: writing %s summary to %s\n' "$phase" "$output_file"
+    dry_run_phase_summary "$phase" "$output_file" "$attempt"
+    return 0
+  fi
 
   set +e
   codex exec \
@@ -45,172 +347,430 @@ run_codex_phase() {
     --sandbox "$CODEX_SANDBOX_MODE" \
     --output-last-message "$output_file" \
     "${CODEX_MODEL_ARGS[@]}" \
-    "$prompt"
-  local codex_exit=$?
+    "$(cat "$prompt_file")"
+  local status=$?
   set -e
-
-  printf '\nCodex %s exited with status %s\n' "$phase_name" "$codex_exit"
-  printf 'Last Codex summary: %s\n' "$output_file"
-  return "$codex_exit"
+  printf 'Codex %s exited with status %s; summary: %s\n' "$phase" "$status" "$output_file"
+  return "$status"
 }
 
-for i in $(seq 1 "$MAX_ITERS"); do
-  feature_index=$(( (i - 1) % ${#FEATURE_NAMES[@]} ))
-  feature_name="${FEATURE_NAMES[$feature_index]}"
-  feature_section="$(extract_feature_section "$feature_name")"
-  query="$(printf '%s\n' "$feature_section" | extract_evaluation_query)"
+write_skipped_summary() {
+  local phase="$1"
+  local output_file="$2"
+  local reason="$3"
+  case "$phase" in
+    plan)
+      {
+        printf 'FEATURE_PLAN_RESULT: blocked\n'
+        printf 'FEATURE_TARGET: unknown\n'
+        printf 'FEATURE_PLAN_FILES: unknown\n'
+        printf 'FEATURE_PLAN_TESTS: unknown\n'
+        printf 'FEATURE_NEXT_SIGNAL: %s\n' "$reason"
+      } > "$output_file"
+      ;;
+    build)
+      {
+        printf 'FEATURE_BUILD_RESULT: blocked\n'
+        printf 'FEATURE_TARGET: unknown\n'
+        printf 'FEATURE_FILES_CHANGED: none\n'
+        printf 'FEATURE_TESTS_RUN: none\n'
+        printf 'FEATURE_NEXT_SIGNAL: %s\n' "$reason"
+      } > "$output_file"
+      ;;
+    review)
+      {
+        printf 'FEATURE_REVIEW_RESULT: blocked\n'
+        printf 'FEATURE_REVIEW_FINDINGS: %s\n' "$reason"
+        printf 'FEATURE_NEXT_SIGNAL: %s\n' "$reason"
+      } > "$output_file"
+      ;;
+    fix)
+      {
+        printf 'FEATURE_FIX_RESULT: no_patch\n'
+        printf 'FEATURE_TARGET: unknown\n'
+        printf 'FEATURE_FILES_CHANGED: none\n'
+        printf 'FEATURE_TESTS_RUN: none\n'
+        printf 'FEATURE_NEXT_SIGNAL: %s\n' "$reason"
+      } > "$output_file"
+      ;;
+  esac
+}
 
-  if [[ -z "$query" ]]; then
-    printf 'Feature "%s" is missing an "- Evaluation query:" line in %s\n' "$feature_name" "$BACKLOG_FILE" >&2
-    exit 1
+write_current_diff() {
+  local pass_dir="$1"
+  git diff --no-ext-diff -- . > "$pass_dir/current-diff.patch" || true
+  git status --short > "$pass_dir/current-status.txt" || true
+}
+
+write_test_evidence() {
+  local output_file="$1"
+  shift
+  {
+    printf '# Test Evidence\n\n'
+    local summary tests
+    for summary in "$@"; do
+      [[ -s "$summary" ]] || continue
+      tests="$(summary_value "FEATURE_TESTS_RUN" "$summary")"
+      [[ -n "$tests" ]] || tests="see phase summary"
+      printf -- '- Summary: %s\n' "$summary"
+      printf '  Tests: %s\n' "$tests"
+    done
+  } > "$output_file"
+}
+
+write_git_finalization() {
+  local output_file="$1"
+  local status="$2"
+  local detail="$3"
+  local commit_sha="${4:-}"
+
+  {
+    printf 'status: %s\n' "$status"
+    printf 'detail: %s\n' "$detail"
+    printf 'remote: %s\n' "$FEATURE_LOOP_GIT_REMOTE"
+    printf 'branch: %s\n' "$CURRENT_GIT_BRANCH"
+    if [[ -n "$commit_sha" ]]; then
+      printf 'commit: %s\n' "$commit_sha"
+    fi
+  } > "$output_file"
+}
+
+commit_and_push_pass() {
+  local pass_num="$1"
+  local pass_dir="$2"
+
+  if [[ "$DRY_RUN" == "1" || "$FEATURE_LOOP_AUTO_COMMIT" != "1" ]]; then
+    write_git_finalization "$pass_dir/git-finalization.txt" "skipped" "Git auto-commit disabled for this run."
+    return 0
   fi
 
-  build_output="/tmp/codex-feature-pass-${i}-build.md"
-  verify_output="/tmp/codex-feature-pass-${i}-verify.md"
-  improve_output="/tmp/codex-feature-pass-${i}-improve.md"
-
-  printf '\n=== Codex feature %s/%s: %s ===\n' "$i" "$MAX_ITERS" "$feature_name"
-  printf 'Evaluation query: %s\n\n' "$query"
-
-  build_prompt="$(cat <<EOF
-Phase: feature-build
-
-Source of truth:
-- Read docs/free-agent-feature-backlog.md.
-- Use only the feature section pasted below as the active feature scope.
-- Do not use shell-script arrays or prior summaries as the feature spec.
-
-Active feature section:
-$feature_section
-
-Goal:
-Understand this feature, inspect the existing code, implement the smallest useful slice, and review your own code before stopping.
-
-Instructions:
-1. Inspect existing files first so you do not duplicate capabilities already covered by FRED, local quant code, report validation, or existing skills.
-2. Implement at most one coherent feature slice.
-3. Preserve the frontend intake/approval flow.
-4. Free/no-key rules are strict: no API keys, signup, OAuth, paid providers, hosted services, provisioned cloud resources, or FMP re-enable.
-5. Prefer local/open-source tools and optional public no-key HTTP clients. Missing dependencies, missing binaries, network failures, and unsupported platforms must degrade gracefully.
-6. Add focused tests. Mock network responses for public integrations.
-7. Add integration coverage appropriate to the feature:
-   - Public no-key HTTP integrations must include mocked unit/contract tests plus a tiny skipped-by-default live smoke test under backend/tests/integration/.
-   - Live tests must be gated behind RUN_LIVE_INTEGRATION_TESTS=1, make only one narrow provider call when possible, and assert shape/source metadata rather than exact volatile values.
-   - Local analysis features must include realistic fixture-driven integration tests that exercise helper/artifact behavior and assert output schema, method labels, no-lookahead behavior, chart/report compatibility, or QA gates as relevant.
-   - If integration coverage is intentionally not added in this slice, state why in the Self-review risks and make it clear the verifier should treat that as an improvement candidate.
-8. Perform an in-depth self-review of the patch before stopping:
-   - Re-read every file you changed with the final diff in mind.
-   - Check that the implementation matches the active markdown feature section and does not quietly broaden scope.
-   - Check ownership boundaries: data retrieval belongs to data-engineer, deterministic analysis helpers to quant-developer, report validation to technical-writer/QA, and orchestration only to flow/handoff logic.
-   - Check free/no-key constraints again: no API keys, signups, OAuth, paid providers, hosted services, FMP re-enable, secret reads, or mandatory background daemons.
-   - Check failure behavior: missing dependency, disabled optional tool, network timeout, malformed provider response, bad user input, and unsupported platform must return compact actionable errors.
-   - Check agent ergonomics: tool names, docstrings, schemas, return payloads, and skill guidance should be compact, typed, and easy for the owning specialist to act on.
-   - Check artifact contracts: paths, schemas, \`report.json\`, \`charts.json\`, \`execution_summary.json\`, citations, and data-source metadata should remain compatible with downstream agents.
-   - Check regressions around frontend intake/approval, FRED-only macro flow, disabled FMP, watchdog limits, and existing focused tests.
-   - Check tests for meaningful coverage, including mocked network responses, unavailable-provider behavior, live smoke gating for public integrations, and fixture-driven artifact tests for local analysis.
-   - If the review finds a blocker, fix it in this same build phase and rerun focused tests before summarizing.
-9. Stop after this build/review phase. Do not run the full research agent in this phase.
-
-Final response requirements:
-- Summarize the feature slice added.
-- List changed files.
-- List tests run.
-- Include a short "Self-review" section with issues checked, issues fixed during review, and remaining risks.
-- Note any unresolved risks for the verifier.
-EOF
-)"
-
-  run_codex_phase "feature-build pass $i" "$build_output" "$build_prompt" || true
-
-  verify_prompt="$(cat <<EOF
-Phase: feature-verify
-
-This is a fresh Codex session. Do not modify code in this phase.
-
-Source of truth:
-- Read docs/free-agent-feature-backlog.md.
-- Use only the feature section pasted below as the active feature scope.
-- Also read the build summary at $build_output.
-
-Active feature section:
-$feature_section
-
-Evaluation query:
-$query
-
-Goal:
-Run the test agent, explain what new feature appears to have been added to this test agent, and decide whether the feature works or needs improvement.
-
-Instructions:
-1. From backend/, run:
-   UV_CACHE_DIR=/tmp/uv-cache uv run python tests/runner.py --max-runtime-seconds 2400 --max-tool-calls 300 --max-identical-tool-calls 25 --max-fred-search-calls 100 --max-model-messages 5000 --query "$query"
-2. Read the generated outputs/improver-*/trace-digest.md first, then trace_diagnostics.json, phoenix_spans.jsonl, and any report artifacts.
-3. Run relevant focused tests added by the build phase. For public no-key HTTP integrations, also run relevant live smoke tests with RUN_LIVE_INTEGRATION_TESTS=1 when they exist. For local analysis features, run fixture-driven integration tests that exercise the real helper/artifact path.
-4. If public live smoke tests fail only because of provider/network unavailability while mocked contract tests pass, report that separately; do not confuse provider availability with code correctness.
-5. Compare observed agent behavior, mocked tests, and integration tests to the feature acceptance signal in the markdown section.
-6. If no meaningful integration test exists for the feature, mark FEATURE_VERDICT: improve unless the build summary gives a defensible reason this first slice could not include one.
-7. Do not patch code. This phase verifies only.
-
-Final response requirements:
-- Explain the new feature added in plain language.
-- State what evidence shows it is working or not working.
-- Include the generated trace digest path and the trace signal that drove the verdict.
-- End with exactly one line:
-  FEATURE_VERDICT: pass
-  or
-  FEATURE_VERDICT: improve
-EOF
-)"
-
-  run_codex_phase "feature-verify pass $i" "$verify_output" "$verify_prompt" || true
-
-  verdict="improve"
-  if rg -q '^FEATURE_VERDICT: pass$' "$verify_output"; then
-    verdict="pass"
+  if ! has_git_changes; then
+    write_git_finalization "$pass_dir/git-finalization.txt" "skipped" "No repository changes to commit."
+    printf 'No repository changes to commit for approved feature pass %s.\n' "$pass_num"
+    return 0
   fi
 
-  if [[ "$verdict" == "improve" ]]; then
-    improve_prompt="$(cat <<EOF
-Phase: feature-improve
+  local target tests title body commit_sha
+  target="$(summary_value "FEATURE_TARGET" "$pass_dir/analysis-summary.md")"
+  [[ -n "$target" ]] || target="roadmap feature"
+  target="${target//$'\n'/ }"
+  tests="$(summary_value "FEATURE_TESTS_RUN" "$pass_dir/build-summary.md")"
+  [[ -n "$tests" ]] || tests="see feature summary"
 
-This is a fresh Codex session after verifier feedback.
-
-Source of truth:
-- Read docs/free-agent-feature-backlog.md.
-- Use only the feature section pasted below as the active feature scope.
-- Read the build summary at $build_output and verifier summary at $verify_output.
-
-Active feature section:
-$feature_section
-
-Evaluation query:
-$query
-
-Goal:
-Improve the feature based on the verifier result, then stop. Do not move to another feature inside this session.
-
-Instructions:
-1. Inspect the verifier summary and generated trace digest path.
-2. Patch only the smallest issue that prevented the acceptance signal from being met.
-3. Preserve the frontend intake/approval flow.
-4. Keep free/no-key constraints strict.
-5. Add or update focused tests and the relevant integration tests:
-   - Public no-key HTTP integrations need mocked tests plus RUN_LIVE_INTEGRATION_TESTS-gated live smoke tests.
-   - Local analysis features need realistic fixture-driven integration tests for helper/artifact behavior.
-6. Run focused verification, including integration tests when relevant.
-
-Final response requirements:
-- Summarize the improvement.
-- List changed files.
-- List tests run.
-- Note whether another fresh verification pass should be run.
-EOF
+  title="codex feature pass ${pass_num}: ${target}"
+  body="$(cat <<BODY
+Run: $RUN_ID
+Pass: $pass_num
+Target: $target
+Roadmap: $ROADMAP_FILE
+Summary: $pass_dir/summary.md
+Tests: $tests
+BODY
 )"
 
-    run_codex_phase "feature-improve pass $i" "$improve_output" "$improve_prompt" || true
+  git add -A -- .
+  if git diff --cached --quiet -- .; then
+    write_git_finalization "$pass_dir/git-finalization.txt" "skipped" "No staged changes after git add."
+    printf 'No staged changes to commit for approved feature pass %s.\n' "$pass_num"
+    return 0
+  fi
+
+  git commit -m "$title" -m "$body"
+  commit_sha="$(git rev-parse HEAD)"
+  printf '%s\n' "$commit_sha" > "$pass_dir/git-commit.txt"
+
+  if [[ "$FEATURE_LOOP_AUTO_PUSH" == "1" ]]; then
+    git push "$FEATURE_LOOP_GIT_REMOTE" "HEAD:$CURRENT_GIT_BRANCH"
+    write_git_finalization "$pass_dir/git-finalization.txt" "pushed" "Committed and pushed approved feature pass." "$commit_sha"
+    printf 'Committed and pushed approved feature pass %s: %s\n' "$pass_num" "$commit_sha"
   else
-    printf 'Feature "%s" passed verification; moving to next feature with a fresh session.\n' "$feature_name"
+    write_git_finalization "$pass_dir/git-finalization.txt" "committed" "Committed approved feature pass; push disabled." "$commit_sha"
+    printf 'Committed approved feature pass %s without push: %s\n' "$pass_num" "$commit_sha"
+  fi
+}
+
+finalize_git_for_pass() {
+  local pass_num="$1"
+  local pass_dir="$2"
+  local final_review_result="$3"
+
+  if [[ "$final_review_result" == "approved" ]]; then
+    commit_and_push_pass "$pass_num" "$pass_dir"
+    return 0
   fi
 
+  write_git_finalization "$pass_dir/git-finalization.txt" "skipped" "Feature pass was not approved; no commit attempted."
+  if [[ "$FEATURE_LOOP_STOP_ON_DIRTY_UNAPPROVED" == "1" ]] && has_git_changes; then
+    {
+      printf 'Feature pass %s ended with review result %s and left uncommitted changes.\n' "$pass_num" "$final_review_result"
+      printf 'Stopping before the next pass so unapproved work is not overwritten or built upon.\n'
+      printf 'Inspect: %s/current-diff.patch\n' "$pass_dir"
+    } >&2
+    return 1
+  fi
+}
+
+update_memory() {
+  local pass_num="$1"
+  local pass_dir="$2"
+  local build_summary="$3"
+  local final_review_summary="$4"
+
+  local target files tests next_signal review_result build_result
+  target="$(summary_value "FEATURE_TARGET" "$pass_dir/analysis-summary.md")"
+  files="$(summary_value "FEATURE_FILES_CHANGED" "$build_summary")"
+  tests="$(summary_value "FEATURE_TESTS_RUN" "$build_summary")"
+  next_signal="$(summary_value "FEATURE_NEXT_SIGNAL" "$final_review_summary")"
+  [[ -n "$next_signal" ]] || next_signal="$(summary_value "FEATURE_NEXT_SIGNAL" "$build_summary")"
+  review_result="$(summary_value "FEATURE_REVIEW_RESULT" "$final_review_summary")"
+  build_result="$(summary_value "FEATURE_BUILD_RESULT" "$build_summary")"
+
+  local old_approved old_blocked old_env
+  old_approved="$(memory_lines "approved" 10)"
+  old_blocked="$(memory_lines "blocked" 10)"
+  old_env="$(memory_lines "env" 5)"
+
+  local new_approved=""
+  if [[ "$review_result" == "approved" ]]; then
+    new_approved="- approved: run=$RUN_ID pass=$pass_num target=${target:-unknown} files=${files:-see-build-summary} tests=${tests:-see-build-summary} summary=$pass_dir/summary.md"
+  fi
+
+  local new_blocked=""
+  if [[ "$review_result" == "blocked" || "$build_result" == "blocked" ]]; then
+    new_blocked="- blocked: run=$RUN_ID pass=$pass_num target=${target:-unknown} summary=$pass_dir/summary.md"
+  fi
+
+  local approved_lines blocked_lines
+  approved_lines="$(printf '%s\n%s\n' "$old_approved" "$new_approved" | sed '/^[[:space:]]*$/d' | tail -n 10)"
+  blocked_lines="$(printf '%s\n%s\n' "$old_blocked" "$new_blocked" | sed '/^[[:space:]]*$/d' | tail -n 10)"
+
+  {
+    printf '# Feature Loop Memory\n\n'
+    printf '## Last 10 Approved Features / Files / Tests\n'
+    emit_or_none "$approved_lines"
+    printf '\n## Blocked Features Needing Human Attention\n'
+    emit_or_none "$blocked_lines"
+    printf '\n## Known Environment Blockers\n'
+    emit_or_none "$old_env"
+    printf '\n## Next Feature Signal\n'
+    if [[ -n "$next_signal" ]]; then
+      printf -- '- next: %s\n' "$next_signal"
+    else
+      printf -- '- none\n'
+    fi
+  } > "$MEMORY_FILE"
+}
+
+write_pass_summary() {
+  local pass_dir="$1"
+  local pass_num="$2"
+  local started="$3"
+  local ended="$4"
+  local final_review_summary="$5"
+  local final_review_result="$6"
+  local fix_attempts="$7"
+
+  {
+    printf '# Feature Loop Pass %s\n\n' "$pass_num"
+    printf 'Started: %s\n' "$started"
+    printf 'Ended: %s\n' "$ended"
+    printf 'Run: %s\n' "$RUN_ID"
+    printf 'Run directory: %s\n' "$RUN_DIR"
+    printf 'Roadmap: %s\n' "$ROADMAP_FILE"
+    printf 'Memory: %s\n' "$MEMORY_FILE"
+    printf 'Feature request: %s\n' "$pass_dir/feature-request.md"
+    printf 'Final review result: %s\n' "$final_review_result"
+    printf 'Fix attempts: %s\n' "$fix_attempts"
+    printf 'FEATURE_ANALYSIS_RESULT: %s\n' "$(summary_value "FEATURE_ANALYSIS_RESULT" "$pass_dir/analysis-summary.md")"
+    printf 'FEATURE_TARGET: %s\n' "$(summary_value "FEATURE_TARGET" "$pass_dir/analysis-summary.md")"
+    printf 'FEATURE_ROADMAP_SECTION: %s\n' "$(summary_value "FEATURE_ROADMAP_SECTION" "$pass_dir/analysis-summary.md")"
+    printf 'FEATURE_FLOW_STAGE: %s\n' "$(summary_value "FEATURE_FLOW_STAGE" "$pass_dir/analysis-summary.md")"
+    printf 'FEATURE_PLAN_RESULT: %s\n' "$(summary_value "FEATURE_PLAN_RESULT" "$pass_dir/plan-summary.md")"
+    printf 'FEATURE_BUILD_RESULT: %s\n' "$(summary_value "FEATURE_BUILD_RESULT" "$pass_dir/build-summary.md")"
+    printf 'FEATURE_REVIEW_RESULT: %s\n' "$final_review_result"
+    if [[ -s "$pass_dir/fix-${fix_attempts}-summary.md" ]]; then
+      printf 'FEATURE_FIX_RESULT: %s\n' "$(summary_value "FEATURE_FIX_RESULT" "$pass_dir/fix-${fix_attempts}-summary.md")"
+    else
+      printf 'FEATURE_FIX_RESULT: not_run\n'
+    fi
+    printf 'FEATURE_NEXT_SIGNAL: %s\n' "$(summary_value "FEATURE_NEXT_SIGNAL" "$final_review_summary")"
+    printf '\n## Artifact Paths\n\n'
+    printf -- '- Analysis prompt: %s\n' "$pass_dir/analysis-prompt.md"
+    printf -- '- Analysis summary: %s\n' "$pass_dir/analysis-summary.md"
+    printf -- '- Plan prompt: %s\n' "$pass_dir/plan-prompt.md"
+    printf -- '- Plan summary: %s\n' "$pass_dir/plan-summary.md"
+    printf -- '- Build prompt: %s\n' "$pass_dir/build-prompt.md"
+    printf -- '- Build summary: %s\n' "$pass_dir/build-summary.md"
+    printf -- '- Current diff: %s\n' "$pass_dir/current-diff.patch"
+    printf -- '- Current status: %s\n' "$pass_dir/current-status.txt"
+    printf -- '- Test evidence: %s\n' "$pass_dir/test-evidence.md"
+    printf '\n## Feature Request\n\n'
+    cat "$pass_dir/feature-request.md"
+    printf '\n## Analysis Summary\n\n'
+    cat "$pass_dir/analysis-summary.md"
+    printf '\n## Plan Summary\n\n'
+    cat "$pass_dir/plan-summary.md"
+    printf '\n## Build Summary\n\n'
+    cat "$pass_dir/build-summary.md"
+    local file
+    for file in "$pass_dir"/review-*-summary.md "$pass_dir"/fix-*-summary.md; do
+      [[ -s "$file" ]] || continue
+      printf '\n## %s\n\n' "$(basename "$file" .md)"
+      cat "$file"
+    done
+  } > "$pass_dir/summary.md"
+}
+
+update_latest_summary() {
+  local pass_files
+  mapfile -t pass_files < <(find "$RUN_DIR" -maxdepth 2 -type f -name summary.md 2>/dev/null | sort -V)
+  {
+    printf '# Codex Feature Loop Summary\n\n'
+    printf 'Run: %s\n' "$RUN_ID"
+    printf 'Run directory: %s\n' "$RUN_DIR"
+    printf 'Roadmap: %s\n' "$ROADMAP_FILE"
+    printf 'Memory: %s\n' "$MEMORY_FILE"
+    printf 'Codex reasoning effort: %s\n' "$CODEX_REASONING_EFFORT"
+    printf 'Dry run: %s\n' "$DRY_RUN"
+    printf 'Updated: %s\n\n' "$(date -Is)"
+    printf '## Passes\n\n'
+    local file pass
+    for file in "${pass_files[@]}"; do
+      pass="$(basename "$(dirname "$file")")"
+      printf -- '- %s: summary=%s\n' "$pass" "$file"
+    done
+    printf '\n## How To Review\n\n'
+    printf -- '- Start with the newest pass summary, then inspect current-diff.patch and test-evidence.md.\n'
+    printf -- '- Each approved pass should implement one roadmap feature slice.\n'
+    printf -- '- Memory stores compact pass signals only; it intentionally omits raw prompts and diffs.\n'
+  } > "$LATEST_SUMMARY"
+}
+
+require_loop_files
+ensure_memory
+
+end_feature=$((START_FEATURE + MAX_FEATURES - 1))
+
+printf 'Feature loop run directory: %s\n' "$RUN_DIR"
+printf 'Roadmap: %s\n' "$ROADMAP_FILE"
+printf 'Memory: %s\n' "$MEMORY_FILE"
+printf 'Codex reasoning effort: %s\n' "$CODEX_REASONING_EFFORT"
+printf 'Dry run: %s\n' "$DRY_RUN"
+printf 'Git auto-commit: %s\n' "$FEATURE_LOOP_AUTO_COMMIT"
+printf 'Git auto-push: %s\n' "$FEATURE_LOOP_AUTO_PUSH"
+printf 'Git push target: %s/%s\n' "$FEATURE_LOOP_GIT_REMOTE" "$CURRENT_GIT_BRANCH"
+printf 'Latest rollup: %s\n' "$LATEST_SUMMARY"
+
+for i in $(seq "$START_FEATURE" "$end_feature"); do
+  pass_dir="$RUN_DIR/feature-${i}"
+  mkdir -p "$pass_dir"
+  started="$(date -Is)"
+  export FEATURE_LOOP_RUN_ID="$RUN_ID"
+  export FEATURE_LOOP_PASS="$i"
+
+  write_feature_request "$i" "$pass_dir/feature-request.md"
+
+  printf '\n=== Analyze feature %s/%s ===\n' "$i" "$end_feature"
+  write_prompt analyze "$pass_dir/analysis-prompt.md" "$pass_dir"
+  if run_codex_phase analyze "$pass_dir/analysis-summary.md" "$pass_dir/analysis-prompt.md"; then
+    analysis_exit=0
+  else
+    analysis_exit=$?
+  fi
+  printf 'Analysis phase exit: %s\n' "$analysis_exit"
+
+  analysis_result="$(summary_value "FEATURE_ANALYSIS_RESULT" "$pass_dir/analysis-summary.md")"
+  if [[ "$analysis_result" == "feature_selected" ]]; then
+    printf '\n=== Plan feature %s/%s ===\n' "$i" "$end_feature"
+    write_prompt plan "$pass_dir/plan-prompt.md" "$pass_dir"
+    if run_codex_phase plan "$pass_dir/plan-summary.md" "$pass_dir/plan-prompt.md"; then
+      plan_exit=0
+    else
+      plan_exit=$?
+    fi
+  else
+    plan_exit=99
+    write_skipped_summary plan "$pass_dir/plan-summary.md" "Analysis did not return FEATURE_ANALYSIS_RESULT: feature_selected."
+  fi
+  printf 'Plan phase exit: %s\n' "$plan_exit"
+
+  plan_result="$(summary_value "FEATURE_PLAN_RESULT" "$pass_dir/plan-summary.md")"
+  if [[ "$plan_result" == "planned" ]]; then
+    printf '\n=== Build feature %s/%s ===\n' "$i" "$end_feature"
+    write_prompt build "$pass_dir/build-prompt.md" "$pass_dir"
+    if run_codex_phase build "$pass_dir/build-summary.md" "$pass_dir/build-prompt.md"; then
+      build_exit=0
+    else
+      build_exit=$?
+    fi
+  else
+    build_exit=99
+    write_skipped_summary build "$pass_dir/build-summary.md" "Plan did not return FEATURE_PLAN_RESULT: planned."
+  fi
+  printf 'Build phase exit: %s\n' "$build_exit"
+
+  write_current_diff "$pass_dir"
+  write_test_evidence "$pass_dir/test-evidence.md" "$pass_dir/build-summary.md"
+
+  build_result="$(summary_value "FEATURE_BUILD_RESULT" "$pass_dir/build-summary.md")"
+  if [[ "$build_result" == "blocked" ]]; then
+    write_skipped_summary review "$pass_dir/review-1-summary.md" "Build phase was blocked."
+    final_review_summary="$pass_dir/review-1-summary.md"
+    final_review_result="blocked"
+    fix_attempts=0
+  else
+    review_attempt=1
+    fix_attempts=0
+    while true; do
+      printf '\n=== Review feature %s/%s attempt %s ===\n' "$i" "$end_feature" "$review_attempt"
+      write_prompt review "$pass_dir/review-${review_attempt}-prompt.md" "$pass_dir"
+      if run_codex_phase review "$pass_dir/review-${review_attempt}-summary.md" "$pass_dir/review-${review_attempt}-prompt.md" "$review_attempt"; then
+        review_exit=0
+      else
+        review_exit=$?
+      fi
+      printf 'Review phase exit: %s\n' "$review_exit"
+
+      final_review_summary="$pass_dir/review-${review_attempt}-summary.md"
+      final_review_result="$(summary_value "FEATURE_REVIEW_RESULT" "$final_review_summary")"
+      [[ -n "$final_review_result" ]] || final_review_result="blocked"
+
+      if [[ "$final_review_result" != "changes_requested" ]]; then
+        break
+      fi
+      if [[ "$fix_attempts" -ge "$MAX_FIX_ATTEMPTS" ]]; then
+        final_review_result="blocked"
+        break
+      fi
+
+      fix_attempts=$((fix_attempts + 1))
+      printf '\n=== Fix feature %s/%s attempt %s ===\n' "$i" "$end_feature" "$fix_attempts"
+      write_prompt fix "$pass_dir/fix-${fix_attempts}-prompt.md" "$pass_dir"
+      if run_codex_phase fix "$pass_dir/fix-${fix_attempts}-summary.md" "$pass_dir/fix-${fix_attempts}-prompt.md" "$fix_attempts"; then
+        fix_exit=0
+      else
+        fix_exit=$?
+      fi
+      printf 'Fix phase exit: %s\n' "$fix_exit"
+
+      write_current_diff "$pass_dir"
+      write_test_evidence "$pass_dir/test-evidence.md" "$pass_dir/build-summary.md" "$pass_dir/fix-${fix_attempts}-summary.md"
+      review_attempt=$((review_attempt + 1))
+    done
+  fi
+
+  if [[ "$fix_attempts" -eq 0 && ! -s "$pass_dir/fix-0-summary.md" ]]; then
+    write_skipped_summary fix "$pass_dir/fix-0-summary.md" "No fix phase was needed."
+  fi
+
+  ended="$(date -Is)"
+  write_pass_summary "$pass_dir" "$i" "$started" "$ended" "$final_review_summary" "$final_review_result" "$fix_attempts"
+  update_memory "$i" "$pass_dir" "$pass_dir/build-summary.md" "$pass_dir/summary.md"
+  update_latest_summary
+  finalize_git_for_pass "$i" "$pass_dir" "$final_review_result"
+
+  printf '\nFeature pass %s final review result: %s\n' "$i" "$final_review_result"
+  printf 'Feature summary: %s\n' "$pass_dir/summary.md"
+  printf 'Latest rollup: %s\n' "$LATEST_SUMMARY"
   git status --short
 done
