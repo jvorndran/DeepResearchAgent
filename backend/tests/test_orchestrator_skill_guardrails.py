@@ -130,7 +130,8 @@ def test_orchestrator_skills_do_not_advance_empty_chart_heavy_handoffs():
 
     assert "generally expect 6-8 distinct chart IDs" in writer_skill
     assert "Do not call technical-writer on an empty chart map" in writer_skill
-    assert "For chart-heavy prompts, make exactly one QA-driven" in writer_skill
+    assert "do not call technical-writer on those artifacts" in writer_skill
+    assert "unless a later validated quant handoff is present" in writer_skill
     assert "6-8 distinct renderable charts" in broad_skill
 
 

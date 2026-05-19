@@ -1,4 +1,5 @@
 """Tool-boundary middleware and guarded local backend for orchestrator."""
+from dataclasses import dataclass
 import json
 import re
 from pathlib import Path
@@ -57,6 +58,16 @@ def _tool_name(tool: Any) -> str | None:
 
 def _tool_call_name(tool_call: Any) -> str | None:
     return tool_call_name(tool_call)
+
+
+@dataclass(frozen=True)
+class _QuantHandoffRoutingFailure:
+    """Latest quant handoff state that must route back upstream before writing."""
+
+    payload: dict[str, Any]
+    failure_category: str
+    reason: str
+    required_fixes: tuple[str, ...]
 
 
 class HideTodoToolMiddleware(AgentMiddleware):
@@ -154,12 +165,12 @@ class OrchestratorToolBoundaryMiddleware(AgentMiddleware):
         return ToolMessage(
             content=(
                 "Blocked repeat quant-developer delegation. The prior quant-developer "
-                "task already returned a failed guardrail handoff. Proceed to "
-                "technical-writer with the returned paths unless the latest QA "
-                "required_fixes name missing, stale, or invalid computed artifacts. "
+                "task already returned a failed guardrail handoff. Do not delegate "
+                "technical-writer from failed or structurally invalid quant artifacts. "
                 "A QA-driven quant-developer recovery must be grounded in structured "
-                "QA required_fixes; if it is still blocked, stop with a concise "
-                "QA-rejected status instead of cycling writer and QA again."
+                "QA required_fixes that name missing, stale, or invalid computed "
+                "artifacts; if it is still blocked, stop with a concise failed "
+                "status naming quant-developer as the required recovery owner."
             ),
             name="task",
             tool_call_id=self._tool_call_id(request.tool_call),
@@ -192,10 +203,8 @@ class OrchestratorToolBoundaryMiddleware(AgentMiddleware):
                 "agent may only call `emit_chat_message` and `task`; it must not "
                 "inspect, write, or execute artifacts directly. Delegate to the "
                 "appropriate specialist, or if quant-developer already returned a "
-                "failed guardrail handoff, proceed to technical-writer with the "
-                "returned `charts_json`, `execution_summary_json`, and "
-                "`evidence_bundle_json` paths and require explicit caveats about "
-                "missing quantitative artifacts."
+                "failed or invalid artifact handoff, stop with a concise failed "
+                "status naming quant-developer as the required recovery owner."
             ),
             name=tool_name,
             tool_call_id=self._tool_call_id(request.tool_call),
@@ -251,6 +260,36 @@ class OrchestratorToolBoundaryMiddleware(AgentMiddleware):
             status="error",
         )
 
+    def _blocked_downstream_quant_handoff_message(
+        self,
+        request: ToolCallRequest,
+        failure: _QuantHandoffRoutingFailure,
+        subagent_type: str,
+    ) -> ToolMessage:
+        payload = failure.payload
+        blocked_payload: dict[str, Any] = {
+            "status": "failed",
+            "blocked_subagent": subagent_type,
+            "failure_category": failure.failure_category,
+            "required_upstream": "quant-developer",
+            "reason": failure.reason,
+            "required_fixes": list(failure.required_fixes),
+            "charts_json": str(payload.get("charts_json") or ""),
+            "execution_summary_json": str(payload.get("execution_summary_json") or ""),
+            "evidence_bundle_json": str(payload.get("evidence_bundle_json") or ""),
+            "chart_ids": self._string_list(payload.get("chart_ids")),
+        }
+        for key in ("failure_stage", "error", "methods_used"):
+            value = payload.get(key)
+            if value:
+                blocked_payload[key] = value
+        return ToolMessage(
+            content=json.dumps(blocked_payload, sort_keys=True),
+            name="task",
+            tool_call_id=self._tool_call_id(request.tool_call),
+            status="error",
+        )
+
     @staticmethod
     def _has_failed_quant_guardrail_handoff(messages: list[Any]) -> bool:
         for message in messages:
@@ -273,6 +312,58 @@ class OrchestratorToolBoundaryMiddleware(AgentMiddleware):
             ):
                 return True
         return False
+
+    @classmethod
+    def _latest_quant_handoff_payload(cls, messages: list[Any]) -> dict[str, Any] | None:
+        for message in reversed(messages):
+            content = str(getattr(message, "content", "") or "")
+            if payload := cls._quant_handoff_payload_from_content(content):
+                return payload
+        return None
+
+    @staticmethod
+    def _quant_handoff_failed(payload: dict[str, Any], summary: Any) -> bool:
+        return payload.get("status") == "failed" or (
+            isinstance(summary, dict) and summary.get("status") == "failed"
+        )
+
+    def _latest_quant_handoff_routing_failure(
+        self,
+        messages: list[Any],
+    ) -> _QuantHandoffRoutingFailure | None:
+        payload = self._latest_quant_handoff_payload(messages)
+        if payload is None or self._valid_quant_handoff_payload(payload):
+            return None
+
+        summary = self._load_json_file(Path(payload["execution_summary_json"]))
+        if self._quant_handoff_failed(payload, summary):
+            reason = (
+                "Blocked downstream delegation because the latest quant-developer "
+                "handoff is failed."
+            )
+            failure_category = "quant_artifact_handoff_failed"
+        else:
+            reason = (
+                "Blocked downstream delegation because the latest quant-developer "
+                "handoff is structurally invalid or its artifacts do not validate."
+            )
+            failure_category = "quant_artifact_handoff_invalid"
+
+        if isinstance(summary, dict):
+            for key in ("failure_stage", "error", "methods_used"):
+                if key not in payload and summary.get(key):
+                    payload[key] = summary[key]
+
+        return _QuantHandoffRoutingFailure(
+            payload=payload,
+            failure_category=failure_category,
+            reason=reason,
+            required_fixes=(
+                "Re-delegate to quant-developer to regenerate a valid compact handoff "
+                "with charts_json, execution_summary_json, evidence_bundle_json, and "
+                "nonempty chart_ids before technical-writer or quality-analyst.",
+            ),
+        )
 
     @classmethod
     def _has_successful_quant_artifact_handoff(cls, messages: list[Any]) -> bool:
@@ -367,6 +458,17 @@ class OrchestratorToolBoundaryMiddleware(AgentMiddleware):
                 request,
                 subagent_type,
                 required_upstream,
+            )
+        if (
+            subagent_type in {"technical-writer", "quality-analyst"}
+            and (
+                failure := self._latest_quant_handoff_routing_failure(messages)
+            )
+        ):
+            return self._blocked_downstream_quant_handoff_message(
+                request,
+                failure,
+                subagent_type,
             )
         if (
             subagent_type == "quant-developer"
@@ -501,6 +603,9 @@ class OrchestratorToolBoundaryMiddleware(AgentMiddleware):
         return ids
 
     def _valid_quant_handoff_payload(self, payload: dict[str, Any]) -> bool:
+        if payload.get("status") == "failed":
+            return False
+
         charts_path = Path(payload["charts_json"])
         summary_path = Path(payload["execution_summary_json"])
         evidence_bundle_path = Path(payload["evidence_bundle_json"])
@@ -515,11 +620,14 @@ class OrchestratorToolBoundaryMiddleware(AgentMiddleware):
             return False
 
         payload_chart_ids = self._string_list(payload.get("chart_ids"))
+        if not payload_chart_ids:
+            return False
+
         summary_chart_ids = self._string_list(summary.get("chart_ids"))
         if payload_chart_ids and summary_chart_ids and payload_chart_ids != summary_chart_ids:
             return False
 
-        required_chart_ids = payload_chart_ids or summary_chart_ids or available_chart_ids
+        required_chart_ids = payload_chart_ids
         available_chart_id_set = set(available_chart_ids)
         if any(chart_id not in available_chart_id_set for chart_id in required_chart_ids):
             return False

@@ -28,7 +28,9 @@ A usable ordinary quant handoff does not need one chart for every user-requested
 
 For explicit chart, chart-pack, dashboard, visual-evidence, or chart-validation prompts, require a nonempty chart handoff and generally expect 6-8 distinct chart IDs. Do not call technical-writer on an empty chart map for those prompts.
 
-If the quant handoff has `"status":"failed"` or says quant-developer exceeded its script-write retry budget, do not immediately re-run quant-developer. For ordinary non-chart-heavy prompts, continue to technical-writer only when the returned `charts_json` and `execution_summary_json` paths contain usable artifacts and require explicit caveats about missing local quant artifacts. For chart-heavy prompts, stop after emitting a concise QA-rejected status that names quant-developer as the required recovery owner.
+If the latest quant handoff has `"status":"failed"` or says quant-developer exceeded its script-write retry budget, do not call technical-writer on those artifacts. Stop with a concise failed status that names `quant-developer` as `required_upstream`, unless a later validated quant handoff is present.
+
+If the latest quant handoff contains `charts_json`, `execution_summary_json`, and `evidence_bundle_json` paths but the compact handoff is structurally invalid, do not call technical-writer. Route repair back to `quant-developer` so it regenerates a valid evidence bundle and nonempty `chart_ids` before writing.
 
 If `chart_ids` is empty, treat the quant handoff as incomplete rather than reusable. For chart-heavy prompts, make exactly one QA-driven quant-developer recovery delegation with the original `data_files` map and `schema_summary` before technical-writer. If that recovery delegation is blocked because the quant retry budget is already exhausted, stop after emitting a concise QA-rejected status; do not call technical-writer or quality-analyst again on the same failed quant artifacts.
 

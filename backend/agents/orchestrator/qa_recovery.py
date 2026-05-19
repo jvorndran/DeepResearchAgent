@@ -16,6 +16,11 @@ _PIPELINE_REPAIR_OWNER_ALIASES = {
     "quantitative-developer": "quant-developer",
 }
 
+_PRE_WRITER_QUANT_FAILURE_CATEGORIES = {
+    "quant_artifact_handoff_failed",
+    "quant_artifact_handoff_invalid",
+}
+
 
 @dataclass(frozen=True)
 class QualityDecision:
@@ -192,10 +197,6 @@ def _decision_from_payload(payload: object) -> QualityDecision | None:
     if status not in {"approved", "rejected", "failed"}:
         return None
 
-    report_path = payload.get("report_path") or payload.get("report_json")
-    if not isinstance(report_path, str) or not report_path.endswith("/report.json"):
-        return None
-
     reason = str(payload.get("reason") or "")
     required_fixes = _parse_required_fixes(payload.get("required_fixes"))
     required_upstream = _canonical_repair_owner(payload.get("required_upstream"))
@@ -204,6 +205,21 @@ def _decision_from_payload(payload: object) -> QualityDecision | None:
         failure_category = None
     else:
         failure_category = failure_category.strip() or None
+
+    report_path = payload.get("report_path") or payload.get("report_json")
+    is_report_decision = isinstance(report_path, str) and report_path.endswith(
+        "/report.json"
+    )
+    is_pre_writer_quant_route = (
+        status == "failed"
+        and payload.get("blocked_subagent") in {"technical-writer", "quality-analyst"}
+        and required_upstream == "quant-developer"
+        and failure_category in _PRE_WRITER_QUANT_FAILURE_CATEGORIES
+    )
+    if not is_report_decision:
+        if not is_pre_writer_quant_route:
+            return None
+        report_path = ""
 
     if status == "rejected" and not required_fixes:
         return None

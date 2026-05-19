@@ -541,3 +541,13 @@ agent flow it advanced.
   - Tests: cd backend && uv run pytest tests/test_regression_benchmarks.py; cd backend && uv run pytest tests/test_report_chart_audit.py tests/test_technical_writer_flow_boundaries.py -k "chart_handoff or artifact_fact or validate_research_report_file"; cd backend && uv run pytest tests/test_quality_analyst_subagent.py -k "valuation or evidence_bundle or chart_handoff or artifact_fact"; cd backend && uv run ruff check tests/test_regression_benchmarks.py
   - Implementation: Added a typed fixture benchmark harness that reuses existing report, chart, evidence bundle, and QA gates for one passing case and two recurring failure modes.
   - Review: no blocking findings; deterministic benchmark foundation matches the planned Priority 8 slice and focused tests pass
+
+- [x] 2026-05-19T18:51:13-04:00 - Pre-writer quant artifact failure routing
+  - Roadmap section: Priority 9: Earlier Failure Routing
+  - Flow stage: QA
+  - Run/pass: 20260519-132826 / 8
+  - Summary: /home/vorndranj/projects/DeepResearchAgent/logs/feature-loop/runs/20260519-132826/feature-8/summary.md
+  - Files changed: backend/agents/orchestrator/middleware.py, backend/skills/orchestrator/technical-writer-handoff/SKILL.md, backend/tests/test_orchestrator_middleware.py, backend/tests/test_orchestrator_skill_guardrails.py
+  - Tests: uv run pytest tests/test_orchestrator_middleware.py -k "quant_handoff or writer_after or qa_requested_quant_fix or required_upstream"; uv run pytest tests/test_orchestrator_middleware.py; uv run pytest tests/test_orchestrator_skill_guardrails.py (fails on unrelated unchanged quant skill assertions); uv run pytest tests/test_orchestrator_skill_guardrails.py -k "orchestrator_skills_do_not_advance_empty_chart_heavy_handoffs"; uv run ruff check agents/orchestrator/middleware.py tests/test_orchestrator_middleware.py tests/test_orchestrator_skill_guardrails.py; git diff --check
+  - Implementation: Added deterministic latest-quant-handoff routing that stops writer delegation on failed or invalid quant artifacts and routes repair to quant-developer.
+  - Review: No blocking findings; pre-writer quant failure routing is implemented and focused tests/ruff/diff-check passed.

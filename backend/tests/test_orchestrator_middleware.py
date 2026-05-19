@@ -487,6 +487,423 @@ def test_orchestrator_tool_boundary_allows_specialist_pipeline_tasks():
     assert response.content == "delegated"
 
 
+def test_orchestrator_tool_boundary_blocks_writer_after_failed_quant_handoff(tmp_path):
+    middleware = OrchestratorToolBoundaryMiddleware()
+    summary_path = tmp_path / "execution_summary.json"
+    charts_path = tmp_path / "charts.json"
+    evidence_bundle_path = tmp_path / "evidence_bundle.json"
+    summary_path.write_text(
+        json.dumps(
+            {
+                "status": "failed",
+                "failure_stage": "quant_invalid_task_handoff",
+                "error": "quant-developer task returned no valid artifact handoff",
+                "chart_ids": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    charts_path.write_text("[]", encoding="utf-8")
+    evidence_bundle_path.write_text("{}", encoding="utf-8")
+    request = SimpleNamespace(
+        tool_call={
+            "name": "task",
+            "id": "call-writer-failed-quant",
+            "args": {
+                "subagent_type": "technical-writer",
+                "description": "Draft from the latest quant artifacts.",
+            },
+        },
+        state={
+            "messages": [
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "status": "failed",
+                            "charts_json": str(charts_path),
+                            "execution_summary_json": str(summary_path),
+                            "evidence_bundle_json": str(evidence_bundle_path),
+                            "chart_ids": [],
+                        }
+                    )
+                )
+            ]
+        },
+    )
+
+    response = middleware.wrap_tool_call(
+        request,
+        lambda req: (_ for _ in ()).throw(AssertionError("handler should not run")),
+    )
+
+    blocked = json.loads(response.content)
+    assert response.tool_call_id == "call-writer-failed-quant"
+    assert response.status == "error"
+    assert blocked["status"] == "failed"
+    assert blocked["failure_category"] == "quant_artifact_handoff_failed"
+    assert blocked["required_upstream"] == "quant-developer"
+    assert blocked["charts_json"] == str(charts_path)
+    assert blocked["execution_summary_json"] == str(summary_path)
+    assert blocked["evidence_bundle_json"] == str(evidence_bundle_path)
+    assert blocked["chart_ids"] == []
+
+
+def test_orchestrator_tool_boundary_blocks_writer_when_payload_status_failed_with_valid_artifacts(
+    tmp_path,
+):
+    middleware = OrchestratorToolBoundaryMiddleware()
+    summary_path = tmp_path / "execution_summary.json"
+    charts_path = tmp_path / "charts.json"
+    evidence_bundle_path = tmp_path / "evidence_bundle.json"
+    charts_path.write_text(
+        json.dumps({"macro_signal": {"id": "macro_signal", "data": [{"x": 1}]}}),
+        encoding="utf-8",
+    )
+    summary_path.write_text(
+        json.dumps({"status": "success", "chart_ids": ["macro_signal"]}),
+        encoding="utf-8",
+    )
+    _write_valid_evidence_bundle(evidence_bundle_path, ["macro_signal"])
+    request = SimpleNamespace(
+        tool_call={
+            "name": "task",
+            "id": "call-writer-failed-status-valid-artifacts",
+            "args": {
+                "subagent_type": "technical-writer",
+                "description": "Draft from the latest quant artifacts.",
+            },
+        },
+        state={
+            "messages": [
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "status": "failed",
+                            "charts_json": str(charts_path),
+                            "execution_summary_json": str(summary_path),
+                            "evidence_bundle_json": str(evidence_bundle_path),
+                            "chart_ids": ["macro_signal"],
+                        }
+                    )
+                )
+            ]
+        },
+    )
+
+    response = middleware.wrap_tool_call(
+        request,
+        lambda req: (_ for _ in ()).throw(AssertionError("handler should not run")),
+    )
+
+    blocked = json.loads(response.content)
+    assert response.tool_call_id == "call-writer-failed-status-valid-artifacts"
+    assert response.status == "error"
+    assert blocked["status"] == "failed"
+    assert blocked["blocked_subagent"] == "technical-writer"
+    assert blocked["failure_category"] == "quant_artifact_handoff_failed"
+    assert blocked["required_upstream"] == "quant-developer"
+    assert blocked["chart_ids"] == ["macro_signal"]
+
+
+def test_orchestrator_tool_boundary_blocks_writer_when_payload_chart_ids_empty_with_valid_artifacts(
+    tmp_path,
+):
+    middleware = OrchestratorToolBoundaryMiddleware()
+    summary_path = tmp_path / "execution_summary.json"
+    charts_path = tmp_path / "charts.json"
+    evidence_bundle_path = tmp_path / "evidence_bundle.json"
+    charts_path.write_text(
+        json.dumps({"macro_signal": {"id": "macro_signal", "data": [{"x": 1}]}}),
+        encoding="utf-8",
+    )
+    summary_path.write_text(
+        json.dumps({"status": "success", "chart_ids": ["macro_signal"]}),
+        encoding="utf-8",
+    )
+    _write_valid_evidence_bundle(evidence_bundle_path, ["macro_signal"])
+    request = SimpleNamespace(
+        tool_call={
+            "name": "task",
+            "id": "call-writer-empty-payload-chart-ids",
+            "args": {
+                "subagent_type": "technical-writer",
+                "description": "Draft from the latest quant artifacts.",
+            },
+        },
+        state={
+            "messages": [
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "charts_json": str(charts_path),
+                            "execution_summary_json": str(summary_path),
+                            "evidence_bundle_json": str(evidence_bundle_path),
+                            "chart_ids": [],
+                        }
+                    )
+                )
+            ]
+        },
+    )
+
+    response = middleware.wrap_tool_call(
+        request,
+        lambda req: (_ for _ in ()).throw(AssertionError("handler should not run")),
+    )
+
+    blocked = json.loads(response.content)
+    assert response.tool_call_id == "call-writer-empty-payload-chart-ids"
+    assert response.status == "error"
+    assert blocked["status"] == "failed"
+    assert blocked["blocked_subagent"] == "technical-writer"
+    assert blocked["failure_category"] == "quant_artifact_handoff_invalid"
+    assert blocked["required_upstream"] == "quant-developer"
+    assert blocked["chart_ids"] == []
+
+
+def test_orchestrator_tool_boundary_allows_quant_repair_after_writer_quant_block(
+    tmp_path,
+):
+    middleware = OrchestratorToolBoundaryMiddleware()
+    summary_path = tmp_path / "execution_summary.json"
+    charts_path = tmp_path / "charts.json"
+    evidence_bundle_path = tmp_path / "evidence_bundle.json"
+    summary_path.write_text(
+        json.dumps(
+            {
+                "status": "failed",
+                "failure_stage": "quant_invalid_task_handoff",
+                "error": "quant-developer task returned no valid artifact handoff",
+                "chart_ids": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    charts_path.write_text("[]", encoding="utf-8")
+    evidence_bundle_path.write_text("{}", encoding="utf-8")
+    messages = [
+        AIMessage(
+            content=json.dumps(
+                {
+                    "status": "failed",
+                    "charts_json": str(charts_path),
+                    "execution_summary_json": str(summary_path),
+                    "evidence_bundle_json": str(evidence_bundle_path),
+                    "chart_ids": [],
+                }
+            )
+        )
+    ]
+    writer_request = SimpleNamespace(
+        tool_call={
+            "name": "task",
+            "id": "call-writer-failed-quant",
+            "args": {
+                "subagent_type": "technical-writer",
+                "description": "Draft from the latest quant artifacts.",
+            },
+        },
+        state={"messages": messages},
+    )
+
+    writer_response = middleware.wrap_tool_call(
+        writer_request,
+        lambda req: (_ for _ in ()).throw(AssertionError("handler should not run")),
+    )
+    blocked_payload = json.loads(writer_response.content)
+    messages.append(AIMessage(content=writer_response.content))
+
+    assert blocked_payload["required_upstream"] == "quant-developer"
+    assert blocked_payload["failure_category"] == "quant_artifact_handoff_failed"
+
+    wrong_owner_request = SimpleNamespace(
+        tool_call={
+            "name": "task",
+            "id": "call-wrong-owner-after-writer-block",
+            "args": {
+                "subagent_type": "data-engineer",
+                "description": "Repair the failed quant artifact handoff.",
+            },
+        },
+        state={"messages": messages},
+    )
+    wrong_owner_response = middleware.wrap_tool_call(
+        wrong_owner_request,
+        lambda req: (_ for _ in ()).throw(AssertionError("handler should not run")),
+    )
+
+    assert "Blocked QA recovery delegation to `data-engineer`" in wrong_owner_response.content
+    assert "required_upstream=`quant-developer`" in wrong_owner_response.content
+
+    qa_request = SimpleNamespace(
+        tool_call={
+            "name": "task",
+            "id": "call-qa-after-writer-block",
+            "args": {
+                "subagent_type": "quality-analyst",
+                "description": "Review the failed quant artifact handoff.",
+            },
+        },
+        state={"messages": messages},
+    )
+    qa_response = middleware.wrap_tool_call(
+        qa_request,
+        lambda req: (_ for _ in ()).throw(AssertionError("handler should not run")),
+    )
+    qa_blocked = json.loads(qa_response.content)
+
+    assert qa_response.tool_call_id == "call-qa-after-writer-block"
+    assert qa_response.status == "error"
+    assert qa_blocked["blocked_subagent"] == "quality-analyst"
+    assert qa_blocked["failure_category"] == "quant_artifact_handoff_failed"
+    assert qa_blocked["required_upstream"] == "quant-developer"
+
+    quant_repair_request = SimpleNamespace(
+        tool_call={
+            "name": "task",
+            "id": "call-quant-repair-after-writer-block",
+            "args": {
+                "subagent_type": "quant-developer",
+                "description": "Repair the failed handoff using the listed fields.",
+            },
+        },
+        state={"messages": messages},
+    )
+    quant_response = middleware.wrap_tool_call(
+        quant_repair_request,
+        lambda req: SimpleNamespace(content="delegated", status="success"),
+    )
+
+    assert quant_response.content == "delegated"
+
+
+def test_orchestrator_tool_boundary_blocks_writer_after_invalid_latest_evidence_bundle(
+    tmp_path,
+):
+    middleware = OrchestratorToolBoundaryMiddleware()
+    summary_path = tmp_path / "execution_summary.json"
+    charts_path = tmp_path / "charts.json"
+    evidence_bundle_path = tmp_path / "evidence_bundle.json"
+    charts_path.write_text(
+        json.dumps({"macro_signal": {"id": "macro_signal", "data": [{"x": 1}]}}),
+        encoding="utf-8",
+    )
+    summary_path.write_text(
+        json.dumps({"chart_ids": ["macro_signal"]}),
+        encoding="utf-8",
+    )
+    evidence_bundle_path.write_text(
+        json.dumps({"bundle_type": "quant_evidence_bundle"}),
+        encoding="utf-8",
+    )
+    request = SimpleNamespace(
+        tool_call={
+            "name": "task",
+            "id": "call-writer-invalid-bundle",
+            "args": {
+                "subagent_type": "technical-writer",
+                "description": "Draft from the latest quant artifacts.",
+            },
+        },
+        state={
+            "messages": [
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "charts_json": str(charts_path),
+                            "execution_summary_json": str(summary_path),
+                            "evidence_bundle_json": str(evidence_bundle_path),
+                            "chart_ids": ["macro_signal"],
+                        }
+                    )
+                )
+            ]
+        },
+    )
+
+    response = middleware.wrap_tool_call(
+        request,
+        lambda req: (_ for _ in ()).throw(AssertionError("handler should not run")),
+    )
+
+    blocked = json.loads(response.content)
+    assert response.tool_call_id == "call-writer-invalid-bundle"
+    assert response.status == "error"
+    assert blocked["failure_category"] == "quant_artifact_handoff_invalid"
+    assert blocked["required_upstream"] == "quant-developer"
+    assert blocked["chart_ids"] == ["macro_signal"]
+    assert "structurally invalid" in blocked["reason"]
+
+
+def test_orchestrator_tool_boundary_allows_writer_after_later_valid_quant_handoff(
+    tmp_path,
+):
+    middleware = OrchestratorToolBoundaryMiddleware()
+    stale_summary_path = tmp_path / "stale_execution_summary.json"
+    stale_charts_path = tmp_path / "stale_charts.json"
+    stale_evidence_bundle_path = tmp_path / "stale_evidence_bundle.json"
+    stale_summary_path.write_text('{"status":"failed","chart_ids":[]}', encoding="utf-8")
+    stale_charts_path.write_text("[]", encoding="utf-8")
+    stale_evidence_bundle_path.write_text("{}", encoding="utf-8")
+
+    output_dir = tmp_path / "valid"
+    output_dir.mkdir()
+    summary_path = output_dir / "execution_summary.json"
+    charts_path = output_dir / "charts.json"
+    evidence_bundle_path = output_dir / "evidence_bundle.json"
+    charts_path.write_text(
+        json.dumps({"macro_signal": {"id": "macro_signal", "data": [{"x": 1}]}}),
+        encoding="utf-8",
+    )
+    summary_path.write_text(
+        json.dumps({"chart_ids": ["macro_signal"]}),
+        encoding="utf-8",
+    )
+    _write_valid_evidence_bundle(evidence_bundle_path, ["macro_signal"])
+    request = SimpleNamespace(
+        tool_call={
+            "name": "task",
+            "id": "call-writer-after-valid-quant",
+            "args": {
+                "subagent_type": "technical-writer",
+                "description": "Draft from the repaired quant artifacts.",
+            },
+        },
+        state={
+            "messages": [
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "status": "failed",
+                            "charts_json": str(stale_charts_path),
+                            "execution_summary_json": str(stale_summary_path),
+                            "evidence_bundle_json": str(stale_evidence_bundle_path),
+                            "chart_ids": [],
+                        }
+                    )
+                ),
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "charts_json": str(charts_path),
+                            "execution_summary_json": str(summary_path),
+                            "evidence_bundle_json": str(evidence_bundle_path),
+                            "chart_ids": ["macro_signal"],
+                        }
+                    )
+                ),
+            ]
+        },
+    )
+
+    response = middleware.wrap_tool_call(
+        request,
+        lambda req: SimpleNamespace(content="delegated", status="success"),
+    )
+
+    assert response.content == "delegated"
+
+
 def test_orchestrator_tool_boundary_blocks_filesystem_tool_calls():
     middleware = OrchestratorToolBoundaryMiddleware()
     request = SimpleNamespace(
@@ -541,7 +958,7 @@ def test_orchestrator_tool_boundary_blocks_repeat_quant_after_guardrail_failure(
     assert response.tool_call_id == "call-repeat-quant"
     assert response.status == "error"
     assert "Blocked repeat quant-developer delegation" in response.content
-    assert "Proceed to technical-writer" in response.content
+    assert "Do not delegate technical-writer" in response.content
     assert "QA-driven quant-developer recovery" in response.content
 
 
