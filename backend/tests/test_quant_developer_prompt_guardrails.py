@@ -41,6 +41,9 @@ def test_quant_prompt_requires_analysis_script_not_prebuilt_report_tools():
     assert "raw_value" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "display_value" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "save_quant_outputs(output_dir, charts, execution_summary)" in QUANT_DEVELOPER_SYSTEM_PROMPT
+    assert '"evidence_bundle_json": "outputs/{job_id}/evidence_bundle.json"' in (
+        QUANT_DEVELOPER_SYSTEM_PROMPT
+    )
 
     removed_surfaces = [
         "build_recession_dashboard_artifacts",
@@ -142,6 +145,7 @@ def test_successful_execute_handoff_stops_future_tool_use():
     handoff = (
         '{"charts_json":"outputs/job_123/charts.json",'
         '"execution_summary_json":"outputs/job_123/execution_summary.json",'
+        '"evidence_bundle_json":"outputs/job_123/evidence_bundle.json",'
         '"chart_ids":["trend"]}'
     )
     request = _Request(
@@ -235,6 +239,10 @@ def test_prewrite_failure_handoff_overwrites_prior_quant_artifacts(tmp_path, mon
         json.dumps({"status": "ok", "chart_ids": ["stale_chart"]}),
         encoding="utf-8",
     )
+    (output_dir / "evidence_bundle.json").write_text(
+        json.dumps({"bundle_type": "stale", "charts": [{"chart_id": "stale_chart"}]}),
+        encoding="utf-8",
+    )
     messages = [
         ToolMessage(
             content=f"Blocked invalid prewrite attempt {index}",
@@ -261,12 +269,28 @@ def test_prewrite_failure_handoff_overwrites_prior_quant_artifacts(tmp_path, mon
     saved_summary = json.loads(
         (output_dir / "execution_summary.json").read_text(encoding="utf-8")
     )
+    saved_bundle = json.loads(
+        (output_dir / "evidence_bundle.json").read_text(encoding="utf-8")
+    )
     assert handoff["status"] == "failed"
     assert handoff["chart_ids"] == []
+    assert handoff["evidence_bundle_json"] == str(output_dir / "evidence_bundle.json")
     assert "preserved_prior_artifacts" not in handoff
     assert saved_charts == []
     assert saved_summary["status"] == "failed"
     assert saved_summary["chart_ids"] == []
+    assert saved_summary["evidence_bundle_json"] == str(
+        output_dir / "evidence_bundle.json"
+    )
+    assert saved_bundle["bundle_type"] == "quant_evidence_bundle"
+    assert saved_bundle["charts"] == []
+    assert saved_bundle["validation"]["valid"] is False
+    assert saved_bundle["validation"]["diagnostics"][0]["code"] == (
+        "quant_prewrite_failure"
+    )
+    assert saved_bundle["artifacts"]["evidence_bundle_json"] == str(
+        output_dir / "evidence_bundle.json"
+    )
     assert "preserved_prior_artifacts" not in saved_summary
 
 

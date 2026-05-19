@@ -9,6 +9,7 @@ from ..report_artifacts import chart_marker_ids, load_report_json
 from .fidelity import (
     _approval_failure_metadata,
     _approval_blockers,
+    _load_sibling_evidence_bundle,
     _load_sibling_execution_summary,
 )
 from .utils import _parse_required_fixes, _truncate
@@ -86,8 +87,9 @@ def load_report_for_review(report_path: str) -> str:
 
     Returns:
         JSON string with title, query, executive_summary, markdown excerpt,
-        chart markers, chart ids, data source metadata, and a compact sibling
-        execution_summary.json review packet when present.
+        chart markers, chart ids, data source metadata, compact sibling
+        execution_summary.json metadata, and evidence_bundle.json metadata when
+        present.
     """
     path = Path(report_path)
     if path.name != "report.json":
@@ -145,6 +147,7 @@ def load_report_for_review(report_path: str) -> str:
             "data_sources": data.get("data_sources", []),
             "metadata": data.get("metadata", {}),
             "execution_summary": _load_sibling_execution_summary(path),
+            "evidence_bundle": _load_sibling_evidence_bundle(path),
         }
     )
 

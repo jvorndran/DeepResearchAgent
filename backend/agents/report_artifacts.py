@@ -7,6 +7,10 @@ import re
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
+from .quant_macro_stats.artifacts.evidence_bundle import EvidenceBundle
+
 # Legacy delimiter in older saved reports; stripped on re-save but not written anymore
 # (HTML comments render as literal text under ReactMarkdown without raw HTML).
 AUTO_REPORT_FOOTER_MARKER = "<!-- AUTO_REPORT_DISCLAIMERS -->"
@@ -88,6 +92,34 @@ def load_sibling_execution_summary_json(
     if not isinstance(parsed, dict):
         return None, "execution_summary.json root must be a JSON object"
     return parsed, None
+
+
+def load_sibling_evidence_bundle_json(
+    report_json_path: str | Path,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """
+    Load evidence_bundle.json next to report.json.
+
+    A missing sibling is not an error for static report validation because
+    legacy reports and prose-only runs may not have quantitative bundle
+    artifacts.
+    """
+    path = Path(report_json_path).with_name("evidence_bundle.json")
+    if not path.is_file():
+        return None, None
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        return None, str(exc)
+    except json.JSONDecodeError as exc:
+        return None, f"Invalid evidence_bundle.json: {exc}"
+    if not isinstance(parsed, dict):
+        return None, "evidence_bundle.json root must be a JSON object"
+    try:
+        bundle = EvidenceBundle.model_validate(parsed)
+    except ValidationError as exc:
+        return None, f"Invalid evidence_bundle.json: {exc}"
+    return bundle.model_dump(mode="json", exclude_none=True), None
 
 
 def _unique_string_ids(value: Any) -> list[str]:

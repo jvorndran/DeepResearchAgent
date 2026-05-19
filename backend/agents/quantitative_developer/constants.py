@@ -30,7 +30,12 @@ _MAX_ANALYSIS_SCRIPT_CHARS = 28_000
 # three blocked drafts, so the hard failure trips on the fourth blocked write.
 _MAX_PREWRITE_BLOCKS = 4
 _DATA_FILE_SUFFIXES = {".csv", ".json", ".jsonl", ".parquet", ".xlsx", ".xls"}
-_HANDOFF_FIELDS = ("charts_json", "execution_summary_json", "chart_ids")
+_HANDOFF_FIELDS = (
+    "charts_json",
+    "execution_summary_json",
+    "evidence_bundle_json",
+    "chart_ids",
+)
 _HIGH_FREQUENCY_FRED_KEYS = {
     "T10Y2Y",
     "T10Y3M",

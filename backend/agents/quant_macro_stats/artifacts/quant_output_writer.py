@@ -10,6 +10,7 @@ from ...artifact_fact_consistency import (
     artifact_fact_consistency_dict,
 )
 from .chart_provenance import normalize_chart_provenance
+from .evidence_bundle import build_evidence_bundle
 from .json_safety import to_json_safe
 from .recharts_schema_normalization import (
     _chart_map_from_payload,
@@ -47,6 +48,7 @@ def save_quant_outputs(
     output_path.mkdir(parents=True, exist_ok=True)
     charts_path = output_path / "charts.json"
     summary_path = output_path / "execution_summary.json"
+    evidence_bundle_path = output_path / "evidence_bundle.json"
 
     chart_map, dropped_chart_ids, chart_normalization_issues = _drop_empty_chart_definitions(
         _chart_map_from_payload(charts)
@@ -61,6 +63,7 @@ def save_quant_outputs(
 
     summary["charts_json"] = str(charts_path)
     summary["execution_summary_json"] = str(summary_path)
+    summary["evidence_bundle_json"] = str(evidence_bundle_path)
     summary["chart_ids"] = chart_ids
     if dropped_chart_ids:
         summary["dropped_chart_ids"] = dropped_chart_ids
@@ -86,8 +89,25 @@ def save_quant_outputs(
     if fact_blocker:
         raise ValueError(fact_blocker)
 
+    evidence_bundle = build_evidence_bundle(
+        summary,
+        chart_map,
+        charts_json=str(charts_path),
+        execution_summary_json=str(summary_path),
+        evidence_bundle_json=str(evidence_bundle_path),
+        artifact_fact_consistency=fact_consistency,
+    )
+
     charts_path.write_text(
         json.dumps(to_json_safe(chart_map), indent=2, allow_nan=False),
+        encoding="utf-8",
+    )
+    evidence_bundle_path.write_text(
+        json.dumps(
+            to_json_safe(evidence_bundle.model_dump(mode="json", exclude_none=True)),
+            indent=2,
+            allow_nan=False,
+        ),
         encoding="utf-8",
     )
     summary_path.write_text(
@@ -99,6 +119,7 @@ def save_quant_outputs(
         summary,
         charts_json=str(charts_path),
         execution_summary_json=str(summary_path),
+        evidence_bundle_json=str(evidence_bundle_path),
         chart_ids=chart_ids,
         dropped_chart_ids=dropped_chart_ids,
         statistical_summary_excerpt=statistical_summary_excerpt,

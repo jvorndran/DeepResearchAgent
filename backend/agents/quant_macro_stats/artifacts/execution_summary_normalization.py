@@ -103,6 +103,7 @@ def build_quant_output_handoff(
     *,
     charts_json: str,
     execution_summary_json: str,
+    evidence_bundle_json: str,
     chart_ids: list[str],
     dropped_chart_ids: list[str],
     statistical_summary_excerpt: str | None = None,
@@ -116,6 +117,7 @@ def build_quant_output_handoff(
     handoff: dict[str, Any] = {
         "charts_json": charts_json,
         "execution_summary_json": execution_summary_json,
+        "evidence_bundle_json": evidence_bundle_json,
         "chart_ids": chart_ids,
         "dropped_chart_ids": dropped_chart_ids,
         "statistical_summary_excerpt": str(excerpt)[:600],

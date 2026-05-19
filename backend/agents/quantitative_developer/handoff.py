@@ -11,6 +11,7 @@ from .constants import (
 )
 from .path_helpers import _is_allowed_analysis_script_path, _job_id_from_text
 from .tool_utils import _message_tool_name
+from ..quant_macro_stats.artifacts.evidence_bundle import EvidenceBundle
 
 _NON_HANDOFF_TOOL_NAMES = {
     "edit_file",
@@ -145,6 +146,7 @@ def _prewrite_failure_handoff(
 
     charts_path = output_dir / "charts.json"
     summary_path = output_dir / "execution_summary.json"
+    evidence_bundle_path = output_dir / "evidence_bundle.json"
     methods = methods_used or ["quant_prewrite_retry_budget_guard"]
     summary = {
         "status": "failed",
@@ -157,6 +159,7 @@ def _prewrite_failure_handoff(
         "blocked_attempt_count": _prewrite_block_count(messages),
         "required_script_path": str(output_dir / "code" / "analysis.py"),
         "chart_ids": [],
+        "evidence_bundle_json": str(evidence_bundle_path),
         "methods_used": methods,
         "limitations": [
             "No quantitative charts or computed regime/scenario artifacts were produced.",
@@ -165,6 +168,41 @@ def _prewrite_failure_handoff(
     }
 
     charts_path.write_text("[]\n", encoding="utf-8")
+    evidence_bundle = EvidenceBundle.model_validate(
+        {
+            "methods": methods,
+            "limitations": summary["limitations"],
+            "validation": {
+                "valid": False,
+                "diagnostics": [
+                    {
+                        "level": "error",
+                        "code": "quant_prewrite_failure",
+                        "message": summary["error"],
+                        "metadata": {
+                            "failure_stage": failure_stage,
+                            "blocked_attempt_count": summary["blocked_attempt_count"],
+                            "required_script_path": summary["required_script_path"],
+                        },
+                    }
+                ],
+            },
+            "artifacts": {
+                "charts_json": str(charts_path),
+                "execution_summary_json": str(summary_path),
+                "evidence_bundle_json": str(evidence_bundle_path),
+            },
+        }
+    )
+    evidence_bundle_path.write_text(
+        json.dumps(
+            evidence_bundle.model_dump(mode="json", exclude_none=True),
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     summary_path.write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -174,6 +212,7 @@ def _prewrite_failure_handoff(
             "status": "failed",
             "charts_json": str(charts_path),
             "execution_summary_json": str(summary_path),
+            "evidence_bundle_json": str(evidence_bundle_path),
             "chart_ids": [],
             "failure_stage": failure_stage,
             "error": summary["error"],

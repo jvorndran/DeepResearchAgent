@@ -10,6 +10,7 @@ from agents.artifact_fact_consistency import (
     artifact_fact_consistency_blocker,
     artifact_fact_consistency_dict,
 )
+from agents.quant_macro_stats.artifacts.evidence_bundle import EvidenceBundle
 from agents.quant_macro_stats.artifacts.recharts_schema_normalization import (
     normalize_quant_report_charts,
 )
@@ -42,6 +43,16 @@ def _write_nvda_sec_company_facts(path: Path) -> str:
         }
     ).to_csv(path, index=False)
     return str(path)
+
+
+def _chart_traceability(
+    source_id: str = "unit_test",
+    transform_id: str = "unit_test_projection",
+) -> dict[str, object]:
+    return {
+        "transform_id": transform_id,
+        "provenance": qms.chart_provenance(source_series=[source_id]),
+    }
 
 
 def test_quant_macro_stats_public_exports_are_helper_only():
@@ -116,6 +127,8 @@ def test_quant_helper_catalog_is_compact_agent_context():
     assert "signal_framework_backtest(data, *, component_cols" in catalog
     assert "sec_company_facts_evidence(data_files" in catalog
     assert "chart_provenance(source_series=..." in catalog
+    assert "attach_methods_used(charts, methods)" in catalog
+    assert "chart transform IDs" in catalog
     assert "source_unit_metadata(source_key, source_file=..." in catalog
     assert "unit_comparison(comparison_id, sources" in catalog
     assert "latest_numeric_fact(panel, key" in catalog
@@ -1085,6 +1098,7 @@ def test_save_quant_outputs_writes_generic_evidence_payload(tmp_path):
             "data": [{"date": "2024-01", "value": 1.0}],
             "series": [{"dataKey": "value", "name": "Value"}],
             "xAxis": {"dataKey": "date"},
+            **_chart_traceability("FRED", "unit_test_projection"),
         },
         "empty": {"type": "line", "data": []},
     }
@@ -1098,7 +1112,7 @@ def test_save_quant_outputs_writes_generic_evidence_payload(tmp_path):
                 unit="index",
                 precision=1,
                 tolerance=0.1,
-                source_key="unit_test",
+                source_key="FRED",
             )
         ],
         "source_coverage": {"FRED": ["UNRATE"]},
@@ -1107,13 +1121,196 @@ def test_save_quant_outputs_writes_generic_evidence_payload(tmp_path):
     handoff = qms.save_quant_outputs(tmp_path, charts, summary)
     saved_summary = json.loads((tmp_path / "execution_summary.json").read_text())
     saved_charts = json.loads((tmp_path / "charts.json").read_text())
+    saved_bundle = json.loads((tmp_path / "evidence_bundle.json").read_text())
 
     assert handoff["chart_ids"] == ["trend"]
+    assert handoff["evidence_bundle_json"] == str(tmp_path / "evidence_bundle.json")
     assert saved_summary["chart_ids"] == ["trend"]
+    assert saved_summary["evidence_bundle_json"] == str(
+        tmp_path / "evidence_bundle.json"
+    )
     assert saved_summary["numeric_facts"][0]["id"] == "latest_value"
     assert list(saved_charts) == ["trend"]
+    assert saved_bundle["bundle_type"] == "quant_evidence_bundle"
+    assert saved_bundle["facts"][0]["fact_id"] == "latest_value"
+    assert saved_bundle["charts"][0]["chart_id"] == "trend"
+    assert saved_bundle["charts"][0]["source_table_ids"] == ["chart_data:trend"]
+    assert saved_bundle["charts"][0]["transform_ids"] == ["unit_test_projection"]
+    assert saved_bundle["normalized_tables"][0]["table_id"] == "chart_data:trend"
+    assert saved_bundle["normalized_tables"][0]["source_id"] == "FRED"
+    assert saved_bundle["sources"][0]["source_id"] == "FRED"
+    assert saved_bundle["validation"]["valid"] is True
+    assert saved_bundle["artifacts"]["charts_json"] == str(tmp_path / "charts.json")
+    assert saved_bundle["artifacts"]["execution_summary_json"] == str(
+        tmp_path / "execution_summary.json"
+    )
+    assert saved_bundle["artifacts"]["evidence_bundle_json"] == str(
+        tmp_path / "evidence_bundle.json"
+    )
     assert "preserved_prior_charts" not in handoff
     assert "preserved_report_aligned_charts" not in handoff
+
+
+def test_save_quant_outputs_rejects_chart_without_evidence_bundle_traceability(tmp_path):
+    with pytest.raises(ValueError) as exc:
+        qms.save_quant_outputs(
+            tmp_path,
+            {
+                "trend": {
+                    "type": "line",
+                    "title": "Trend",
+                    "data": [{"date": "2024-01", "value": 1.0}],
+                    "series": [{"dataKey": "value", "name": "Value"}],
+                    "xAxis": {"dataKey": "date"},
+                }
+            },
+            {},
+        )
+
+    message = str(exc.value)
+    assert "source_table_ids" in message
+    assert "transform_ids" in message
+    assert not (tmp_path / "evidence_bundle.json").exists()
+
+
+def test_evidence_bundle_rejects_unresolved_chart_source_table_ids():
+    with pytest.raises(ValueError) as exc:
+        EvidenceBundle.model_validate(
+            {
+                "charts": [
+                    {
+                        "chart_id": "trend",
+                        "source_table_ids": ["UNRATE"],
+                        "transform_ids": ["monthly_latest_value_projection"],
+                    }
+                ],
+                "validation": {"valid": True},
+                "artifacts": {
+                    "charts_json": "charts.json",
+                    "execution_summary_json": "execution_summary.json",
+                    "evidence_bundle_json": "evidence_bundle.json",
+                },
+            }
+        )
+
+    assert "charts.source_table_ids must resolve" in str(exc.value)
+
+
+def test_evidence_bundle_rejects_cross_kind_table_id_ambiguity():
+    with pytest.raises(ValueError) as exc:
+        EvidenceBundle.model_validate(
+            {
+                "raw_tables": [{"table_id": "OBS", "kind": "raw"}],
+                "normalized_tables": [
+                    {"table_id": "OBS", "kind": "normalized"}
+                ],
+                "charts": [
+                    {
+                        "chart_id": "trend",
+                        "source_table_ids": ["OBS"],
+                        "transform_ids": ["monthly_projection"],
+                    }
+                ],
+                "validation": {"valid": True},
+                "artifacts": {
+                    "charts_json": "charts.json",
+                    "execution_summary_json": "execution_summary.json",
+                    "evidence_bundle_json": "evidence_bundle.json",
+                },
+            }
+        )
+
+    assert "table_id values must be unique across raw_tables" in str(exc.value)
+
+
+def test_save_quant_outputs_uses_methods_as_evidence_bundle_chart_transform_ids(tmp_path):
+    qms.save_quant_outputs(
+        tmp_path,
+        {
+            "trend": {
+                "type": "line",
+                "title": "Trend",
+                "data": [{"date": "2024-01", "value": 1.0}],
+                "series": [{"dataKey": "value", "name": "Value"}],
+                "xAxis": {"dataKey": "date"},
+                "provenance": qms.chart_provenance(source_series=["UNRATE"]),
+            }
+        },
+        {"methods_used": ["monthly_latest_value_projection"]},
+    )
+
+    saved_bundle = json.loads((tmp_path / "evidence_bundle.json").read_text())
+
+    assert saved_bundle["charts"][0]["source_table_ids"] == ["chart_data:trend"]
+    assert saved_bundle["charts"][0]["transform_ids"] == [
+        "monthly_latest_value_projection"
+    ]
+    assert saved_bundle["normalized_tables"][0] == {
+        "table_id": "chart_data:trend",
+        "kind": "normalized",
+        "source_id": "UNRATE",
+        "role": "chart_data",
+        "row_count": 1,
+        "columns": ["date", "value"],
+        "metadata": {
+            "chart_id": "trend",
+            "source_ids": ["UNRATE"],
+        },
+    }
+
+
+def test_save_quant_outputs_rejects_duplicate_evidence_bundle_fact_ids(tmp_path):
+    fact = qms.numeric_fact(
+        fact_id="latest_value",
+        label="Latest value",
+        raw_value=1.0,
+        unit="index",
+        precision=1,
+        tolerance=0.1,
+        source_key="unit_test",
+    )
+    with pytest.raises(ValueError) as exc:
+        qms.save_quant_outputs(
+            tmp_path,
+            {},
+            {
+                "methods_used": ["unit_test_method"],
+                "numeric_facts": [fact, dict(fact)],
+                "source_coverage": {"unit_test": ["latest_value"]},
+            },
+        )
+
+    assert "facts.fact_id values must be unique" in str(exc.value)
+    assert not (tmp_path / "evidence_bundle.json").exists()
+
+
+def test_save_quant_outputs_infers_simple_evidence_bundle_fact_source_keys(tmp_path):
+    qms.save_quant_outputs(
+        tmp_path,
+        {},
+        {
+            "methods_used": ["unit_test_method"],
+            "numeric_facts": [
+                qms.numeric_fact(
+                    fact_id="latest_value",
+                    label="Latest value",
+                    raw_value=1.0,
+                    unit="index",
+                    precision=1,
+                    tolerance=0.1,
+                    source_key="UNRATE",
+                )
+            ],
+        },
+    )
+
+    saved_bundle = json.loads((tmp_path / "evidence_bundle.json").read_text())
+
+    assert saved_bundle["facts"][0]["source_key"] == "UNRATE"
+    assert saved_bundle["sources"][0]["source_id"] == "UNRATE"
+    assert saved_bundle["sources"][0]["metadata"] == {
+        "inferred_from_fact_source_key": True
+    }
 
 
 def test_save_quant_outputs_preserves_chart_provenance_and_generator_path(
@@ -1150,6 +1347,7 @@ def test_save_quant_outputs_preserves_chart_provenance_and_generator_path(
     handoff = qms.save_quant_outputs(tmp_path, charts, {"methods_used": ["unit"]})
     saved_summary = json.loads((tmp_path / "execution_summary.json").read_text())
     saved_charts = json.loads((tmp_path / "charts.json").read_text())
+    saved_bundle = json.loads((tmp_path / "evidence_bundle.json").read_text())
 
     assert saved_charts["yield_spread"]["provenance"]["raw_latest_observation"] == {
         "T10Y2Y": "2026-05-15"
@@ -1158,6 +1356,13 @@ def test_save_quant_outputs_preserves_chart_provenance_and_generator_path(
         "2026-05"
     )
     assert saved_summary["generated_by"]["script_path"] == str(script_path)
+    assert saved_bundle["charts"][0]["source_table_ids"] == ["T10Y2Y"]
+    assert saved_bundle["charts"][0]["transform_ids"] == [
+        "resampling",
+        "normalization.base_date",
+        "normalization.base_value",
+    ]
+    assert saved_bundle["charts"][0]["provenance"]["displayed_latest_label"] == "2026-05"
     assert handoff["chart_provenance"]["yield_spread"]["frequency"] == "daily"
     assert handoff["generated_by"]["script_path"] == str(script_path)
 
@@ -1223,6 +1428,7 @@ def test_save_quant_outputs_preserves_source_unit_metadata_from_source_files(tmp
             "data": [{"date": "2025-12-01", "wages": 1072.67}],
             "series": [{"dataKey": "wages", "name": "Wages"}],
             "xAxis": {"dataKey": "date"},
+            **_chart_traceability("weekly_wages", "weekly_wages_projection"),
         }
     }
     handoff = qms.save_quant_outputs(
@@ -1277,6 +1483,10 @@ def test_save_quant_outputs_auto_attaches_sec_helper_evidence(tmp_path):
             "data": [{"fiscal_year": "2026", "revenue": 215_938_000_000}],
             "series": [{"dataKey": "revenue", "name": "Revenue"}],
             "xAxis": {"dataKey": "fiscal_year"},
+            **_chart_traceability(
+                "sec_company_facts",
+                "sec_income_statement_projection",
+            ),
         }
     }
     manual_fact_source_keys = [
@@ -1468,6 +1678,10 @@ def test_save_quant_outputs_does_not_shape_scenario_score_rows(tmp_path):
             "data": [{"scenario": "caller base", "score": 0.2}],
             "series": [{"dataKey": "score", "name": "Score"}],
             "xAxis": {"dataKey": "scenario"},
+            **_chart_traceability(
+                "scenario_score_rows",
+                "scenario_score_passthrough",
+            ),
         }
     }
     scenario_rows = [
@@ -1507,6 +1721,10 @@ def test_save_quant_outputs_overwrites_stale_artifacts_with_current_payload(tmp_
         ),
         encoding="utf-8",
     )
+    (tmp_path / "evidence_bundle.json").write_text(
+        json.dumps({"bundle_type": "stale", "charts": [{"chart_id": "stale"}]}),
+        encoding="utf-8",
+    )
 
     handoff = qms.save_quant_outputs(
         tmp_path,
@@ -1519,12 +1737,16 @@ def test_save_quant_outputs_overwrites_stale_artifacts_with_current_payload(tmp_
     )
     saved_summary = json.loads((tmp_path / "execution_summary.json").read_text())
     saved_charts = json.loads((tmp_path / "charts.json").read_text())
+    saved_bundle = json.loads((tmp_path / "evidence_bundle.json").read_text())
 
     assert handoff["chart_ids"] == []
     assert saved_summary["chart_ids"] == []
     assert saved_summary["methods_used"] == ["current_method"]
     assert saved_summary["statistical_summary"] == "current summary"
     assert saved_charts == {}
+    assert saved_bundle["bundle_type"] == "quant_evidence_bundle"
+    assert saved_bundle["charts"] == []
+    assert saved_bundle["methods"] == ["current_method"]
     assert "preserved_prior_charts" not in saved_summary
     assert "preserved_report_aligned_charts" not in saved_summary
 
@@ -1543,6 +1765,7 @@ def test_save_quant_outputs_ignores_report_aligned_preservation_flags(tmp_path):
         "data": [{"date": "2024-01", "value": 1}],
         "series": [{"dataKey": "value", "name": "Current"}],
         "xAxis": {"dataKey": "date"},
+        **_chart_traceability("current_source", "current_projection"),
     }
     (tmp_path / "charts.json").write_text(
         json.dumps({"stale": stale_chart}),

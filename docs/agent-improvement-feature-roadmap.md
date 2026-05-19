@@ -451,3 +451,13 @@ agent flow it advanced.
   - Tests: `bash -n scripts/codex_feature_loop.sh`; `scripts/codex_feature_loop.sh --help`; dry-run pass with logs redirected to `/tmp`
   - Implementation: reworked the feature loop around roadmap feature selection, plan/build/review/fix phases, approved-pass commits, and roadmap implementation-history updates instead of signal-style memory.
   - Review: pending user review
+
+- [x] 2026-05-19T10:04:03-04:00 - Canonical Evidence Bundle save-boundary slice
+  - Roadmap section: Priority 1: Canonical Evidence Bundle
+  - Flow stage: evidence bundle
+  - Run/pass: 20260519-084446 / 1
+  - Summary: /home/vorndranj/projects/DeepResearchAgent/logs/feature-loop/runs/20260518-215941/feature-1/summary.md
+  - Files changed: backend/agents/quant_macro_stats/artifacts/evidence_bundle.py, backend/agents/quant_macro_stats/artifacts/quant_output_writer.py, backend/agents/quant_macro_stats/artifacts/execution_summary_normalization.py, backend/agents/report_artifacts.py, backend/agents/quality_analyst/fidelity.py, backend/agents/quality_analyst/tools.py, backend/tests/test_quant_macro_stats.py, backend/tests/test_quality_analyst_subagent.py
+  - Tests: uv run pytest tests/test_quant_macro_stats.py -k "evidence_bundle or save_quant_outputs_writes_generic_evidence_payload or preserves_chart_provenance or overwrites_stale_artifacts or rejects_conflicting_correlation_facts"; uv run pytest tests/test_technical_writer_flow_boundaries.py -k "validate_research_report_file_rejects_missing_handoff_chart_ids or validate_research_report_file_rejects_artifact_fact_mismatch"; uv run pytest tests/test_quality_analyst_subagent.py -k "load_report_for_review"; uv run ruff check agents/quant_macro_stats/artifacts/evidence_bundle.py agents/quant_macro_stats/artifacts/quant_output_writer.py agents/quant_macro_stats/artifacts/execution_summary_normalization.py agents/report_artifacts.py agents/quality_analyst/fidelity.py agents/quality_analyst/tools.py tests/test_quant_macro_stats.py tests/test_quality_analyst_subagent.py
+  - Implementation: Added a typed evidence_bundle.json sidecar at save_quant_outputs and surfaced its path and compact IDs to QA.
+  - Review: Incomplete patch missing new module; QA accepts unvalidated bundle JSON; bundle validation does not enforce fact-to-source traceability.

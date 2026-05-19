@@ -2151,10 +2151,10 @@ class QuantDeveloperToolBoundaryMiddleware(AgentMiddleware):
             content=(
                 "Blocked post-success quant tool call. A prior execute result already "
                 "returned the compact handoff fields `charts_json`, "
-                "`execution_summary_json`, and `chart_ids`. Return only that compact "
-                "JSON now; do not run exploratory checks, read files, or edit the "
-                "successful script unless a later tool result reported a concrete "
-                "validation failure."
+                "`execution_summary_json`, `evidence_bundle_json`, and `chart_ids`. "
+                "Return only that compact JSON now; do not run exploratory checks, "
+                "read files, or edit the successful script unless a later tool "
+                "result reported a concrete validation failure."
             ),
             name=tool_name,
             tool_call_id=_tool_call_id(request.tool_call),

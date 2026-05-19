@@ -3,7 +3,7 @@ import json
 import re
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import Iterable
+from typing import Any, Iterable
 
 from pydantic import ValidationError
 
@@ -24,6 +24,7 @@ from agents.quant_macro_stats.artifacts.execution_summary_normalization import (
 from ..report_artifacts import (
     chart_handoff_blocker,
     chart_handoff_dict,
+    load_sibling_evidence_bundle_json,
     load_report_json,
     load_sibling_execution_summary_json,
 )
@@ -107,6 +108,7 @@ def _load_sibling_execution_summary(report_path: Path) -> dict[str, object]:
         "brief_analysis_summary",
         "chart_ids",
         "dropped_chart_ids",
+        "evidence_bundle_json",
         "validation_window",
         "state_comparison",
         "numeric_facts",
@@ -174,9 +176,406 @@ def _load_sibling_execution_summary(report_path: Path) -> dict[str, object]:
     return compact
 
 
+def _load_sibling_evidence_bundle(report_path: Path) -> dict[str, object]:
+    """Return compact evidence_bundle.json metadata when available."""
+    bundle_path = report_path.with_name("evidence_bundle.json")
+    parsed, error = load_sibling_evidence_bundle_json(report_path)
+    if error:
+        return {
+            "status": "error",
+            "path": str(bundle_path),
+            "error": error,
+        }
+    if parsed is None:
+        return {
+            "status": "missing",
+            "path": str(bundle_path),
+            "note": "No sibling evidence_bundle.json was found.",
+        }
+
+    compact: dict[str, object] = {
+        "status": "success",
+        "path": str(bundle_path),
+        "schema_version": parsed.get("schema_version"),
+        "bundle_type": parsed.get("bundle_type"),
+        "fact_ids": _bundle_item_ids(parsed.get("facts"), "fact_id"),
+        "chart_ids": _bundle_item_ids(parsed.get("charts"), "chart_id"),
+        "source_ids": _bundle_item_ids(parsed.get("sources"), "source_id"),
+    }
+
+    artifacts = parsed.get("artifacts")
+    if isinstance(artifacts, dict):
+        compact["artifacts"] = {
+            key: str(value)
+            for key in (
+                "charts_json",
+                "execution_summary_json",
+                "evidence_bundle_json",
+            )
+            if (value := artifacts.get(key)) is not None
+        }
+
+    validation = parsed.get("validation")
+    if isinstance(validation, dict):
+        diagnostics = validation.get("diagnostics")
+        compact_validation: dict[str, object] = {
+            "valid": validation.get("valid"),
+            "dropped_chart_ids": validation.get("dropped_chart_ids") or [],
+        }
+        if isinstance(diagnostics, list):
+            compact_validation["diagnostics"] = [
+                {
+                    "level": item.get("level"),
+                    "code": item.get("code"),
+                    "message": _truncate(str(item.get("message") or ""), 300),
+                }
+                for item in diagnostics[:12]
+                if isinstance(item, dict)
+            ]
+        compact["validation"] = compact_validation
+
+    for key in ("methods", "limitations"):
+        value = parsed.get(key)
+        if isinstance(value, list):
+            compact[key] = [str(item) for item in value[:20]]
+    return compact
+
+
+def _bundle_item_ids(value: Any, key: str) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    ids: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get(key) or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        ids.append(text)
+    return ids
+
+
 def _load_execution_summary_payload(report_path: Path) -> dict[str, object] | None:
     parsed, _ = load_sibling_execution_summary_json(report_path)
     return parsed
+
+
+def _unique_string_ids(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    ids: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        text = str(item).strip() if item is not None else ""
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        ids.append(text)
+    return ids
+
+
+def _report_chart_ids(data: dict[str, object]) -> list[str]:
+    charts = data.get("charts")
+    if isinstance(charts, dict):
+        return _unique_string_ids(list(charts.keys()))
+    if not isinstance(charts, list):
+        return []
+    ids: list[str] = []
+    seen: set[str] = set()
+    for chart in charts:
+        if not isinstance(chart, dict):
+            continue
+        for key in ("id", "chart_id", "name"):
+            value = chart.get(key)
+            text = str(value).strip() if value is not None else ""
+            if text:
+                break
+        else:
+            text = ""
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        ids.append(text)
+    return ids
+
+
+def _chart_ids_from_charts_payload(payload: object) -> list[str]:
+    if isinstance(payload, dict):
+        nested = payload.get("charts")
+        if isinstance(nested, list):
+            return _chart_ids_from_charts_payload(nested)
+        return [
+            str(chart_id)
+            for chart_id, chart in payload.items()
+            if chart_id and chart
+        ]
+    if isinstance(payload, list):
+        return [
+            str(chart["id"])
+            for chart in payload
+            if isinstance(chart, dict) and chart.get("id")
+        ]
+    return []
+
+
+def _load_sibling_charts_json_chart_ids(report_path: Path) -> list[str] | None:
+    charts_path = report_path.with_name("charts.json")
+    if not charts_path.is_file():
+        return None
+    try:
+        parsed = json.loads(charts_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return _chart_ids_from_charts_payload(parsed)
+
+
+def _artifact_path_matches(value: object, expected: Path) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    candidate = Path(value).expanduser()
+    if not candidate.is_absolute():
+        candidate = expected.parent / candidate
+    try:
+        return candidate.resolve(strict=False) == expected.expanduser().resolve(
+            strict=False
+        )
+    except OSError:
+        return str(candidate) == str(expected)
+
+
+def _evidence_bundle_artifact_mismatches(
+    bundle: dict[str, object],
+    report_path: Path,
+) -> list[str]:
+    artifacts = bundle.get("artifacts")
+    if not isinstance(artifacts, dict):
+        return ["artifacts must contain canonical sibling artifact paths"]
+    expected = {
+        "charts_json": report_path.with_name("charts.json"),
+        "execution_summary_json": report_path.with_name("execution_summary.json"),
+        "evidence_bundle_json": report_path.with_name("evidence_bundle.json"),
+    }
+    mismatches: list[str] = []
+    for key, expected_path in expected.items():
+        if not _artifact_path_matches(artifacts.get(key), expected_path):
+            mismatches.append(f"{key} expected {expected_path}")
+    return mismatches
+
+
+def _evidence_bundle_fact_blocker(
+    bundle: dict[str, object],
+    summary: dict[str, object],
+) -> str | None:
+    summary_facts = _numeric_facts_from_summary(summary)
+    bundle_facts = [
+        item
+        for item in bundle.get("facts", [])
+        if isinstance(item, dict) and str(item.get("fact_id") or "").strip()
+    ]
+    summary_fact_ids = [str(fact["id"]) for fact in summary_facts]
+    bundle_fact_ids = [str(fact["fact_id"]) for fact in bundle_facts]
+    if summary_fact_ids != bundle_fact_ids:
+        return (
+            "evidence_bundle.json fact_ids do not match "
+            "execution_summary.json numeric_facts: "
+            f"bundle={bundle_fact_ids} execution_summary={summary_fact_ids}. "
+            "Rerun quant-developer so the canonical evidence bundle is "
+            "regenerated from the current numeric facts."
+        )
+
+    summary_by_id = {
+        str(fact["id"]): _numeric_fact_signature(fact)
+        for fact in summary_facts
+    }
+    bundle_by_id = {
+        str(fact["fact_id"]): _bundle_fact_signature(fact)
+        for fact in bundle_facts
+    }
+    mismatches: list[str] = []
+    for fact_id in summary_fact_ids:
+        changed_fields = [
+            field
+            for field, value in summary_by_id[fact_id].items()
+            if bundle_by_id.get(fact_id, {}).get(field) != value
+        ]
+        if changed_fields:
+            mismatches.append(f"{fact_id} ({', '.join(changed_fields)})")
+    if not mismatches:
+        return None
+    return (
+        "evidence_bundle.json facts do not match execution_summary.json "
+        f"numeric_facts for {', '.join(mismatches[:6])}. Rerun "
+        "quant-developer so the canonical evidence bundle is regenerated from "
+        "the current numeric facts."
+    )
+
+
+def _numeric_fact_signature(fact: dict[str, object]) -> dict[str, object]:
+    return {
+        "label": str(fact.get("label") or ""),
+        "raw_value": _float_signature(fact.get("raw_value")),
+        "display_value": str(fact.get("display_value") or ""),
+        "unit": str(fact.get("unit") or ""),
+        "precision": _int_signature(fact.get("precision")),
+        "tolerance": _float_signature(fact.get("tolerance")),
+        "source_key": str(fact.get("source_key") or ""),
+        "as_of_date": _optional_text(fact.get("as_of_date")),
+        "subject": _optional_text(fact.get("subject")),
+        "metric": _optional_text(fact.get("metric")),
+        "semantic_role": _optional_text(fact.get("semantic_role")),
+        "literal_required": fact.get("literal_required")
+        if isinstance(fact.get("literal_required"), bool)
+        else None,
+        "state_description": _optional_text(fact.get("state_description")),
+        "transform_basis": _optional_text(
+            fact.get("transform_basis")
+            or fact.get("correlation_basis")
+            or fact.get("correlation_transform")
+            or fact.get("value_transform")
+            or fact.get("calculation_basis")
+        ),
+    }
+
+
+def _bundle_fact_signature(fact: dict[str, object]) -> dict[str, object]:
+    return {
+        "label": str(fact.get("label") or ""),
+        "raw_value": _float_signature(fact.get("raw_value")),
+        "display_value": str(fact.get("display_value") or ""),
+        "unit": str(fact.get("unit") or ""),
+        "precision": _int_signature(fact.get("precision")),
+        "tolerance": _float_signature(fact.get("tolerance")),
+        "source_key": str(fact.get("source_key") or ""),
+        "as_of_date": _optional_text(fact.get("as_of_date")),
+        "subject": _optional_text(fact.get("subject")),
+        "metric": _optional_text(fact.get("metric")),
+        "semantic_role": _optional_text(fact.get("semantic_role")),
+        "literal_required": fact.get("literal_required")
+        if isinstance(fact.get("literal_required"), bool)
+        else None,
+        "state_description": _optional_text(fact.get("state_description")),
+        "transform_basis": _optional_text(fact.get("transform_basis")),
+    }
+
+
+def _float_signature(value: object) -> float | None:
+    try:
+        return round(float(value), 12)
+    except (TypeError, ValueError):
+        return None
+
+
+def _int_signature(value: object) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_text(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _evidence_bundle_expected(summary: dict[str, object] | None) -> bool:
+    if not isinstance(summary, dict):
+        return False
+    if str(summary.get("status") or "success") in {"failed", "error", "missing"}:
+        return False
+    return isinstance(summary.get("evidence_bundle_json"), str)
+
+
+def _evidence_bundle_consistency_blocker(
+    bundle: dict[str, object],
+    report_path: Path,
+    *,
+    summary: dict[str, object] | None,
+    report_data: dict[str, object] | None,
+) -> str | None:
+    mismatches = _evidence_bundle_artifact_mismatches(bundle, report_path)
+    if mismatches:
+        return (
+            "evidence_bundle.json artifact paths do not match sibling quant "
+            f"artifacts: {', '.join(mismatches)}. Rerun quant-developer so the "
+            "canonical evidence bundle is regenerated from the current artifacts."
+        )
+
+    bundle_chart_ids = _bundle_item_ids(bundle.get("charts"), "chart_id")
+    if isinstance(summary, dict):
+        summary_chart_ids = _unique_string_ids(summary.get("chart_ids"))
+        if summary_chart_ids and bundle_chart_ids != summary_chart_ids:
+            return (
+                "evidence_bundle.json chart_ids do not match "
+                "execution_summary.json chart_ids: "
+                f"bundle={bundle_chart_ids} execution_summary={summary_chart_ids}. "
+                "Rerun quant-developer so the canonical evidence bundle is "
+                "regenerated from the current summary and charts."
+            )
+        fact_blocker = _evidence_bundle_fact_blocker(bundle, summary)
+        if fact_blocker:
+            return fact_blocker
+
+    charts_json_chart_ids = _load_sibling_charts_json_chart_ids(report_path)
+    if charts_json_chart_ids is not None and bundle_chart_ids != charts_json_chart_ids:
+        return (
+            "evidence_bundle.json chart_ids do not match charts.json chart IDs: "
+            f"bundle={bundle_chart_ids} charts_json={charts_json_chart_ids}. "
+            "Rerun quant-developer so the canonical evidence bundle is "
+            "regenerated from the current chart artifact."
+        )
+
+    if isinstance(report_data, dict):
+        report_chart_ids = _report_chart_ids(report_data)
+        missing_report_chart_ids = [
+            chart_id for chart_id in report_chart_ids if chart_id not in bundle_chart_ids
+        ]
+        if missing_report_chart_ids:
+            return (
+                "report.json references chart IDs missing from evidence_bundle.json: "
+                f"{missing_report_chart_ids}. Regenerate the report from the "
+                "current canonical evidence bundle."
+            )
+    return None
+
+
+def _evidence_bundle_approval_blocker(report_path: Path) -> str | None:
+    summary = _load_execution_summary_payload(report_path)
+    parsed, error = load_sibling_evidence_bundle_json(report_path)
+    if error:
+        return (
+            "Invalid evidence_bundle.json sibling artifact: "
+            f"{error}. Rerun quant-developer so the canonical evidence bundle "
+            "validates before QA approval."
+        )
+    if parsed is None:
+        if _evidence_bundle_expected(summary):
+            return (
+                "Missing evidence_bundle.json sibling artifact referenced by "
+                "execution_summary.json. Rerun quant-developer so the canonical "
+                "evidence bundle exists and validates before QA approval."
+            )
+        return None
+    validation = parsed.get("validation")
+    if isinstance(validation, dict) and validation.get("valid") is False:
+        return (
+            "evidence_bundle.json reports failed evidence validation; rerun "
+            "quant-developer so the canonical evidence bundle is valid before "
+            "QA approval."
+        )
+    report_data, report_error = load_report_json(str(report_path))
+    blocker = _evidence_bundle_consistency_blocker(
+        parsed,
+        report_path,
+        summary=summary,
+        report_data=report_data if report_error is None else None,
+    )
+    if blocker:
+        return blocker
+    return None
 
 
 def _numeric_text_variants(value: object) -> set[str]:
@@ -1499,6 +1898,9 @@ def _approval_blockers(report_path: str) -> list[str]:
     summary = _load_sibling_execution_summary(Path(report_path))
     full_summary = _load_execution_summary_payload(Path(report_path)) or {}
     blockers: list[str] = []
+    evidence_bundle_blocker = _evidence_bundle_approval_blocker(Path(report_path))
+    if evidence_bundle_blocker:
+        blockers.append(evidence_bundle_blocker)
     freshness_blocker = _current_helper_evidence_freshness_blocker(data, full_summary)
     if freshness_blocker:
         blockers.append(freshness_blocker)
@@ -1581,6 +1983,11 @@ def _approval_failure_metadata(report_path: str) -> dict[str, str]:
     data, error = load_report_json(report_path)
     if error:
         return {}
+    if _evidence_bundle_approval_blocker(Path(report_path)):
+        return {
+            "failure_category": "evidence_bundle_invalid",
+            "required_upstream": "quant-developer",
+        }
     summary = _load_execution_summary_payload(Path(report_path))
     if not summary:
         return {}

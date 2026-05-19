@@ -15,6 +15,48 @@ def _compact_text(text: str) -> str:
     return " ".join(text.split())
 
 
+def _write_valid_evidence_bundle(tmp_path, chart_ids, *, artifacts=None, facts=None):
+    table_ids = [f"chart_data:{chart_id}" for chart_id in chart_ids]
+    payload = {
+        "schema_version": 1,
+        "bundle_type": "quant_evidence_bundle",
+        "charts": [
+            {
+                "chart_id": chart_id,
+                "source_table_ids": [table_id],
+                "transform_ids": ["unit_test_projection"],
+            }
+            for chart_id, table_id in zip(chart_ids, table_ids)
+        ],
+        "normalized_tables": [
+            {"table_id": table_id, "kind": "normalized"}
+            for table_id in table_ids
+        ],
+        "validation": {"valid": True, "diagnostics": []},
+        "artifacts": artifacts
+        or {
+            "charts_json": str(tmp_path / "charts.json"),
+            "execution_summary_json": str(tmp_path / "execution_summary.json"),
+            "evidence_bundle_json": str(tmp_path / "evidence_bundle.json"),
+        },
+    }
+    if facts is not None:
+        payload["facts"] = facts
+        payload["sources"] = [
+            {"source_id": source_id}
+            for source_id in dict.fromkeys(
+                str(fact.get("source_key") or "").strip()
+                for fact in facts
+                if isinstance(fact, dict)
+            )
+            if source_id
+        ]
+    (tmp_path / "evidence_bundle.json").write_text(
+        json.dumps(payload),
+        encoding="utf-8",
+    )
+
+
 def test_quality_analyst_is_compiled_without_deepagents_filesystem_tools():
     assert QUALITY_ANALYST_SUBAGENT["name"] == "quality-analyst"
     assert "runnable" in QUALITY_ANALYST_SUBAGENT
@@ -55,6 +97,53 @@ def test_load_report_for_review_returns_compact_review_packet(tmp_path):
                 "statistical_summary": {"yield_leads": [13, 8, 16, 9]},
                 "brief_analysis_summary": "Yield curve led the last four NBER recessions.",
                 "chart_ids": ["chart_unrate"],
+                "evidence_bundle_json": str(tmp_path / "evidence_bundle.json"),
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "evidence_bundle.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "bundle_type": "quant_evidence_bundle",
+                "facts": [
+                    {
+                        "fact_id": "unrate_latest",
+                        "label": "Latest unemployment rate",
+                        "raw_value": 4.2,
+                        "display_value": "4.2%",
+                        "unit": "percent",
+                        "precision": 1,
+                        "tolerance": 0.1,
+                        "source_key": "FRED",
+                    }
+                ],
+                "charts": [
+                    {
+                        "chart_id": "chart_unrate",
+                        "source_table_ids": ["FRED"],
+                        "transform_ids": ["yield_curve_lead_lag"],
+                    }
+                ],
+                "sources": [{"source_id": "FRED"}],
+                "raw_tables": [
+                    {
+                        "table_id": "FRED",
+                        "kind": "raw",
+                        "source_id": "FRED",
+                    }
+                ],
+                "methods": ["yield curve lead-lag"],
+                "limitations": ["latest release can revise"],
+                "validation": {"valid": True, "diagnostics": []},
+                "artifacts": {
+                    "charts_json": str(tmp_path / "charts.json"),
+                    "execution_summary_json": str(
+                        tmp_path / "execution_summary.json"
+                    ),
+                    "evidence_bundle_json": str(tmp_path / "evidence_bundle.json"),
+                },
             }
         ),
         encoding="utf-8",
@@ -93,8 +182,335 @@ def test_load_report_for_review_returns_compact_review_packet(tmp_path):
     ]
     assert payload["execution_summary"]["status"] == "success"
     assert payload["execution_summary"]["path"].endswith("execution_summary.json")
+    assert payload["execution_summary"]["evidence_bundle_json"].endswith(
+        "evidence_bundle.json"
+    )
     assert "yield_leads" in payload["execution_summary"]["statistical_summary"]
     assert payload["execution_summary"]["chart_ids"] == ["chart_unrate"]
+    assert payload["evidence_bundle"]["status"] == "success"
+    assert payload["evidence_bundle"]["fact_ids"] == ["unrate_latest"]
+    assert payload["evidence_bundle"]["chart_ids"] == ["chart_unrate"]
+    assert payload["evidence_bundle"]["source_ids"] == ["FRED"]
+    assert payload["evidence_bundle"]["validation"]["valid"] is True
+
+
+def test_load_report_for_review_reports_invalid_evidence_bundle(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "evidence_bundle.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "bundle_type": "quant_evidence_bundle",
+                "facts": [{"fact_id": "unrate_latest"}],
+                "charts": [{"chart_id": "chart_unrate"}],
+                "sources": [{"source_id": "FRED"}],
+                "validation": {"valid": True, "diagnostics": []},
+                "artifacts": {
+                    "charts_json": str(tmp_path / "charts.json"),
+                    "execution_summary_json": str(
+                        tmp_path / "execution_summary.json"
+                    ),
+                    "evidence_bundle_json": str(tmp_path / "evidence_bundle.json"),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Is labor weakening?",
+                "title": "Labor Market Review",
+                "executive_summary": "Mixed but not collapsing.",
+                "markdown": "Summary",
+                "charts": [{"id": "chart_unrate"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(load_report_for_review.invoke({"report_path": str(report_path)}))
+
+    assert payload["status"] == "success"
+    assert payload["evidence_bundle"]["status"] == "error"
+    assert payload["evidence_bundle"]["path"].endswith("evidence_bundle.json")
+    assert "Invalid evidence_bundle.json" in payload["evidence_bundle"]["error"]
+    assert "Field required" in payload["evidence_bundle"]["error"]
+
+
+def test_submit_quality_decision_rejects_invalid_evidence_bundle(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "chart_ids": ["chart_unrate"],
+                "evidence_bundle_json": str(tmp_path / "evidence_bundle.json"),
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "evidence_bundle.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "bundle_type": "quant_evidence_bundle",
+                "facts": [{"fact_id": "unrate_latest"}],
+                "charts": [{"chart_id": "chart_unrate"}],
+                "sources": [{"source_id": "FRED"}],
+                "validation": {"valid": True, "diagnostics": []},
+                "artifacts": {
+                    "charts_json": str(tmp_path / "charts.json"),
+                    "execution_summary_json": str(
+                        tmp_path / "execution_summary.json"
+                    ),
+                    "evidence_bundle_json": str(tmp_path / "evidence_bundle.json"),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Is labor weakening?",
+                "title": "Labor Market Review",
+                "executive_summary": "Mixed but not collapsing.",
+                "markdown": "Summary\n\n<!-- CHART:chart_unrate -->",
+                "charts": [{"id": "chart_unrate"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["ready_for_upload"] is False
+    assert "Invalid evidence_bundle.json sibling artifact" in payload["reason"]
+    assert payload["failure_category"] == "evidence_bundle_invalid"
+    assert payload["required_upstream"] == "quant-developer"
+
+
+def test_submit_quality_decision_rejects_missing_expected_evidence_bundle(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "chart_ids": ["chart_unrate"],
+                "evidence_bundle_json": str(tmp_path / "evidence_bundle.json"),
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Is labor weakening?",
+                "title": "Labor Market Review",
+                "executive_summary": "Mixed but not collapsing.",
+                "markdown": "Summary\n\n<!-- CHART:chart_unrate -->",
+                "charts": [{"id": "chart_unrate"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert "Missing evidence_bundle.json sibling artifact" in payload["reason"]
+    assert payload["failure_category"] == "evidence_bundle_invalid"
+    assert payload["required_upstream"] == "quant-developer"
+
+
+def test_submit_quality_decision_rejects_stale_evidence_bundle_artifact_paths(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "charts.json").write_text(
+        json.dumps({"chart_unrate": {"id": "chart_unrate", "data": [{"x": 1}]}}),
+        encoding="utf-8",
+    )
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "chart_ids": ["chart_unrate"],
+                "evidence_bundle_json": str(tmp_path / "evidence_bundle.json"),
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_valid_evidence_bundle(
+        tmp_path,
+        ["chart_unrate"],
+        artifacts={
+            "charts_json": str(tmp_path / "charts.json"),
+            "execution_summary_json": str(tmp_path / "stale_execution_summary.json"),
+            "evidence_bundle_json": str(tmp_path / "evidence_bundle.json"),
+        },
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Is labor weakening?",
+                "title": "Labor Market Review",
+                "executive_summary": "Mixed but not collapsing.",
+                "markdown": "Summary\n\n<!-- CHART:chart_unrate -->",
+                "charts": [{"id": "chart_unrate"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert "artifact paths do not match sibling quant artifacts" in payload["reason"]
+    assert payload["failure_category"] == "evidence_bundle_invalid"
+    assert payload["required_upstream"] == "quant-developer"
+
+
+def test_submit_quality_decision_rejects_stale_evidence_bundle_chart_ids(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "charts.json").write_text(
+        json.dumps({"chart_unrate": {"id": "chart_unrate", "data": [{"x": 1}]}}),
+        encoding="utf-8",
+    )
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "chart_ids": ["chart_unrate"],
+                "evidence_bundle_json": str(tmp_path / "evidence_bundle.json"),
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_valid_evidence_bundle(tmp_path, ["stale_chart"])
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Is labor weakening?",
+                "title": "Labor Market Review",
+                "executive_summary": "Mixed but not collapsing.",
+                "markdown": "Summary\n\n<!-- CHART:chart_unrate -->",
+                "charts": [{"id": "chart_unrate"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert "chart_ids do not match execution_summary.json chart_ids" in payload["reason"]
+    assert payload["failure_category"] == "evidence_bundle_invalid"
+    assert payload["required_upstream"] == "quant-developer"
+
+
+def test_submit_quality_decision_rejects_stale_evidence_bundle_facts(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "charts.json").write_text(
+        json.dumps({"chart_unrate": {"id": "chart_unrate", "data": [{"x": 1}]}}),
+        encoding="utf-8",
+    )
+    summary_fact = {
+        "id": "unrate_latest",
+        "label": "Latest unemployment rate",
+        "raw_value": 4.2,
+        "display_value": "4.2%",
+        "unit": "percent",
+        "precision": 1,
+        "tolerance": 0.1,
+        "source_key": "FRED",
+    }
+    bundle_fact = {
+        "fact_id": "unrate_latest",
+        "label": "Latest unemployment rate",
+        "raw_value": 5.9,
+        "display_value": "5.9%",
+        "unit": "percent",
+        "precision": 1,
+        "tolerance": 0.1,
+        "source_key": "FRED",
+    }
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "chart_ids": ["chart_unrate"],
+                "numeric_facts": [summary_fact],
+                "evidence_bundle_json": str(tmp_path / "evidence_bundle.json"),
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_valid_evidence_bundle(
+        tmp_path,
+        ["chart_unrate"],
+        facts=[bundle_fact],
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Is labor weakening?",
+                "title": "Labor Market Review",
+                "executive_summary": "Mixed but not collapsing.",
+                "markdown": "Summary\n\n<!-- CHART:chart_unrate -->",
+                "charts": [{"id": "chart_unrate"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert "facts do not match execution_summary.json numeric_facts" in payload["reason"]
+    assert "unrate_latest" in payload["reason"]
+    assert payload["failure_category"] == "evidence_bundle_invalid"
+    assert payload["required_upstream"] == "quant-developer"
 
 
 def test_load_report_for_review_keeps_missing_execution_summary_minimal(tmp_path):

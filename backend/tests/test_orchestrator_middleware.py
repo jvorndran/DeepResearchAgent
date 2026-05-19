@@ -20,6 +20,39 @@ class _Request:
         return _Request(kwargs.get("tools", self.tools))
 
 
+def _write_valid_evidence_bundle(evidence_bundle_path, chart_ids):
+    table_ids = [f"chart_data:{chart_id}" for chart_id in chart_ids]
+    evidence_bundle_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "bundle_type": "quant_evidence_bundle",
+                "charts": [
+                    {
+                        "chart_id": chart_id,
+                        "source_table_ids": [table_id],
+                        "transform_ids": ["unit_test_projection"],
+                    }
+                    for chart_id, table_id in zip(chart_ids, table_ids)
+                ],
+                "normalized_tables": [
+                    {"table_id": table_id, "kind": "normalized"}
+                    for table_id in table_ids
+                ],
+                "validation": {"valid": True, "diagnostics": []},
+                "artifacts": {
+                    "charts_json": str(evidence_bundle_path.with_name("charts.json")),
+                    "execution_summary_json": str(
+                        evidence_bundle_path.with_name("execution_summary.json")
+                    ),
+                    "evidence_bundle_json": str(evidence_bundle_path),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_orchestrator_tool_boundary_exposes_only_status_and_task_tools():
     middleware = OrchestratorToolBoundaryMiddleware()
     request = _Request(
@@ -332,6 +365,70 @@ def test_orchestrator_tool_boundary_routes_artifact_fact_repair_to_quant(tmp_pat
     assert allowed.content == "delegated"
 
 
+def test_orchestrator_tool_boundary_routes_evidence_bundle_alias_to_quant(tmp_path):
+    middleware = OrchestratorToolBoundaryMiddleware()
+    report_path = tmp_path / "report.json"
+    report_path.write_text("{}", encoding="utf-8")
+    messages = [
+        AIMessage(
+            content=json.dumps(
+                {
+                    "status": "rejected",
+                    "report_path": str(report_path),
+                    "reason": (
+                        "evidence_bundle_invalid: fact IDs in evidence_bundle.json "
+                        "do not match execution_summary.json numeric_facts."
+                    ),
+                    "required_fixes": [
+                        "Regenerate the canonical evidence bundle from current artifacts."
+                    ],
+                    "failure_category": "evidence_bundle_invalid",
+                    "required_upstream": "quantitative-developer",
+                }
+            )
+        )
+    ]
+    writer_request = SimpleNamespace(
+        tool_call={
+            "name": "task",
+            "id": "wrong-bundle-owner",
+            "args": {
+                "subagent_type": "technical-writer",
+                "description": "Revise report wording after the bundle rejection.",
+            },
+        },
+        state={"messages": messages},
+    )
+
+    blocked = middleware.wrap_tool_call(
+        writer_request,
+        lambda req: SimpleNamespace(content="delegated", status="success"),
+    )
+
+    assert "Blocked QA recovery delegation to `technical-writer`" in blocked.content
+    assert "required_upstream=`quant-developer`" in blocked.content
+
+    quant_request = SimpleNamespace(
+        tool_call={
+            "name": "task",
+            "id": "right-bundle-owner",
+            "args": {
+                "subagent_type": "quant-developer",
+                "description": (
+                    "Regenerate the canonical evidence bundle after QA rejection."
+                ),
+            },
+        },
+        state={"messages": messages},
+    )
+    allowed = middleware.wrap_tool_call(
+        quant_request,
+        lambda req: SimpleNamespace(content="delegated", status="success"),
+    )
+
+    assert allowed.content == "delegated"
+
+
 def test_orchestrator_tool_boundary_allows_approval_emit_after_quality_approval():
     middleware = OrchestratorToolBoundaryMiddleware()
     request = SimpleNamespace(
@@ -515,6 +612,7 @@ def test_orchestrator_tool_boundary_normalizes_invalid_quant_task_result(
     assert handoff["methods_used"] == ["orchestrator_quant_task_result_guard"]
     assert handoff["charts_json"] == str(output_dir / "charts.json")
     assert handoff["execution_summary_json"] == str(output_dir / "execution_summary.json")
+    assert handoff["evidence_bundle_json"] == str(output_dir / "evidence_bundle.json")
     assert json.loads((output_dir / "charts.json").read_text(encoding="utf-8")) == []
     summary = json.loads((output_dir / "execution_summary.json").read_text())
     assert summary["failure_stage"] == "quant_invalid_task_handoff"
@@ -544,11 +642,13 @@ def test_orchestrator_tool_boundary_recovers_quant_task_result_from_saved_artifa
         json.dumps(
             {
                 "chart_ids": ["macro_signal"],
+                "evidence_bundle_json": str(output_dir / "evidence_bundle.json"),
                 "statistical_summary": "Computed macro signal chart data.",
             }
         ),
         encoding="utf-8",
     )
+    _write_valid_evidence_bundle(output_dir / "evidence_bundle.json", ["macro_signal"])
     middleware = OrchestratorToolBoundaryMiddleware()
     request = SimpleNamespace(
         tool_call={
@@ -580,6 +680,7 @@ def test_orchestrator_tool_boundary_recovers_quant_task_result_from_saved_artifa
         "chart_ids": ["macro_signal"],
         "charts_json": str(output_dir / "charts.json"),
         "execution_summary_json": str(output_dir / "execution_summary.json"),
+        "evidence_bundle_json": str(output_dir / "evidence_bundle.json"),
         "statistical_summary_excerpt": "Computed macro signal chart data.",
     }
     assert not (output_dir / "quant_failure_summary.json").exists()
@@ -619,6 +720,10 @@ def test_orchestrator_quant_artifact_recovery_requires_valid_matching_charts_jso
             ),
             encoding="utf-8",
         )
+        _write_valid_evidence_bundle(
+            output_dir / "evidence_bundle.json",
+            ["macro_signal"],
+        )
         request = SimpleNamespace(
             tool_call={
                 "name": "task",
@@ -641,12 +746,123 @@ def test_orchestrator_quant_artifact_recovery_requires_valid_matching_charts_jso
         )
 
 
-def test_orchestrator_tool_boundary_normalizes_fenced_quant_task_handoff():
+def test_orchestrator_quant_artifact_recovery_requires_evidence_bundle_json(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(quant_dev, "OUTPUT_BASE_DIR", str(tmp_path))
     middleware = OrchestratorToolBoundaryMiddleware()
+    output_dir = tmp_path / "missing-bundle"
+    output_dir.mkdir()
+    (output_dir / "charts.json").write_text(
+        json.dumps(
+            {
+                "macro_signal": {
+                    "id": "macro_signal",
+                    "type": "line",
+                    "data": [{"date": "2026-04-01", "risk": 0.42}],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (output_dir / "execution_summary.json").write_text(
+        json.dumps({"chart_ids": ["macro_signal"]}),
+        encoding="utf-8",
+    )
+    request = SimpleNamespace(
+        tool_call={
+            "name": "task",
+            "id": "call-missing-bundle",
+            "args": {
+                "subagent_type": "quant-developer",
+                "description": "Run the current job and return compact quant artifacts.",
+            },
+        },
+        state={"messages": []},
+        runtime=SimpleNamespace(context=SimpleNamespace(job_id="missing-bundle")),
+    )
+
+    assert (
+        middleware._quant_artifact_handoff_from_files(
+            request,
+            "Completed analysis and wrote artifacts, but omitted compact JSON.",
+        )
+        is None
+    )
+
+
+def test_orchestrator_quant_artifact_recovery_requires_valid_evidence_bundle_json(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(quant_dev, "OUTPUT_BASE_DIR", str(tmp_path))
+    middleware = OrchestratorToolBoundaryMiddleware()
+    output_dir = tmp_path / "invalid-bundle"
+    output_dir.mkdir()
+    (output_dir / "charts.json").write_text(
+        json.dumps(
+            {
+                "macro_signal": {
+                    "id": "macro_signal",
+                    "type": "line",
+                    "data": [{"date": "2026-04-01", "risk": 0.42}],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (output_dir / "execution_summary.json").write_text(
+        json.dumps({"chart_ids": ["macro_signal"]}),
+        encoding="utf-8",
+    )
+    (output_dir / "evidence_bundle.json").write_text(
+        json.dumps({"bundle_type": "quant_evidence_bundle"}),
+        encoding="utf-8",
+    )
+    request = SimpleNamespace(
+        tool_call={
+            "name": "task",
+            "id": "call-invalid-bundle",
+            "args": {
+                "subagent_type": "quant-developer",
+                "description": "Run the current job and return compact quant artifacts.",
+            },
+        },
+        state={"messages": []},
+        runtime=SimpleNamespace(context=SimpleNamespace(job_id="invalid-bundle")),
+    )
+
+    assert (
+        middleware._quant_artifact_handoff_from_files(
+            request,
+            "Completed analysis and wrote artifacts, but omitted compact JSON.",
+        )
+        is None
+    )
+
+
+def test_orchestrator_tool_boundary_normalizes_fenced_quant_task_handoff(tmp_path):
+    middleware = OrchestratorToolBoundaryMiddleware()
+    output_dir = tmp_path / "job"
+    output_dir.mkdir()
+    (output_dir / "charts.json").write_text(
+        json.dumps({"macro_signal": {"id": "macro_signal", "data": [{"x": 1}]}}),
+        encoding="utf-8",
+    )
+    (output_dir / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "chart_ids": ["macro_signal"],
+                "evidence_bundle_json": str(output_dir / "evidence_bundle.json"),
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_valid_evidence_bundle(output_dir / "evidence_bundle.json", ["macro_signal"])
     payload = {
         "chart_ids": ["macro_signal"],
-        "charts_json": "/tmp/outputs/job/charts.json",
-        "execution_summary_json": "/tmp/outputs/job/execution_summary.json",
+        "charts_json": str(output_dir / "charts.json"),
+        "execution_summary_json": str(output_dir / "execution_summary.json"),
+        "evidence_bundle_json": str(output_dir / "evidence_bundle.json"),
     }
     request = SimpleNamespace(
         tool_call={
@@ -671,6 +887,61 @@ def test_orchestrator_tool_boundary_normalizes_fenced_quant_task_handoff():
     )
 
     assert json.loads(response.content) == payload
+
+
+def test_orchestrator_tool_boundary_rejects_direct_handoff_missing_evidence_bundle(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(quant_dev, "OUTPUT_BASE_DIR", str(tmp_path))
+    middleware = OrchestratorToolBoundaryMiddleware()
+    output_dir = tmp_path / "direct-missing-bundle"
+    output_dir.mkdir()
+    (output_dir / "charts.json").write_text(
+        json.dumps({"macro_signal": {"id": "macro_signal", "data": [{"x": 1}]}}),
+        encoding="utf-8",
+    )
+    (output_dir / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "chart_ids": ["macro_signal"],
+                "evidence_bundle_json": str(output_dir / "evidence_bundle.json"),
+            }
+        ),
+        encoding="utf-8",
+    )
+    payload = {
+        "chart_ids": ["macro_signal"],
+        "charts_json": str(output_dir / "charts.json"),
+        "execution_summary_json": str(output_dir / "execution_summary.json"),
+        "evidence_bundle_json": str(output_dir / "evidence_bundle.json"),
+    }
+    request = SimpleNamespace(
+        tool_call={
+            "name": "task",
+            "id": "call-direct-missing-bundle",
+            "args": {
+                "subagent_type": "quant-developer",
+                "description": "Run the current job and return compact quant artifacts.",
+            },
+        },
+        state={"messages": []},
+        runtime=SimpleNamespace(context=SimpleNamespace(job_id="direct-missing-bundle")),
+    )
+
+    response = middleware.wrap_tool_call(
+        request,
+        lambda req: ToolMessage(
+            content=json.dumps(payload),
+            name="task",
+            tool_call_id=req.tool_call["id"],
+            status="success",
+        ),
+    )
+
+    handoff = json.loads(response.content)
+    assert handoff["status"] == "failed"
+    assert handoff["failure_stage"] == "quant_invalid_task_handoff"
+    assert handoff["chart_ids"] == []
 
 
 def test_orchestrator_quant_failure_handoff_uses_runtime_job_id_over_prompt_examples(
@@ -770,6 +1041,7 @@ def test_orchestrator_tool_boundary_normalizes_invalid_quant_command_result(
     assert handoff["methods_used"] == ["orchestrator_quant_task_result_guard"]
     assert handoff["charts_json"] == str(output_dir / "charts.json")
     assert handoff["execution_summary_json"] == str(output_dir / "execution_summary.json")
+    assert handoff["evidence_bundle_json"] == str(output_dir / "evidence_bundle.json")
     assert json.loads((output_dir / "charts.json").read_text(encoding="utf-8")) == []
 
 
@@ -814,8 +1086,13 @@ def test_orchestrator_tool_boundary_blocks_repeat_quant_after_successful_handoff
     middleware = OrchestratorToolBoundaryMiddleware()
     summary_path = tmp_path / "execution_summary.json"
     charts_path = tmp_path / "charts.json"
+    evidence_bundle_path = tmp_path / "evidence_bundle.json"
     summary_path.write_text("{}", encoding="utf-8")
     charts_path.write_text('{"charts":[]}', encoding="utf-8")
+    _write_valid_evidence_bundle(
+        evidence_bundle_path,
+        ["recession_risk", "labor_market"],
+    )
     request = SimpleNamespace(
         tool_call={
             "name": "task",
@@ -831,6 +1108,7 @@ def test_orchestrator_tool_boundary_blocks_repeat_quant_after_successful_handoff
                     content=(
                         f'{{"execution_summary_json":"{summary_path}",'
                         f'"charts_json":"{charts_path}",'
+                        f'"evidence_bundle_json":"{evidence_bundle_path}",'
                         '"chart_ids":["recession_risk","labor_market"]}'
                     )
                 )
@@ -848,6 +1126,48 @@ def test_orchestrator_tool_boundary_blocks_repeat_quant_after_successful_handoff
     assert "Blocked repeat quant-developer delegation" in response.content
     assert "A prior quant-developer task already returned a usable artifact handoff" in response.content
     assert "Proceed to technical-writer" in response.content
+
+
+def test_orchestrator_tool_boundary_allows_quant_when_evidence_bundle_is_invalid(tmp_path):
+    middleware = OrchestratorToolBoundaryMiddleware()
+    summary_path = tmp_path / "execution_summary.json"
+    charts_path = tmp_path / "charts.json"
+    evidence_bundle_path = tmp_path / "evidence_bundle.json"
+    summary_path.write_text("{}", encoding="utf-8")
+    charts_path.write_text('{"charts":[]}', encoding="utf-8")
+    evidence_bundle_path.write_text(
+        json.dumps({"bundle_type": "quant_evidence_bundle"}),
+        encoding="utf-8",
+    )
+    request = SimpleNamespace(
+        tool_call={
+            "name": "task",
+            "id": "call-invalid-prior-bundle",
+            "args": {
+                "subagent_type": "quant-developer",
+                "description": "Regenerate the invalid quantitative evidence bundle.",
+            },
+        },
+        state={
+            "messages": [
+                AIMessage(
+                    content=(
+                        f'{{"execution_summary_json":"{summary_path}",'
+                        f'"charts_json":"{charts_path}",'
+                        f'"evidence_bundle_json":"{evidence_bundle_path}",'
+                        '"chart_ids":["recession_risk","labor_market"]}'
+                    )
+                )
+            ]
+        },
+    )
+
+    response = middleware.wrap_tool_call(
+        request,
+        lambda req: SimpleNamespace(content="delegated", status="success"),
+    )
+
+    assert response.content == "delegated"
 
 
 def test_orchestrator_tool_boundary_allows_quant_when_handoff_paths_are_missing():
@@ -981,8 +1301,10 @@ def test_orchestrator_tool_boundary_allows_qa_requested_quant_fix_after_handoff(
     middleware = OrchestratorToolBoundaryMiddleware()
     summary_path = tmp_path / "execution_summary.json"
     charts_path = tmp_path / "charts.json"
+    evidence_bundle_path = tmp_path / "evidence_bundle.json"
     summary_path.write_text("{}", encoding="utf-8")
     charts_path.write_text('{"charts":[]}', encoding="utf-8")
+    _write_valid_evidence_bundle(evidence_bundle_path, ["recession_risk"])
     request = SimpleNamespace(
         tool_call={
             "name": "task",
@@ -998,6 +1320,7 @@ def test_orchestrator_tool_boundary_allows_qa_requested_quant_fix_after_handoff(
                     content=(
                         f'{{"execution_summary_json":"{summary_path}",'
                         f'"charts_json":"{charts_path}",'
+                        f'"evidence_bundle_json":"{evidence_bundle_path}",'
                         '"chart_ids":["recession_risk"]}'
                     )
                 )
@@ -1070,8 +1393,13 @@ def test_orchestrator_tool_boundary_allows_qa_quant_fix_for_missing_summary_enri
     middleware = OrchestratorToolBoundaryMiddleware()
     summary_path = tmp_path / "execution_summary.json"
     charts_path = tmp_path / "charts.json"
+    evidence_bundle_path = tmp_path / "evidence_bundle.json"
     summary_path.write_text("{}", encoding="utf-8")
     charts_path.write_text('{"charts":[]}', encoding="utf-8")
+    _write_valid_evidence_bundle(
+        evidence_bundle_path,
+        ["composite_signal_history", "unemployment_forecast"],
+    )
     request = SimpleNamespace(
         tool_call={
             "name": "task",
@@ -1190,8 +1518,18 @@ def test_orchestrator_tool_boundary_blocks_non_qa_chart_count_retry_after_handof
     middleware = OrchestratorToolBoundaryMiddleware()
     summary_path = tmp_path / "execution_summary.json"
     charts_path = tmp_path / "charts.json"
+    evidence_bundle_path = tmp_path / "evidence_bundle.json"
     summary_path.write_text("{}", encoding="utf-8")
     charts_path.write_text('{"charts":[]}', encoding="utf-8")
+    _write_valid_evidence_bundle(
+        evidence_bundle_path,
+        [
+            "risk-index",
+            "labor-dashboard",
+            "unemployment-forecast",
+            "inflation-crosscheck",
+        ],
+    )
     request = SimpleNamespace(
         tool_call={
             "name": "task",
@@ -1210,6 +1548,7 @@ def test_orchestrator_tool_boundary_blocks_non_qa_chart_count_retry_after_handof
                     content=(
                         f'{{"execution_summary_json":"{summary_path}",'
                         f'"charts_json":"{charts_path}",'
+                        f'"evidence_bundle_json":"{evidence_bundle_path}",'
                         '"chart_ids":["risk-index","labor-dashboard",'
                         '"unemployment-forecast","inflation-crosscheck"]}'
                     )
@@ -1233,8 +1572,13 @@ def test_orchestrator_tool_boundary_blocks_qa_report_fidelity_retry_to_quant(tmp
     middleware = OrchestratorToolBoundaryMiddleware()
     summary_path = tmp_path / "execution_summary.json"
     charts_path = tmp_path / "charts.json"
+    evidence_bundle_path = tmp_path / "evidence_bundle.json"
     summary_path.write_text("{}", encoding="utf-8")
     charts_path.write_text('{"charts":[]}', encoding="utf-8")
+    _write_valid_evidence_bundle(
+        evidence_bundle_path,
+        ["recession_risk", "yield_curve", "inflation"],
+    )
     request = SimpleNamespace(
         tool_call={
             "name": "task",
@@ -1254,6 +1598,7 @@ def test_orchestrator_tool_boundary_blocks_qa_report_fidelity_retry_to_quant(tmp
                     content=(
                         f'{{"execution_summary_json":"{summary_path}",'
                         f'"charts_json":"{charts_path}",'
+                        f'"evidence_bundle_json":"{evidence_bundle_path}",'
                         '"chart_ids":["recession_risk","yield_curve","inflation"]}'
                     )
                 )
@@ -1277,8 +1622,13 @@ def test_orchestrator_tool_boundary_blocks_report_summary_contradiction_recomput
     middleware = OrchestratorToolBoundaryMiddleware()
     summary_path = tmp_path / "execution_summary.json"
     charts_path = tmp_path / "charts.json"
+    evidence_bundle_path = tmp_path / "evidence_bundle.json"
     summary_path.write_text("{}", encoding="utf-8")
     charts_path.write_text('{"charts":[]}', encoding="utf-8")
+    _write_valid_evidence_bundle(
+        evidence_bundle_path,
+        ["macro_dashboard", "recession_probability"],
+    )
     request = SimpleNamespace(
         tool_call={
             "name": "task",
@@ -1299,6 +1649,7 @@ def test_orchestrator_tool_boundary_blocks_report_summary_contradiction_recomput
                     content=(
                         f'{{"execution_summary_json":"{summary_path}",'
                         f'"charts_json":"{charts_path}",'
+                        f'"evidence_bundle_json":"{evidence_bundle_path}",'
                         '"chart_ids":["macro_dashboard","recession_probability"]}'
                     )
                 )

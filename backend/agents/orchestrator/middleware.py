@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from langgraph.types import Command
+from pydantic import ValidationError
 
 from .common import (
     AgentMiddleware,
@@ -41,6 +42,7 @@ from ..quantitative_developer.handoff import (
 )
 from ..quantitative_developer.constants import get_output_base_dir
 from ..quantitative_developer.path_helpers import _job_id_from_text
+from ..quant_macro_stats.artifacts.evidence_bundle import EvidenceBundle
 from ..tool_utils import (
     state_messages,
     tool_call_args,
@@ -88,7 +90,12 @@ class OrchestratorToolBoundaryMiddleware(AgentMiddleware):
     """Keep top-level execution focused on status updates and delegation."""
 
     _ALLOWED_TOOL_NAMES = {"emit_chat_message", "task"}
-    _QUANT_HANDOFF_FIELDS = ("charts_json", "execution_summary_json", "chart_ids")
+    _QUANT_HANDOFF_FIELDS = (
+        "charts_json",
+        "execution_summary_json",
+        "evidence_bundle_json",
+        "chart_ids",
+    )
     _PIPELINE_SUBAGENTS = {
         "data-engineer",
         "quant-developer",
@@ -164,8 +171,9 @@ class OrchestratorToolBoundaryMiddleware(AgentMiddleware):
             content=(
                 "Blocked repeat quant-developer delegation. A prior quant-developer "
                 "task already returned a usable artifact handoff with charts_json, "
-                "execution_summary_json, and chart_ids. Proceed to technical-writer "
-                "with those paths for inspection, verification, or a "
+                "execution_summary_json, evidence_bundle_json, and chart_ids. "
+                "Proceed to technical-writer with those paths for inspection, "
+                "verification, or a "
                 "report-vs-execution_summary contradiction. Re-run quant only when "
                 "structured QA required_fixes say computed artifacts are missing, "
                 "stale, invalid, or require new analysis."
@@ -185,8 +193,9 @@ class OrchestratorToolBoundaryMiddleware(AgentMiddleware):
                 "inspect, write, or execute artifacts directly. Delegate to the "
                 "appropriate specialist, or if quant-developer already returned a "
                 "failed guardrail handoff, proceed to technical-writer with the "
-                "returned `charts_json` and `execution_summary_json` paths and "
-                "require explicit caveats about missing quantitative artifacts."
+                "returned `charts_json`, `execution_summary_json`, and "
+                "`evidence_bundle_json` paths and require explicit caveats about "
+                "missing quantitative artifacts."
             ),
             name=tool_name,
             tool_call_id=self._tool_call_id(request.tool_call),
@@ -265,8 +274,8 @@ class OrchestratorToolBoundaryMiddleware(AgentMiddleware):
                 return True
         return False
 
-    @staticmethod
-    def _has_successful_quant_artifact_handoff(messages: list[Any]) -> bool:
+    @classmethod
+    def _has_successful_quant_artifact_handoff(cls, messages: list[Any]) -> bool:
         for message in messages:
             content = str(getattr(message, "content", "") or "")
             if re.search(r'"chart_ids"\s*:\s*\[\s*\]', content):
@@ -277,16 +286,42 @@ class OrchestratorToolBoundaryMiddleware(AgentMiddleware):
                 r'"execution_summary_json"\s*:\s*"([^"]+)"', content
             )
             charts_match = re.search(r'"charts_json"\s*:\s*"([^"]+)"', content)
+            evidence_bundle_match = re.search(
+                r'"evidence_bundle_json"\s*:\s*"([^"]+)"', content
+            )
             chart_ids_match = re.search(r'"chart_ids"\s*:\s*\[(.*?)\]', content, re.S)
-            if not (execution_summary_match and charts_match and chart_ids_match):
+            if not (
+                execution_summary_match
+                and charts_match
+                and evidence_bundle_match
+                and chart_ids_match
+            ):
                 continue
             if not re.search(r'"[^"]+"', chart_ids_match.group(1)):
                 continue
             execution_summary_path = Path(execution_summary_match.group(1))
             charts_path = Path(charts_match.group(1))
-            if execution_summary_path.is_absolute() and charts_path.is_absolute():
-                if not execution_summary_path.exists() or not charts_path.exists():
+            evidence_bundle_path = Path(evidence_bundle_match.group(1))
+            chart_ids = re.findall(r'"([^"]+)"', chart_ids_match.group(1))
+            if (
+                execution_summary_path.is_absolute()
+                and charts_path.is_absolute()
+                and evidence_bundle_path.is_absolute()
+            ):
+                if (
+                    not execution_summary_path.exists()
+                    or not charts_path.exists()
+                    or not evidence_bundle_path.exists()
+                ):
                     continue
+            evidence_bundle = cls._valid_evidence_bundle_from_file(
+                evidence_bundle_path,
+                required_chart_ids=chart_ids,
+                charts_json=charts_path,
+                execution_summary_json=execution_summary_path,
+            )
+            if evidence_bundle is None:
+                continue
             return True
         return False
 
@@ -356,6 +391,7 @@ class OrchestratorToolBoundaryMiddleware(AgentMiddleware):
         return (
             isinstance(payload.get("charts_json"), str)
             and isinstance(payload.get("execution_summary_json"), str)
+            and isinstance(payload.get("evidence_bundle_json"), str)
             and isinstance(payload.get("chart_ids"), list)
         )
 
@@ -385,6 +421,60 @@ class OrchestratorToolBoundaryMiddleware(AgentMiddleware):
             return None
 
     @staticmethod
+    def _same_path(left: str | Path, right: str | Path) -> bool:
+        try:
+            return Path(left).expanduser().resolve(strict=False) == Path(
+                right
+            ).expanduser().resolve(strict=False)
+        except OSError:
+            return str(left) == str(right)
+
+    @staticmethod
+    def _valid_evidence_bundle_from_file(
+        path: Path,
+        *,
+        required_chart_ids: list[str] | None = None,
+        charts_json: Path | None = None,
+        execution_summary_json: Path | None = None,
+    ) -> EvidenceBundle | None:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        try:
+            bundle = EvidenceBundle.model_validate(payload)
+        except ValidationError:
+            return None
+        if not bundle.validation.valid:
+            return None
+        if required_chart_ids:
+            bundle_chart_ids = {chart.chart_id for chart in bundle.charts}
+            if any(chart_id not in bundle_chart_ids for chart_id in required_chart_ids):
+                return None
+        artifacts = bundle.artifacts
+        if not OrchestratorToolBoundaryMiddleware._same_path(
+            artifacts.evidence_bundle_json,
+            path,
+        ):
+            return None
+        if charts_json is not None and not OrchestratorToolBoundaryMiddleware._same_path(
+            artifacts.charts_json,
+            charts_json,
+        ):
+            return None
+        if (
+            execution_summary_json is not None
+            and not OrchestratorToolBoundaryMiddleware._same_path(
+                artifacts.execution_summary_json,
+                execution_summary_json,
+            )
+        ):
+            return None
+        return bundle
+
+    @staticmethod
     def _chart_ids_from_payload(payload: Any) -> list[str]:
         if isinstance(payload, dict):
             return [str(chart_id) for chart_id, chart in payload.items() if chart_id and chart]
@@ -395,6 +485,54 @@ class OrchestratorToolBoundaryMiddleware(AgentMiddleware):
                 if isinstance(chart, dict) and chart.get("id")
             ]
         return []
+
+    @staticmethod
+    def _string_list(value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        ids: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            text = str(item).strip() if item is not None else ""
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            ids.append(text)
+        return ids
+
+    def _valid_quant_handoff_payload(self, payload: dict[str, Any]) -> bool:
+        charts_path = Path(payload["charts_json"])
+        summary_path = Path(payload["execution_summary_json"])
+        evidence_bundle_path = Path(payload["evidence_bundle_json"])
+
+        charts_payload = self._load_json_file(charts_path)
+        available_chart_ids = self._chart_ids_from_payload(charts_payload)
+        if charts_payload is None:
+            return False
+
+        summary = self._load_json_file(summary_path)
+        if not isinstance(summary, dict) or summary.get("status") == "failed":
+            return False
+
+        payload_chart_ids = self._string_list(payload.get("chart_ids"))
+        summary_chart_ids = self._string_list(summary.get("chart_ids"))
+        if payload_chart_ids and summary_chart_ids and payload_chart_ids != summary_chart_ids:
+            return False
+
+        required_chart_ids = payload_chart_ids or summary_chart_ids or available_chart_ids
+        available_chart_id_set = set(available_chart_ids)
+        if any(chart_id not in available_chart_id_set for chart_id in required_chart_ids):
+            return False
+
+        return (
+            self._valid_evidence_bundle_from_file(
+                evidence_bundle_path,
+                required_chart_ids=required_chart_ids,
+                charts_json=charts_path,
+                execution_summary_json=summary_path,
+            )
+            is not None
+        )
 
     def _candidate_quant_output_dirs(
         self,
@@ -427,6 +565,7 @@ class OrchestratorToolBoundaryMiddleware(AgentMiddleware):
         for output_dir in self._candidate_quant_output_dirs(request, result_content):
             charts_path = output_dir / "charts.json"
             summary_path = output_dir / "execution_summary.json"
+            evidence_bundle_path = output_dir / "evidence_bundle.json"
             summary = self._load_json_file(summary_path)
             if not isinstance(summary, dict) or summary.get("status") == "failed":
                 continue
@@ -444,9 +583,18 @@ class OrchestratorToolBoundaryMiddleware(AgentMiddleware):
                 chart_ids = available_chart_ids
             if any(chart_id not in available_chart_id_set for chart_id in chart_ids):
                 continue
+            evidence_bundle = self._valid_evidence_bundle_from_file(
+                evidence_bundle_path,
+                required_chart_ids=chart_ids,
+                charts_json=charts_path,
+                execution_summary_json=summary_path,
+            )
+            if evidence_bundle is None:
+                continue
             handoff: dict[str, Any] = {
                 "charts_json": str(charts_path),
                 "execution_summary_json": str(summary_path),
+                "evidence_bundle_json": str(evidence_bundle_path),
                 "chart_ids": chart_ids,
             }
             dropped_chart_ids = summary.get("dropped_chart_ids")
@@ -480,7 +628,8 @@ class OrchestratorToolBoundaryMiddleware(AgentMiddleware):
             failure_stage="quant_invalid_task_handoff",
             error=(
                 "quant-developer task completed without returning a compact artifact "
-                "handoff containing charts_json, execution_summary_json, and chart_ids"
+                "handoff containing charts_json, execution_summary_json, "
+                "evidence_bundle_json, and chart_ids"
             ),
             methods_used=["orchestrator_quant_task_result_guard"],
         )
@@ -500,12 +649,13 @@ class OrchestratorToolBoundaryMiddleware(AgentMiddleware):
             return result
         content = str(getattr(result, "content", "") or "")
         if payload := self._quant_handoff_payload_from_content(content):
-            return ToolMessage(
-                content=json.dumps(payload, sort_keys=True),
-                name="task",
-                tool_call_id=self._tool_call_id(request.tool_call),
-                status="success",
-            )
+            if self._valid_quant_handoff_payload(payload):
+                return ToolMessage(
+                    content=json.dumps(payload, sort_keys=True),
+                    name="task",
+                    tool_call_id=self._tool_call_id(request.tool_call),
+                    status="success",
+                )
         if payload := self._quant_artifact_handoff_from_files(request, content):
             return ToolMessage(
                 content=json.dumps(payload, sort_keys=True),

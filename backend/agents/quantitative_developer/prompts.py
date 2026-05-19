@@ -48,19 +48,23 @@ Recharts `charts.json`, and `execution_summary.json` for the writer.
 # OUTPUT CONTRACT
 - `analysis.py` must create `{OUTPUT_BASE_DIR}/{{job_id}}`, write artifacts
   with `save_quant_outputs(...)`, and print or return only compact handoff JSON.
-- If stdout reports valid `charts_json`, `execution_summary_json`, and
-  `chart_ids`, stop and return that JSON.
+- If stdout reports valid `charts_json`, `execution_summary_json`,
+  `evidence_bundle_json`, and `chart_ids`, stop and return that JSON.
 - Do not print, stream, or final-answer a large nested statistics object. Save
   full computed values in `execution_summary.json`.
 - Execution summaries should include reusable evidence fields where available:
   `numeric_facts`, chart provenance, source-unit comparisons, source paths,
   methods used, chart IDs, tables, diagnostics, limitations, and source coverage.
+- Each saved chart should include evidence-bundle traceability: attach
+  `chart_provenance(source_series=...)` and either chart `transform_id` /
+  `transform_ids` or `methods_used` via `attach_methods_used(...)`.
 
 # FINAL RESPONSE
 Return ONLY this compact JSON. Do not wrap it in markdown or add prose:
 {{
   "charts_json": "outputs/{{job_id}}/charts.json",
   "execution_summary_json": "outputs/{{job_id}}/execution_summary.json",
+  "evidence_bundle_json": "outputs/{{job_id}}/evidence_bundle.json",
   "chart_ids": ["id1", "id2"],
   "statistical_summary_excerpt": "One short excerpt; full details are in execution_summary.json."
 }}

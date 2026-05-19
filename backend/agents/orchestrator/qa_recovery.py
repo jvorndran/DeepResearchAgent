@@ -12,6 +12,10 @@ _PIPELINE_REPAIR_OWNERS = {
     "quality-analyst",
 }
 
+_PIPELINE_REPAIR_OWNER_ALIASES = {
+    "quantitative-developer": "quant-developer",
+}
+
 
 @dataclass(frozen=True)
 class QualityDecision:
@@ -169,6 +173,18 @@ def _parse_required_fixes(value: object) -> tuple[str, ...]:
     return ()
 
 
+def _canonical_repair_owner(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    owner = value.strip()
+    if not owner:
+        return None
+    owner = _PIPELINE_REPAIR_OWNER_ALIASES.get(owner, owner)
+    if owner not in _PIPELINE_REPAIR_OWNERS:
+        return None
+    return owner
+
+
 def _decision_from_payload(payload: object) -> QualityDecision | None:
     if not isinstance(payload, dict):
         return None
@@ -182,13 +198,7 @@ def _decision_from_payload(payload: object) -> QualityDecision | None:
 
     reason = str(payload.get("reason") or "")
     required_fixes = _parse_required_fixes(payload.get("required_fixes"))
-    required_upstream = payload.get("required_upstream")
-    if not isinstance(required_upstream, str):
-        required_upstream = None
-    else:
-        required_upstream = required_upstream.strip()
-        if required_upstream not in _PIPELINE_REPAIR_OWNERS:
-            required_upstream = None
+    required_upstream = _canonical_repair_owner(payload.get("required_upstream"))
     failure_category = payload.get("failure_category")
     if not isinstance(failure_category, str):
         failure_category = None

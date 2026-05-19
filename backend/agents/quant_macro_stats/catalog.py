@@ -342,7 +342,10 @@ QUANT_HELPER_CATALOG: tuple[QuantHelperCategory, ...] = (
                 name="attach_methods_used",
                 import_path="agents.quant_macro_stats",
                 signature="attach_methods_used(charts, methods)",
-                use_when="Annotate chart definitions with method labels before saving.",
+                use_when=(
+                    "Annotate chart definitions with method labels before saving; "
+                    "evidence_bundle uses them as chart transform IDs."
+                ),
                 preserves=("methods_used",),
             ),
             QuantHelperSpec(
@@ -357,7 +360,12 @@ QUANT_HELPER_CATALOG: tuple[QuantHelperCategory, ...] = (
                 import_path="agents.quant_macro_stats",
                 signature="save_quant_outputs(output_dir, charts, execution_summary)",
                 use_when="Always use for final charts.json and execution_summary.json writes.",
-                preserves=("charts_json", "execution_summary_json", "chart_ids"),
+                preserves=(
+                    "charts_json",
+                    "execution_summary_json",
+                    "evidence_bundle_json",
+                    "chart_ids",
+                ),
             ),
         ),
     ),

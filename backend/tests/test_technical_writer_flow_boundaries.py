@@ -256,6 +256,10 @@ def test_plan_report_structure_uses_sec_helper_scaled_numeric_facts(tmp_path):
                 "data": [{"fiscal_year": "2026", "revenue": 215_938_000_000}],
                 "series": [{"dataKey": "revenue", "name": "Revenue"}],
                 "xAxis": {"dataKey": "fiscal_year"},
+                "transform_id": "sec_income_statement_projection",
+                "provenance": qms.chart_provenance(
+                    source_series=["sec_company_facts"]
+                ),
             }
         },
         {
