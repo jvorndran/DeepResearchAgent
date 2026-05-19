@@ -5,11 +5,12 @@ from typing import Any, Literal
 
 DATA_TOOLBOX_PREFERENCE_KEY = "data_toolbox"
 
-ProviderName = Literal["fred", "bls", "census", "worldbank", "sec"]
+ProviderName = Literal["fred", "bls", "bea", "census", "worldbank", "sec"]
 
 PROVIDER_ORDER: tuple[ProviderName, ...] = (
     "fred",
     "bls",
+    "bea",
     "census",
     "worldbank",
     "sec",
@@ -18,6 +19,7 @@ PROVIDER_ORDER: tuple[ProviderName, ...] = (
 PROVIDER_LABELS: dict[str, str] = {
     "fred": "FRED",
     "bls": "BLS",
+    "bea": "BEA",
     "census": "Census",
     "worldbank": "World Bank",
     "sec": "SEC EDGAR",

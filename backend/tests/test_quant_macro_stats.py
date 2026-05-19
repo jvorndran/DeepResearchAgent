@@ -2005,6 +2005,64 @@ def test_save_quant_outputs_preserves_source_unit_metadata_from_source_files(tmp
     assert handoff["source_unit_metadata"][0]["unit_family"] == "currency_per_time"
 
 
+def test_save_quant_outputs_preserves_bea_source_descriptors_from_source_files(tmp_path):
+    bea_path = tmp_path / "bea_nipa_t10105.csv"
+    pd.DataFrame(
+        [
+            {
+                "date": "2025-10-01",
+                "time_period": "2025Q4",
+                "value": 29184.9,
+                "provider": "BEA",
+                "series_id": "BEA.NIPA.T10105.A191RC.Q",
+                "concept_id": "A191RC",
+                "table_name": "T10105",
+                "table_title": "Table 1.1.5. Gross Domestic Product",
+                "line_number": 1,
+                "title": "Gross domestic product",
+                "units": "Current Dollars",
+                "frequency": "quarterly",
+                "unit_mult": 6,
+                "source": "BEA NIPA Data API",
+                "source_url": "https://apps.bea.gov/api/data",
+                "release_cadence": "quarterly GDP release cycle with annual NIPA updates",
+                "revision_policy": "Latest available BEA NIPA estimates; subject to revisions.",
+                "response_hash": "a" * 64,
+            }
+        ]
+    ).to_csv(bea_path, index=False)
+
+    charts = {
+        "bea_gdp": {
+            "type": "line",
+            "title": "BEA GDP",
+            "data": [{"date": "2025-10-01", "gdp": 29184.9}],
+            "series": [{"dataKey": "gdp", "name": "GDP"}],
+            "xAxis": {"dataKey": "date"},
+            **_chart_traceability("bea_gdp", "bea_gdp_projection"),
+        }
+    }
+    handoff = qms.save_quant_outputs(
+        tmp_path,
+        charts,
+        {
+            "methods_used": ["unit_test_method"],
+            "source_files": {"bea_gdp": str(bea_path)},
+        },
+    )
+    saved_summary = json.loads((tmp_path / "execution_summary.json").read_text())
+
+    source_units = saved_summary["source_unit_metadata"]
+    assert source_units[0]["provider"] == "BEA"
+    assert source_units[0]["table_name"] == "T10105"
+    assert source_units[0]["concept_id"] == "A191RC"
+    assert source_units[0]["line_number"] == "1"
+    assert source_units[0]["unit_mult"] == "6"
+    assert source_units[0]["release_cadence"].startswith("quarterly GDP")
+    assert source_units[0]["revision_policy"].startswith("Latest available BEA")
+    assert handoff["source_unit_metadata"][0]["unit_family"] == "currency"
+
+
 def test_save_quant_outputs_rejects_failed_source_unit_comparison(tmp_path):
     hourly = qms.source_unit_metadata(
         "all_hourly",

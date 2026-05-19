@@ -99,6 +99,7 @@ def test_data_engineer_tool_boundary_uses_selection_for_tools_and_prompt_section
             {"name": "extract_schema"},
             {"name": "fred_get_series"},
             {"name": "bls_get_series"},
+            {"name": "bea_get_nipa_table"},
             {"name": "census_get_table"},
             {"name": "worldbank_get_indicator"},
             {"name": "sec_fetch_company_facts"},
@@ -125,6 +126,7 @@ def test_data_engineer_tool_boundary_uses_selection_for_tools_and_prompt_section
     assert "SEC COMPANY FACTS" in seen_prompt
     assert "Common consumer-stress IDs" not in seen_prompt
     assert "BLS DIRECT SOURCE CHECKS" not in seen_prompt
+    assert "BEA NATIONAL ACCOUNTS" not in seen_prompt
     assert "CENSUS REGIONAL CONTEXT" not in seen_prompt
     assert "WORLD BANK CROSS-COUNTRY MACRO" not in seen_prompt
 
@@ -138,6 +140,7 @@ def test_data_engineer_tool_boundary_pairs_selected_tools_with_selected_sections
             {"name": "fred_search"},
             {"name": "fred_get_series"},
             {"name": "bls_get_series"},
+            {"name": "bea_get_nipa_table"},
             {"name": "census_get_table"},
             {"name": "worldbank_get_indicator"},
             {"name": "sec_fetch_company_facts"},
@@ -166,6 +169,7 @@ def test_data_engineer_tool_boundary_pairs_selected_tools_with_selected_sections
     assert "FRED PROVIDER RULES" in seen_prompt
     assert "CENSUS PROVIDER RULES" in seen_prompt
     assert "BLS PROVIDER RULES" not in seen_prompt
+    assert "BEA PROVIDER RULES" not in seen_prompt
     assert "WORLD BANK PROVIDER RULES" not in seen_prompt
     assert "SEC PROVIDER RULES" not in seen_prompt
 
@@ -209,6 +213,7 @@ def test_data_engineer_tool_boundary_broad_fallback_includes_all_provider_tools_
             {"name": "extract_schema"},
             {"name": "fred_get_series"},
             {"name": "bls_get_series"},
+            {"name": "bea_get_nipa_table"},
             {"name": "census_get_table"},
             {"name": "worldbank_get_indicator"},
             {"name": "sec_fetch_company_facts"},
@@ -231,12 +236,14 @@ def test_data_engineer_tool_boundary_broad_fallback_includes_all_provider_tools_
         "extract_schema",
         "fred_get_series",
         "bls_get_series",
+        "bea_get_nipa_table",
         "census_get_table",
         "worldbank_get_indicator",
         "sec_fetch_company_facts",
     ]
     assert "FRED PROVIDER RULES" in seen_prompt
     assert "BLS DIRECT SOURCE CHECKS" in seen_prompt
+    assert "BEA NATIONAL ACCOUNTS" in seen_prompt
     assert "CENSUS REGIONAL CONTEXT" in seen_prompt
     assert "WORLD BANK CROSS-COUNTRY MACRO" in seen_prompt
     assert "SEC COMPANY FACTS" in seen_prompt
@@ -323,6 +330,7 @@ def test_data_engineer_runnable_uses_only_data_tools(monkeypatch):
         "extract_schema",
         "bls_search_known_series",
         "bls_get_series",
+        "bea_get_nipa_table",
         "census_get_table",
         "worldbank_get_indicator",
         "sec_fetch_company_facts",

@@ -9,6 +9,7 @@ from ..data_toolbox import PROVIDER_ORDER, ProviderName, normalize_provider_list
 _PROMPT_LABELS: dict[ProviderName, str] = {
     "fred": "FRED",
     "bls": "BLS",
+    "bea": "BEA",
     "census": "CENSUS",
     "worldbank": "WORLD BANK",
     "sec": "SEC",
@@ -76,6 +77,7 @@ _SKILLS_DIR = Path(__file__).resolve().parents[2] / "skills" / "data-engineer"
 PROVIDER_SKILL_FILES: dict[ProviderName, str] = {
     "fred": "fred-macro-fetch.md",
     "bls": "bls-public-data.md",
+    "bea": "bea-national-accounts.md",
     "census": "census-regional-context.md",
     "worldbank": "worldbank-indicators.md",
     "sec": "sec-edgar-company-facts.md",

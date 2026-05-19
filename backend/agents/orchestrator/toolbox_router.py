@@ -27,7 +27,7 @@ class ToolboxRoute(BaseModel):
 
     providers: list[ProviderName] = Field(
         default_factory=list,
-        description="Relevant data providers from: fred, bls, census, worldbank, sec.",
+        description="Relevant data providers from: fred, bls, bea, census, worldbank, sec.",
     )
     confidence: float = Field(
         ge=0.0,
@@ -52,6 +52,8 @@ Valid providers:
   recession indicators, credit, production, consumption, housing, sentiment.
 - `bls`: direct BLS source checks for labor, wages, CPI/PPI, payrolls,
   productivity, and employment series when the query asks for source fidelity.
+- `bea`: BEA national accounts: GDP, real GDP, personal income, PCE,
+  corporate profits, and other NIPA table evidence.
 - `census`: US state/county demographics, income, population, housing, and
   regional context.
 - `worldbank`: cross-country annual macro comparisons such as inflation or GDP
@@ -63,7 +65,10 @@ Routing examples:
 - Microsoft/company fundamentals, revenue, margins, cash flow, earnings risk,
   or balance-sheet questions -> `sec`, not `fred`.
 - Microsoft fundamentals plus inflation/rates sensitivity -> `sec` and `fred`.
-- Macro, rates, inflation, labor, credit, recession, NBER windows -> `fred`.
+- Macro rates, inflation, labor, credit, recession, NBER windows -> `fred`.
+- GDP, GDI, income, consumption/PCE, or corporate-profits national-account
+  evidence -> `bea`; add `fred` only when broader macro time-series context is
+  also needed.
 - Consumer stress by state or regional consumer context -> `fred` and `census`.
 - Cross-country inflation or GDP-growth comparisons -> `fred` and `worldbank`.
 - Direct BLS validation of payrolls, CPI, wages, or employment -> `bls` plus any

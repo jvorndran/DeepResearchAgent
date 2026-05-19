@@ -9,6 +9,7 @@ from langchain_core.tools import tool
 from langchain.tools import ToolRuntime
 
 from core.context import ResearchContext
+from mcp_clients.bea_client import BEANIPAClient, BEADataError
 from mcp_clients.bls_client import (
     BLSPublicDataClient,
     BLSPublicDataError,
@@ -19,6 +20,7 @@ from mcp_clients.sec_edgar_client import SECEdgarClient, SECEdgarError
 from mcp_clients.worldbank_client import WorldBankDataError, WorldBankIndicatorsClient
 
 from .provider_retry import (
+    bea_error_response,
     bls_error_response,
     census_error_response,
     normalize_bls_no_key_year_window,
@@ -206,12 +208,21 @@ def extract_schema(file_paths: str | list[str]) -> str:
             df = pd.read_csv(file_path)
             metadata: dict[str, str] = {}
             for col in (
+                "provider",
                 "series_id",
+                "concept_id",
+                "table_name",
+                "table_title",
+                "line_number",
                 "title",
                 "units",
                 "frequency",
+                "unit_mult",
                 "seasonal_adjustment",
                 "source",
+                "source_url",
+                "release_cadence",
+                "revision_policy",
             ):
                 if col not in df.columns:
                     continue
@@ -254,6 +265,129 @@ def _parse_bls_series_ids(series_ids: str | list[str]) -> list[str]:
                 pass
         return [part.strip() for part in stripped.split(",") if part.strip()]
     return [str(item) for item in series_ids]
+
+
+def _parse_bea_line_numbers(line_numbers: str | list[int] | None) -> str | list[int] | None:
+    if isinstance(line_numbers, str):
+        stripped = line_numbers.strip()
+        return stripped or None
+    if line_numbers is None:
+        return None
+    return list(line_numbers)
+
+
+def _slug_for_filename(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    slug = "".join(char if char.isalnum() else "_" for char in text)
+    return "_".join(part for part in slug.split("_") if part) or "all"
+
+
+@tool
+def bea_get_nipa_table(
+    table_name: str,
+    runtime: ToolRuntime[ResearchContext],
+    frequency: str = "Q",
+    year: str = "X",
+    line_numbers: Optional[str | list[int]] = None,
+) -> str:
+    """
+    Fetch and save an allowlisted BEA NIPA national-accounts table.
+
+    Use for first-party GDP, income, personal consumption, and corporate-profits
+    evidence from BEA National Income and Product Accounts. Scope is narrow:
+    allowlisted tables are T10101, T10105, T10106, T20100, T20305, and T61600D;
+    supported frequencies are annual (`A`) and quarterly (`Q`). Set
+    BEA_API_KEY or BEA_USER_ID for access, or BEA_API_ENABLED=false to disable
+    gracefully.
+
+    Args:
+        table_name: BEA NIPA TableName or supported alias such as gdp, real_gdp,
+            personal_income, pce, or corporate_profits.
+        frequency: BEA frequency code, currently "Q" or "A".
+        year: BEA Year parameter, such as "X", "ALL", "2024", or
+            comma-separated years.
+        line_numbers: Optional LineNumber filter as a comma-separated string,
+            JSON list string, or list of positive integers.
+
+    Returns:
+        JSON string with saved CSV path, row count, BEA source descriptors, or
+        compact disabled/error payloads.
+    """
+    try:
+        result = BEANIPAClient().get_nipa_table(
+            table_name=table_name,
+            frequency=frequency,
+            year=year,
+            line_numbers=_parse_bea_line_numbers(line_numbers),
+        )
+        if result.get("status") != "success":
+            return json.dumps(result)
+
+        job_id = runtime.context.job_id
+        request = result["request"]
+        table = str(request["table_name"])
+        frequency_code = str(request["frequency"]).lower()
+        year_slug = _slug_for_filename(request["year"])
+        line_numbers_filter = result["metadata"].get("line_numbers") or []
+        line_suffix = (
+            "_lines_" + "_".join(str(line_number) for line_number in line_numbers_filter)
+            if line_numbers_filter
+            else ""
+        )
+        data_key = f"BEA_NIPA_{table}_{str(request['frequency']).upper()}{line_suffix}"
+        file_path = (
+            DATA_STORAGE_DIR
+            / job_id
+            / f"bea_nipa_{table.lower()}_{frequency_code}_{year_slug}{line_suffix}_{job_id}.csv"
+        )
+        saved = _run_async(_save_data_to_storage(result["rows"], file_path))
+
+        table_descriptor = result["table"]
+        return json.dumps(
+            {
+                "status": "success",
+                "provider": "BEA Data API",
+                "data_files": {data_key: saved["storage_path"]},
+                "row_counts": {data_key: int(saved["row_count"])},
+                "metadata": {
+                    "data_type": "bea_nipa_table",
+                    "source": "BEA NIPA Data API",
+                    "requires_api_key": True,
+                    "request": request,
+                    "table": table_descriptor,
+                    "line_numbers": line_numbers_filter,
+                    "retrieved_at": result["metadata"]["retrieved_at"],
+                    "response_hash": result["metadata"]["response_hash"],
+                    "source_descriptor": {
+                        "provider": "BEA",
+                        "source": "BEA NIPA Data API",
+                        "table_name": table_descriptor["table_name"],
+                        "title": table_descriptor["title"],
+                        "frequency": request["frequency"],
+                        "units": table_descriptor["units"],
+                        "release_cadence": table_descriptor["release_cadence"],
+                        "revision_policy": table_descriptor["revision_policy"],
+                    },
+                    "handoff_guidance": (
+                        "Use data_files directly; do not call save_data or create JSON copies. "
+                        "Preserve BEA table/line/frequency/unit/revision metadata in downstream "
+                        "source_unit_metadata."
+                    ),
+                },
+            }
+        )
+    except BEADataError as e:
+        return json.dumps(bea_error_response(str(e)))
+    except Exception as e:
+        return json.dumps(
+            {
+                "status": "error",
+                "provider": "BEA Data API",
+                "error": f"Unexpected BEA client error: {e}",
+                "retryable": False,
+                "hint": "Report BEA unavailable instead of switching to paid providers.",
+            }
+        )
 
 
 @tool

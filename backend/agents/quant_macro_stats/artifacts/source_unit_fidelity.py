@@ -24,7 +24,15 @@ def source_unit_metadata(
     title: str | None = None,
     units: str | None = None,
     frequency: str | None = None,
+    provider: str | None = None,
     source: str | None = None,
+    source_url: str | None = None,
+    table_name: str | None = None,
+    table_title: str | None = None,
+    concept_id: str | None = None,
+    line_number: str | int | None = None,
+    unit_mult: str | int | None = None,
+    release_cadence: str | None = None,
     seasonal_adjustment: str | None = None,
     value_column: str = "value",
     unit_family: str | None = None,
@@ -61,7 +69,15 @@ def source_unit_metadata(
         "title": title or metadata.get("title"),
         "units": units or metadata.get("units"),
         "frequency": frequency or metadata.get("frequency"),
+        "provider": provider or metadata.get("provider"),
         "source": source or metadata.get("source"),
+        "source_url": source_url or metadata.get("source_url"),
+        "table_name": table_name or metadata.get("table_name"),
+        "table_title": table_title or metadata.get("table_title"),
+        "concept_id": concept_id or metadata.get("concept_id"),
+        "line_number": line_number or metadata.get("line_number"),
+        "unit_mult": unit_mult or metadata.get("unit_mult"),
+        "release_cadence": release_cadence or metadata.get("release_cadence"),
         "seasonal_adjustment": seasonal_adjustment or metadata.get("seasonal_adjustment"),
         "value_column": value_column,
         "currency": currency,
@@ -69,7 +85,7 @@ def source_unit_metadata(
         "transform_basis": transform_basis,
         "vintage": vintage,
         "as_of_date": as_of_date,
-        "revision_policy": revision_policy,
+        "revision_policy": revision_policy or metadata.get("revision_policy"),
         "transformation": transformation,
     }
 
@@ -340,12 +356,23 @@ def _metadata_from_csv(source_file: str | Path | None) -> dict[str, Any]:
 
     metadata: dict[str, Any] = {}
     for key in (
+        "provider",
         "series_id",
+        "concept_id",
+        "table_name",
+        "table_title",
+        "line_number",
         "title",
         "units",
         "frequency",
+        "unit_mult",
         "seasonal_adjustment",
         "source",
+        "source_url",
+        "release_cadence",
+        "revision_policy",
+        "retrieved_at",
+        "response_hash",
     ):
         value = row.get(key)
         if _has_value(value):
@@ -382,7 +409,12 @@ def _normalize_source_unit_record(candidate: Mapping[str, Any]) -> dict[str, Any
     if not values.get("transform_basis") and isinstance(values.get("transformation"), str):
         values["transform_basis"] = values["transformation"]
     if not values.get("source_key"):
-        values["source_key"] = values.get("series_id") or values.get("label")
+        values["source_key"] = (
+            values.get("series_id")
+            or values.get("concept_id")
+            or values.get("table_name")
+            or values.get("label")
+        )
     return _drop_empty(to_json_safe(values))
 
 
@@ -391,7 +423,10 @@ def _looks_like_source_unit_record(value: Mapping[str, Any]) -> bool:
         key in value
         for key in (
             "source_key",
+            "provider",
             "series_id",
+            "concept_id",
+            "table_name",
             "title",
             "units",
             "unit_family",
@@ -407,7 +442,15 @@ def _looks_like_unit_comparison(value: Mapping[str, Any]) -> bool:
 def _is_useful_source_unit_metadata(record: Mapping[str, Any]) -> bool:
     return any(
         _has_value(record.get(key))
-        for key in ("series_id", "title", "units", "unit_family", "measure")
+        for key in (
+            "series_id",
+            "concept_id",
+            "table_name",
+            "title",
+            "units",
+            "unit_family",
+            "measure",
+        )
     )
 
 
@@ -471,7 +514,7 @@ def _source_label(record: Mapping[str, Any]) -> str:
 
 
 def _source_identity(record: Mapping[str, Any]) -> str:
-    for key in ("source_key", "series_id", "source_file", "title"):
+    for key in ("source_key", "series_id", "concept_id", "source_file", "title"):
         value = record.get(key)
         if _has_value(value):
             return str(value).strip()

@@ -98,6 +98,18 @@ async def test_toolbox_router_selects_fred_and_worldbank_for_cross_country_infla
 
 
 @pytest.mark.asyncio
+async def test_toolbox_router_selects_bea_for_national_accounts(monkeypatch):
+    toolbox, _fake = await _route(
+        monkeypatch,
+        ["bea"],
+        rationale="Analyze GDP, personal income, PCE, and corporate profits using national accounts.",
+    )
+
+    assert toolbox["providers"] == ["bea"]
+    assert toolbox["fallback"] is False
+
+
+@pytest.mark.asyncio
 async def test_toolbox_router_low_confidence_empty_output_falls_back_to_broad_toolbox(
     monkeypatch,
 ):
@@ -108,6 +120,6 @@ async def test_toolbox_router_low_confidence_empty_output_falls_back_to_broad_to
         rationale="Ambiguous request.",
     )
 
-    assert toolbox["providers"] == ["fred", "bls", "census", "worldbank", "sec"]
+    assert toolbox["providers"] == ["fred", "bls", "bea", "census", "worldbank", "sec"]
     assert toolbox["fallback"] is True
     assert "low confidence" in toolbox["rationale"].lower()

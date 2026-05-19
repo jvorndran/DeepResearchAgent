@@ -217,3 +217,82 @@ def census_error_response(message: str) -> dict[str, Any]:
         "retry_scope": retry_scope,
         "hint": hint,
     }
+
+
+def bea_error_response(message: str) -> dict[str, Any]:
+    """Build a compact BEA tool error with retry scope."""
+    normalized = message.lower()
+    malformed_payload = any(
+        token in normalized
+        for token in (
+            "not valid json",
+            "response was malformed",
+            "missing beaapi",
+            "missing beaapi.results.data",
+            "observation was not an object",
+            "missing linenumber",
+            "missing timeperiod",
+        )
+    )
+    parameter_correctable = any(
+        token in normalized
+        for token in (
+            "unsupported bea nipa table",
+            "malformed bea nipa table",
+            "unsupported bea nipa frequency",
+            "bea year must",
+            "year values must",
+            "line_numbers",
+            "line filter",
+        )
+    )
+    auth_error = any(token in normalized for token in ("api key", "userid", "unauthorized"))
+    transient = any(
+        token in normalized
+        for token in ("timed out", "request failed", "rate", "too many", "429", "503")
+    )
+
+    if malformed_payload:
+        retryable = False
+        error_type = "provider_payload_unusable"
+        retry_scope = "none"
+        hint = (
+            "BEA returned an unusable payload from valid-looking NIPA parameters. "
+            "Do not retry BEA by changing tables or dates; preserve this error in "
+            "metadata.fetch_errors and continue with active fallback providers."
+        )
+    elif parameter_correctable:
+        retryable = True
+        error_type = "correctable_parameters"
+        retry_scope = "corrected_parameters"
+        hint = (
+            "Retry at most once with an allowlisted BEA NIPA table, frequency A or Q, "
+            "and optional positive integer line_numbers."
+        )
+    elif transient:
+        retryable = True
+        error_type = "transient_provider_error"
+        retry_scope = "transient"
+        hint = "Retry at most once after the transient BEA request failure, then record a fetch_errors caveat."
+    else:
+        retryable = False
+        error_type = "terminal_provider_error"
+        retry_scope = "none"
+        hint = (
+            "Report BEA unavailable for this objective instead of switching to paid providers."
+        )
+        if auth_error:
+            hint = (
+                "BEA API credentials are unavailable or invalid. Preserve this error in "
+                "metadata.fetch_errors and use active public fallback providers when allowed."
+            )
+
+    return {
+        "status": "error",
+        "provider": "BEA Data API",
+        "error": message,
+        "retryable": retryable,
+        "error_type": error_type,
+        "retry_scope": retry_scope,
+        "hint": hint,
+    }

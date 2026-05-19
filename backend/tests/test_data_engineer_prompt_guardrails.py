@@ -12,6 +12,7 @@ def test_data_engineer_build_system_prompt_selects_only_fred_section():
     assert "FRED PROVIDER RULES" in prompt
     assert "Common consumer-stress IDs" in prompt
     assert "BLS PROVIDER RULES" not in prompt
+    assert "BEA PROVIDER RULES" not in prompt
     assert "CENSUS PROVIDER RULES" not in prompt
     assert "WORLD BANK PROVIDER RULES" not in prompt
     assert "SEC PROVIDER RULES" not in prompt
@@ -33,10 +34,12 @@ def test_data_engineer_build_system_prompt_avoids_inactive_provider_names():
 
     assert "SEC EDGAR" not in fred_prompt
     assert "BLS DIRECT SOURCE CHECKS" not in fred_prompt
+    assert "BEA NATIONAL ACCOUNTS" not in fred_prompt
     assert "WORLD BANK CROSS-COUNTRY MACRO" not in fred_prompt
 
     assert "FRED" not in sec_prompt
     assert "BLS" not in sec_prompt
+    assert "BEA" not in sec_prompt
     assert "World Bank" not in sec_prompt
     assert "Census" not in sec_prompt
 
@@ -46,6 +49,7 @@ def test_data_engineer_build_system_prompt_broad_fallback_includes_all_provider_
 
     assert "FRED PROVIDER RULES" in prompt
     assert "BLS PROVIDER RULES" in prompt
+    assert "BEA PROVIDER RULES" in prompt
     assert "CENSUS PROVIDER RULES" in prompt
     assert "WORLD BANK PROVIDER RULES" in prompt
     assert "SEC PROVIDER RULES" in prompt
@@ -54,12 +58,14 @@ def test_data_engineer_build_system_prompt_broad_fallback_includes_all_provider_
 def test_data_engineer_provider_details_are_not_in_core_prompt():
     assert "Common consumer-stress IDs" not in DATA_ENGINEER_CORE_PROMPT
     assert "BLS DIRECT SOURCE CHECKS" not in DATA_ENGINEER_CORE_PROMPT
+    assert "BEA NATIONAL ACCOUNTS" not in DATA_ENGINEER_CORE_PROMPT
     assert "CENSUS REGIONAL CONTEXT" not in DATA_ENGINEER_CORE_PROMPT
     assert "WORLD BANK CROSS-COUNTRY MACRO" not in DATA_ENGINEER_CORE_PROMPT
     assert "SEC COMPANY FACTS" not in DATA_ENGINEER_CORE_PROMPT
 
     assert "Common consumer-stress IDs" in PROVIDER_PROMPT_SECTIONS["fred"]
     assert "BLS DIRECT SOURCE CHECKS" in PROVIDER_PROMPT_SECTIONS["bls"]
+    assert "BEA NATIONAL ACCOUNTS" in PROVIDER_PROMPT_SECTIONS["bea"]
     assert "CENSUS REGIONAL CONTEXT" in PROVIDER_PROMPT_SECTIONS["census"]
     assert "WORLD BANK CROSS-COUNTRY MACRO" in PROVIDER_PROMPT_SECTIONS["worldbank"]
     assert "SEC COMPANY FACTS" in PROVIDER_PROMPT_SECTIONS["sec"]
@@ -74,6 +80,7 @@ def test_data_engineer_core_prompt_stays_compact_and_routes_provider_details():
     for provider_tool in (
         "fred_get_series",
         "bls_get_series",
+        "bea_get_nipa_table",
         "census_get_table",
         "worldbank_get_indicator",
         "sec_fetch_company_facts",
@@ -85,6 +92,7 @@ def test_data_engineer_provider_sections_are_loaded_from_skill_files():
     assert PROVIDER_SKILL_FILES == {
         "fred": "fred-macro-fetch.md",
         "bls": "bls-public-data.md",
+        "bea": "bea-national-accounts.md",
         "census": "census-regional-context.md",
         "worldbank": "worldbank-indicators.md",
         "sec": "sec-edgar-company-facts.md",
@@ -137,6 +145,8 @@ def test_data_engineer_prompt_blocks_chatter_and_manual_csv_cleanup():
     assert "research query explicitly asks for them" in prompt
     assert "BLS" in prompt
     assert "public data" in prompt
+    assert "BEA National Accounts" in prompt
+    assert "`bea_get_nipa_table` saves BEA CSVs" in prompt
     assert "`bls_get_series` saves BLS CSVs" in prompt
     assert "Census public data" in prompt
     assert "`census_get_table`" in prompt
@@ -171,6 +181,22 @@ def test_data_engineer_prompt_allows_direct_bls_source_checks():
     assert "versus applied window" in prompt
     assert "Do not retry the same BLS objective" in prompt
     assert "do not call `save_data` afterward" in prompt
+
+
+def test_data_engineer_prompt_allows_bea_national_accounts():
+    prompt = build_system_prompt()
+
+    assert "First-party national-accounts evidence" in prompt
+    assert "`bea_get_nipa_table`" in prompt
+    assert "`T10105` current-dollar" in prompt
+    assert "`T20305` PCE" in prompt
+    assert "`T61600D` corporate" in prompt
+    assert "Supported frequencies are `Q` and `A`" in prompt
+    assert "`BEA_API_KEY` or `BEA_USER_ID`" in prompt
+    assert "`metadata.fetch_errors`" in prompt
+    assert "Preserve BEA source descriptors" in prompt
+    assert "`release_cadence`" in prompt
+    assert "`revision_policy`" in prompt
 
 
 def test_data_engineer_prompt_includes_unemployment_forecast_fetch_set():
