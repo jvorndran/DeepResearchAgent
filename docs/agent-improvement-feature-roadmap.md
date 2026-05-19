@@ -481,3 +481,13 @@ agent flow it advanced.
   - Tests: cd backend && uv run pytest tests/test_quant_macro_stats.py; cd backend && uv run pytest tests/test_quality_analyst_subagent.py -k "evidence_bundle or source_unit_mismatch or load_report_for_review"; cd backend && uv run pytest tests/test_orchestrator_middleware.py -k "evidence_bundle or quant_artifact_recovery"; cd backend && uv run ruff check agents/quant_macro_stats/artifacts/evidence_bundle.py agents/quant_macro_stats/artifacts/source_unit_fidelity.py agents/quant_macro_stats/artifacts/numeric_fact_contracts.py agents/quant_macro_stats/artifacts/quant_output_writer.py agents/quant_macro_stats/catalog.py agents/quant_macro_stats/company/sec_company_facts_evidence.py tests/test_quant_macro_stats.py tests/test_quality_analyst_subagent.py tests/test_orchestrator_middleware.py
   - Implementation: Implemented typed source and transform descriptors in evidence_bundle.json with save-boundary validation for source semantics and derived-transform basis.
   - Review: no blocking findings; roadmap-aligned source/transform descriptor slice with adequate targeted verification
+
+- [x] 2026-05-19T15:27:59-04:00 - Dataframe validation layer
+  - Roadmap section: Priority 3: Dataframe Validation Layer
+  - Flow stage: validated transforms
+  - Run/pass: 20260519-132826 / 2
+  - Summary: /home/vorndranj/projects/DeepResearchAgent/logs/feature-loop/runs/20260519-132826/feature-2/summary.md
+  - Files changed: backend/agents/quant_macro_stats/artifacts/chart_source_validation.py, backend/agents/quant_macro_stats/artifacts/quant_output_writer.py, backend/agents/quant_macro_stats/artifacts/evidence_bundle.py, backend/tests/test_quant_macro_stats.py
+  - Tests: cd backend && uv run pytest tests/test_quant_macro_stats.py -k "chart_source_table or grouped_axis_chart or evidence_payload or chart_transform_ids"; cd backend && uv run pytest tests/test_quant_macro_stats.py; cd backend && uv run ruff check agents/quant_macro_stats/artifacts/chart_source_validation.py agents/quant_macro_stats/artifacts/quant_output_writer.py agents/quant_macro_stats/artifacts/evidence_bundle.py tests/test_quant_macro_stats.py
+  - Implementation: Added strict save-boundary validation for declared chart source tables with evidence-bundle metadata for valid saved charts.
+  - Review: no blocking findings; roadmap-aligned chart source-table validation with adequate targeted verification

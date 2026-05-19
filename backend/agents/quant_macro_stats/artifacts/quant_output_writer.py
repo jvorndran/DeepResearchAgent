@@ -10,6 +10,7 @@ from ...artifact_fact_consistency import (
     artifact_fact_consistency_dict,
 )
 from .chart_provenance import normalize_chart_provenance
+from .chart_source_validation import validate_chart_source_tables
 from .evidence_bundle import build_evidence_bundle
 from .json_safety import to_json_safe
 from .recharts_schema_normalization import (
@@ -50,10 +51,13 @@ def save_quant_outputs(
     summary_path = output_path / "execution_summary.json"
     evidence_bundle_path = output_path / "evidence_bundle.json"
 
-    chart_map, dropped_chart_ids, chart_normalization_issues = _drop_empty_chart_definitions(
-        _chart_map_from_payload(charts)
+    input_chart_map = _chart_map_from_payload(charts)
+    validate_chart_source_tables(input_chart_map)
+    chart_map, dropped_chart_ids, chart_normalization_issues = (
+        _drop_empty_chart_definitions(input_chart_map)
     )
     chart_ids = list(chart_map.keys())
+    chart_source_validation = validate_chart_source_tables(chart_map)
 
     summary = normalize_quant_execution_summary(execution_summary)
     _normalize_declared_since_lists(summary)
@@ -65,6 +69,9 @@ def save_quant_outputs(
     summary["execution_summary_json"] = str(summary_path)
     summary["evidence_bundle_json"] = str(evidence_bundle_path)
     summary["chart_ids"] = chart_ids
+    chart_source_metadata = chart_source_validation.metadata_for_chart_ids(chart_ids)
+    if chart_source_metadata:
+        summary["chart_source_table_validation"] = chart_source_metadata
     if dropped_chart_ids:
         summary["dropped_chart_ids"] = dropped_chart_ids
     if chart_normalization_issues:

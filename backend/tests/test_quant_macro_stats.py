@@ -55,6 +55,12 @@ def _chart_traceability(
     }
 
 
+def _assert_no_quant_artifacts(path: Path) -> None:
+    assert not (path / "charts.json").exists()
+    assert not (path / "execution_summary.json").exists()
+    assert not (path / "evidence_bundle.json").exists()
+
+
 def test_quant_macro_stats_public_exports_are_helper_only():
     required_exports = {
         "align_period_features",
@@ -1141,6 +1147,25 @@ def test_save_quant_outputs_writes_generic_evidence_payload(tmp_path):
     assert saved_bundle["transforms"][0]["source_ids"] == ["FRED"]
     assert saved_bundle["normalized_tables"][0]["table_id"] == "chart_data:trend"
     assert saved_bundle["normalized_tables"][0]["source_id"] == "FRED"
+    chart_source_validation = saved_summary["chart_source_table_validation"]["trend"]
+    assert chart_source_validation == {
+        "status": "valid",
+        "validation_version": 1,
+        "chart_id": "trend",
+        "table_id": "chart_data:trend",
+        "chart_type": "line",
+        "axis_key": "date",
+        "series_keys": ["value"],
+        "row_count": 1,
+        "columns": ["date", "value"],
+        "unique_axis_values": 1,
+    }
+    assert (
+        saved_bundle["normalized_tables"][0]["metadata"][
+            "chart_source_table_validation"
+        ]
+        == chart_source_validation
+    )
     assert saved_bundle["sources"][0]["source_id"] == "FRED"
     assert saved_bundle["validation"]["valid"] is True
     assert saved_bundle["artifacts"]["charts_json"] == str(tmp_path / "charts.json")
@@ -1248,17 +1273,26 @@ def test_save_quant_outputs_uses_methods_as_evidence_bundle_chart_transform_ids(
     assert saved_bundle["charts"][0]["transform_ids"] == [
         "monthly_latest_value_projection"
     ]
-    assert saved_bundle["normalized_tables"][0] == {
+    table_ref = saved_bundle["normalized_tables"][0]
+    assert table_ref["table_id"] == "chart_data:trend"
+    assert table_ref["kind"] == "normalized"
+    assert table_ref["source_id"] == "UNRATE"
+    assert table_ref["role"] == "chart_data"
+    assert table_ref["row_count"] == 1
+    assert table_ref["columns"] == ["date", "value"]
+    assert table_ref["metadata"]["chart_id"] == "trend"
+    assert table_ref["metadata"]["source_ids"] == ["UNRATE"]
+    assert table_ref["metadata"]["chart_source_table_validation"] == {
+        "status": "valid",
+        "validation_version": 1,
+        "chart_id": "trend",
         "table_id": "chart_data:trend",
-        "kind": "normalized",
-        "source_id": "UNRATE",
-        "role": "chart_data",
+        "chart_type": "line",
+        "axis_key": "date",
+        "series_keys": ["value"],
         "row_count": 1,
         "columns": ["date", "value"],
-        "metadata": {
-            "chart_id": "trend",
-            "source_ids": ["UNRATE"],
-        },
+        "unique_axis_values": 1,
     }
 
 
@@ -1989,7 +2023,14 @@ def test_save_quant_outputs_rejects_failed_source_unit_comparison(tmp_path):
     with pytest.raises(ValueError, match="wage_divergence failed source-unit validation"):
         qms.save_quant_outputs(
             tmp_path,
-            {"wages": {"type": "line", "data": [{"date": "2025", "value": 1}]}},
+            {
+                "wages": {
+                    "type": "line",
+                    "data": [{"date": "2025", "value": 1}],
+                    "series": [{"dataKey": "value", "name": "Value"}],
+                    "xAxis": {"dataKey": "date"},
+                }
+            },
             {
                 "source_unit_metadata": [hourly, weekly],
                 "unit_comparisons": [comparison],
@@ -2319,7 +2360,202 @@ def test_save_quant_outputs_ignores_report_aligned_preservation_flags(tmp_path):
     assert "preserved_report_aligned_charts" not in saved_summary
 
 
-def test_save_quant_outputs_drops_ambiguous_grouped_axis_chart_with_issue(tmp_path):
+def test_save_quant_outputs_rejects_duplicate_axis_rows_before_writes(tmp_path):
+    charts = {
+        "trend": {
+            "type": "line",
+            "title": "Trend",
+            "xAxisKey": "date",
+            "data": [
+                {"date": "2024-01", "value": 1.0},
+                {"date": "2024-01", "value": 2.0},
+            ],
+            "series": [{"dataKey": "value", "label": "Value"}],
+            **_chart_traceability("FRED", "unit_test_projection"),
+        }
+    }
+
+    with pytest.raises(ValueError) as exc:
+        qms.save_quant_outputs(
+            tmp_path,
+            charts,
+            {"methods_used": ["unit_test_method"]},
+        )
+
+    message = str(exc.value)
+    assert "chart_source_table_validation failed" in message
+    assert "chart 'trend' table 'chart_data:trend' column 'date'" in message
+    assert "duplicate axis value '2024-01' at rows 0 and 1" in message
+    _assert_no_quant_artifacts(tmp_path)
+
+
+def test_save_quant_outputs_rejects_missing_declared_series_before_writes(tmp_path):
+    charts = {
+        "trend": {
+            "type": "line",
+            "title": "Trend",
+            "xAxisKey": "date",
+            "data": [{"date": "2024-01", "value": 1.0}],
+            **_chart_traceability("FRED", "unit_test_projection"),
+        }
+    }
+
+    with pytest.raises(ValueError) as exc:
+        qms.save_quant_outputs(
+            tmp_path,
+            charts,
+            {"methods_used": ["unit_test_method"]},
+        )
+
+    message = str(exc.value)
+    assert "chart 'trend' table 'chart_data:trend' column 'series.dataKey'" in message
+    assert "missing plotted series dataKey for non-empty axis chart data" in message
+    _assert_no_quant_artifacts(tmp_path)
+
+
+def test_save_quant_outputs_reports_missing_axis_and_series_before_writes(tmp_path):
+    charts = {
+        "trend": {
+            "type": "line",
+            "title": "Trend",
+            "data": [{"date": "2024-01", "value": 1.0}],
+            **_chart_traceability("FRED", "unit_test_projection"),
+        }
+    }
+
+    with pytest.raises(ValueError) as exc:
+        qms.save_quant_outputs(
+            tmp_path,
+            charts,
+            {"methods_used": ["unit_test_method"]},
+        )
+
+    message = str(exc.value)
+    assert "chart 'trend' table 'chart_data:trend' column 'xAxisKey'" in message
+    assert "missing axis key for non-empty axis chart data" in message
+    assert "chart 'trend' table 'chart_data:trend' column 'series.dataKey'" in message
+    assert "missing plotted series dataKey for non-empty axis chart data" in message
+    _assert_no_quant_artifacts(tmp_path)
+
+
+def test_save_quant_outputs_rejects_untyped_numeric_axis_payload_before_writes(
+    tmp_path,
+):
+    charts = {
+        "trend": {
+            "title": "Trend",
+            "data": [
+                {"date": "2024-01", "value": 1.0},
+                {"date": "2024-02", "value": 2.0},
+            ],
+            **_chart_traceability("FRED", "unit_test_projection"),
+        }
+    }
+
+    with pytest.raises(ValueError) as exc:
+        qms.save_quant_outputs(
+            tmp_path,
+            charts,
+            {"methods_used": ["unit_test_method"]},
+        )
+
+    message = str(exc.value)
+    assert "chart_source_table_validation failed" in message
+    assert "chart 'trend' table 'chart_data:trend' column 'xAxisKey'" in message
+    assert "missing axis key for non-empty axis chart data" in message
+    assert "chart 'trend' table 'chart_data:trend' column 'series.dataKey'" in message
+    assert "missing plotted series dataKey for non-empty axis chart data" in message
+    _assert_no_quant_artifacts(tmp_path)
+
+
+def test_save_quant_outputs_rejects_missing_plotted_column_before_writes(tmp_path):
+    charts = {
+        "trend": {
+            "type": "bar",
+            "title": "Trend",
+            "xAxisKey": "date",
+            "data": [{"date": "2024-01", "other": 1.0}],
+            "series": [{"dataKey": "value", "label": "Value"}],
+            **_chart_traceability("FRED", "unit_test_projection"),
+        }
+    }
+
+    with pytest.raises(ValueError) as exc:
+        qms.save_quant_outputs(
+            tmp_path,
+            charts,
+            {"methods_used": ["unit_test_method"]},
+        )
+
+    message = str(exc.value)
+    assert "chart 'trend' table 'chart_data:trend' column 'value'" in message
+    assert "missing required plotted column in row 0" in message
+    _assert_no_quant_artifacts(tmp_path)
+
+
+def test_save_quant_outputs_rejects_non_finite_plotted_values_before_writes(
+    tmp_path,
+):
+    charts = {
+        "trend": {
+            "type": "line",
+            "title": "Trend",
+            "xAxisKey": "date",
+            "data": [{"date": "2024-01", "value": float("nan")}],
+            "series": [{"dataKey": "value", "label": "Value"}],
+            **_chart_traceability("FRED", "unit_test_projection"),
+        }
+    }
+
+    with pytest.raises(ValueError) as exc:
+        qms.save_quant_outputs(
+            tmp_path,
+            charts,
+            {"methods_used": ["unit_test_method"]},
+        )
+
+    message = str(exc.value)
+    assert "chart 'trend' table 'chart_data:trend' column 'value'" in message
+    assert "non-finite plotted value at row 0" in message
+    _assert_no_quant_artifacts(tmp_path)
+
+
+def test_save_quant_outputs_accepts_legacy_layout_series_declarations(tmp_path):
+    charts = {
+        "legacy_trend": {
+            "type": "line",
+            "title": "Legacy Trend",
+            "layout": {
+                "x_data_key": "date",
+                "lines": [{"data_key": "value", "label": "Value"}],
+            },
+            "data": [{"date": "2024-01", "value": 1.0}],
+            **_chart_traceability("FRED", "unit_test_projection"),
+        }
+    }
+
+    handoff = qms.save_quant_outputs(
+        tmp_path,
+        charts,
+        {"methods_used": ["unit_test_method"]},
+    )
+    saved_summary = json.loads((tmp_path / "execution_summary.json").read_text())
+    saved_charts = json.loads((tmp_path / "charts.json").read_text())
+
+    validation = saved_summary["chart_source_table_validation"]["legacy_trend"]
+    assert handoff["chart_ids"] == ["legacy_trend"]
+    assert saved_charts["legacy_trend"]["xAxisKey"] == "date"
+    assert saved_charts["legacy_trend"]["series"] == [
+        {"dataKey": "value", "label": "Value", "color": "#2563eb"}
+    ]
+    assert validation["axis_key"] == "date"
+    assert validation["series_keys"] == ["value"]
+    assert validation["columns"] == ["date", "value"]
+
+
+def test_save_quant_outputs_rejects_ambiguous_grouped_axis_chart_before_writes(
+    tmp_path,
+):
     charts = {
         "margin_comparison": {
             "type": "line",
@@ -2338,32 +2574,27 @@ def test_save_quant_outputs_drops_ambiguous_grouped_axis_chart_with_issue(tmp_pa
         }
     }
 
-    handoff = qms.save_quant_outputs(
-        tmp_path,
-        charts,
-        {"methods_used": ["unit_test_method"]},
-    )
-    saved_summary = json.loads((tmp_path / "execution_summary.json").read_text())
-    saved_charts = json.loads((tmp_path / "charts.json").read_text())
+    with pytest.raises(ValueError) as exc:
+        qms.save_quant_outputs(
+            tmp_path,
+            charts,
+            {"methods_used": ["unit_test_method"]},
+        )
 
-    expected_issue = (
-        "dropped unsupported groupBy=ticker chart: duplicate finite values "
-        "for fiscal_year/ticker pairs"
-    )
-    assert saved_charts == {}
-    assert handoff["chart_ids"] == []
-    assert handoff["dropped_chart_ids"] == ["margin_comparison"]
-    assert saved_summary["chart_ids"] == []
-    assert saved_summary["dropped_chart_ids"] == ["margin_comparison"]
-    assert saved_summary["chart_normalization_issues"] == {
-        "margin_comparison": [expected_issue]
-    }
-    assert handoff["chart_normalization_issues"] == {
-        "margin_comparison": [expected_issue]
-    }
+    message = str(exc.value)
+    assert (
+        "chart 'margin_comparison' table 'chart_data:margin_comparison' "
+        "column 'ticker'"
+    ) in message
+    assert (
+        "duplicate groupBy pair fiscal_year='2024' ticker='AAPL' at rows 0 and 1"
+    ) in message
+    _assert_no_quant_artifacts(tmp_path)
 
 
-def test_save_quant_outputs_drops_multi_datakey_grouped_axis_chart_with_issue(tmp_path):
+def test_save_quant_outputs_rejects_multi_datakey_grouped_axis_chart_before_writes(
+    tmp_path,
+):
     charts = {
         "multi_metric_peer_chart": {
             "type": "bar",
@@ -2391,6 +2622,48 @@ def test_save_quant_outputs_drops_multi_datakey_grouped_axis_chart_with_issue(tm
         }
     }
 
+    with pytest.raises(ValueError) as exc:
+        qms.save_quant_outputs(
+            tmp_path,
+            charts,
+            {"methods_used": ["unit_test_method"]},
+        )
+
+    message = str(exc.value)
+    assert (
+        "chart 'multi_metric_peer_chart' table "
+        "'chart_data:multi_metric_peer_chart' column 'series.dataKey'"
+    ) in message
+    assert (
+        "groupBy axis charts must declare one shared plotted dataKey; "
+        "got revenue_growth, operating_margin"
+    ) in message
+    _assert_no_quant_artifacts(tmp_path)
+
+
+def test_save_quant_outputs_saves_valid_grouped_axis_chart_with_validation_metadata(
+    tmp_path,
+):
+    charts = {
+        "cagr_summary": {
+            "type": "bar",
+            "title": "5-Year CAGR Comparison",
+            "xAxisKey": "metric",
+            "data": [
+                {"metric": "Revenue", "ticker": "AAPL", "cagr": 6.2},
+                {"metric": "Revenue", "ticker": "MSFT", "cagr": 12.1},
+                {"metric": "FCF", "ticker": "AAPL", "cagr": 8.4},
+                {"metric": "FCF", "ticker": "MSFT", "cagr": 9.7},
+            ],
+            "series": [
+                {"dataKey": "cagr", "label": "AAPL", "color": "#3b82f6"},
+                {"dataKey": "cagr", "label": "MSFT", "color": "#f59e0b"},
+            ],
+            "config": {"groupBy": "ticker"},
+            **_chart_traceability("SEC", "unit_test_projection"),
+        }
+    }
+
     handoff = qms.save_quant_outputs(
         tmp_path,
         charts,
@@ -2398,22 +2671,38 @@ def test_save_quant_outputs_drops_multi_datakey_grouped_axis_chart_with_issue(tm
     )
     saved_summary = json.loads((tmp_path / "execution_summary.json").read_text())
     saved_charts = json.loads((tmp_path / "charts.json").read_text())
+    saved_bundle = json.loads((tmp_path / "evidence_bundle.json").read_text())
 
-    expected_issue = (
-        "dropped unsupported groupBy=ticker chart: multiple series dataKeys "
-        "cannot be pivoted (revenue_growth, operating_margin)"
+    validation = saved_summary["chart_source_table_validation"]["cagr_summary"]
+    assert handoff["chart_ids"] == ["cagr_summary"]
+    assert saved_charts["cagr_summary"]["series"] == [
+        {"dataKey": "AAPL", "label": "AAPL", "color": "#3b82f6"},
+        {"dataKey": "MSFT", "label": "MSFT", "color": "#f59e0b"},
+    ]
+    assert saved_charts["cagr_summary"]["data"] == [
+        {"metric": "Revenue", "AAPL": 6.2, "MSFT": 12.1},
+        {"metric": "FCF", "AAPL": 8.4, "MSFT": 9.7},
+    ]
+    assert validation == {
+        "status": "valid",
+        "validation_version": 1,
+        "chart_id": "cagr_summary",
+        "table_id": "chart_data:cagr_summary",
+        "chart_type": "bar",
+        "axis_key": "metric",
+        "series_keys": ["AAPL", "MSFT"],
+        "row_count": 2,
+        "columns": ["metric", "AAPL", "MSFT"],
+        "unique_axis_values": 2,
+    }
+    assert saved_bundle["normalized_tables"][0]["row_count"] == validation["row_count"]
+    assert saved_bundle["normalized_tables"][0]["columns"] == validation["columns"]
+    assert (
+        saved_bundle["normalized_tables"][0]["metadata"][
+            "chart_source_table_validation"
+        ]
+        == validation
     )
-    assert saved_charts == {}
-    assert handoff["chart_ids"] == []
-    assert handoff["dropped_chart_ids"] == ["multi_metric_peer_chart"]
-    assert saved_summary["chart_ids"] == []
-    assert saved_summary["dropped_chart_ids"] == ["multi_metric_peer_chart"]
-    assert saved_summary["chart_normalization_issues"] == {
-        "multi_metric_peer_chart": [expected_issue]
-    }
-    assert handoff["chart_normalization_issues"] == {
-        "multi_metric_peer_chart": [expected_issue]
-    }
 
 
 def test_normalize_quant_report_charts_returns_dropped_ids():

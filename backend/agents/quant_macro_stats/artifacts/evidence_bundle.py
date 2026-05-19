@@ -746,6 +746,13 @@ def _chart_data_table_refs(
         data = payload.get("data")
         if not source_ids or not isinstance(data, list) or not data:
             continue
+        metadata = {
+            "chart_id": chart_id,
+            "source_ids": source_ids,
+        }
+        chart_source_validation = _chart_source_validation_metadata(summary, chart_id)
+        if chart_source_validation:
+            metadata["chart_source_table_validation"] = chart_source_validation
         refs.append(
             EvidenceTableRef(
                 table_id=_chart_data_table_id(chart_id),
@@ -754,13 +761,23 @@ def _chart_data_table_refs(
                 role="chart_data",
                 row_count=len(data),
                 columns=_chart_data_columns(payload),
-                metadata={
-                    "chart_id": chart_id,
-                    "source_ids": source_ids,
-                },
+                metadata=metadata,
             )
         )
     return refs
+
+
+def _chart_source_validation_metadata(
+    summary: Mapping[str, Any],
+    chart_id: str,
+) -> dict[str, Any]:
+    validation = summary.get("chart_source_table_validation")
+    if not isinstance(validation, Mapping):
+        return {}
+    metadata = validation.get(chart_id)
+    if not isinstance(metadata, Mapping):
+        return {}
+    return _clean_mapping(metadata) or {}
 
 
 def _table_refs_from_summary(
