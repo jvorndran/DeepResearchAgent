@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "job_id": "benchmark-missing-chart-handoff",
+  "created_at": "2026-05-19T13:28:26Z",
+  "query": "Include charts in the macro report.",
+  "title": "Consumer Stress Benchmark",
+  "executive_summary": "One consumer stress chart survived the report projection.",
+  "markdown": "## Executive Summary\nOne consumer stress chart survived the report projection.\n\n<!-- CHART:consumer_stress_dashboard -->\n\n## Research Query\nInclude charts in the macro report.",
+  "charts": {
+    "consumer_stress_dashboard": {
+      "id": "consumer_stress_dashboard",
+      "type": "line",
+      "title": "Consumer Stress Dashboard",
+      "description": "Consumer stress over time.",
+      "xAxisKey": "date",
+      "series": [
+        {
+          "dataKey": "value",
+          "label": "Stress Index",
+          "color": "#2563eb"
+        }
+      ],
+      "data": [
+        {
+          "date": "2026-01",
+          "value": 1.0
+        }
+      ]
+    }
+  },
+  "data_sources": [
+    {
+      "provider": "FRED",
+      "description": "Federal Reserve Economic Data consumer indicators.",
+      "series_ids": ["PSAVERT", "DRCCLACBS"],
+      "date_range": {
+        "start": "2026-01",
+        "end": "2026-01"
+      },
+      "row_count": 1
+    }
+  ],
+  "metadata": {
+    "analysis_type": "macro_indicator",
+    "chart_count": 1,
+    "word_count": 21
+  }
+}

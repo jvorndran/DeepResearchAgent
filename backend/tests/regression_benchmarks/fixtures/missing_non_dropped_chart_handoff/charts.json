@@ -1,0 +1,42 @@
+{
+  "consumer_stress_dashboard": {
+    "id": "consumer_stress_dashboard",
+    "type": "line",
+    "title": "Consumer Stress Dashboard",
+    "description": "Consumer stress over time.",
+    "xAxisKey": "date",
+    "series": [
+      {
+        "dataKey": "value",
+        "label": "Stress Index",
+        "color": "#2563eb"
+      }
+    ],
+    "data": [
+      {
+        "date": "2026-01",
+        "value": 1.0
+      }
+    ]
+  },
+  "savings_credit_stress": {
+    "id": "savings_credit_stress",
+    "type": "line",
+    "title": "Savings And Credit Stress",
+    "description": "Savings and credit stress over time.",
+    "xAxisKey": "date",
+    "series": [
+      {
+        "dataKey": "value",
+        "label": "Savings/Credit Stress",
+        "color": "#f59e0b"
+      }
+    ],
+    "data": [
+      {
+        "date": "2026-01",
+        "value": 2.0
+      }
+    ]
+  }
+}

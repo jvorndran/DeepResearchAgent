@@ -1,0 +1,46 @@
+{
+  "policy_inflation": {
+    "id": "policy_inflation",
+    "type": "composed",
+    "title": "Policy And Inflation",
+    "description": "Federal funds and headline CPI inflation over time.",
+    "xAxisKey": "date",
+    "series": [
+      {
+        "dataKey": "fed_funds",
+        "label": "Fed Funds",
+        "color": "#2563eb",
+        "type": "line",
+        "yAxisId": "left"
+      },
+      {
+        "dataKey": "headline_cpi",
+        "label": "Headline CPI",
+        "color": "#f59e0b",
+        "type": "bar",
+        "yAxisId": "right"
+      }
+    ],
+    "data": [
+      {
+        "date": "2025-01",
+        "fed_funds": 4.33,
+        "headline_cpi": 2.9
+      },
+      {
+        "date": "2025-02",
+        "fed_funds": 4.33,
+        "headline_cpi": 3.0
+      }
+    ],
+    "provenance": {
+      "source_series": ["FEDFUNDS", "CPIAUCSL"],
+      "displayed_window": {
+        "start": "2025-01",
+        "end": "2025-02"
+      },
+      "displayed_latest_label": "2025-02",
+      "frequency": "monthly"
+    }
+  }
+}

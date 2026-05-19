@@ -1,0 +1,36 @@
+{
+  "status": "success",
+  "chart_ids": [],
+  "evidence_bundle_json": "evidence_bundle.json",
+  "latest_fundamentals": {
+    "NVDA": {
+      "revenue_b": 215.938
+    }
+  },
+  "source_coverage": {
+    "sec_company_facts": {
+      "status": "covered"
+    },
+    "valuation_market_data": {
+      "status": "not_available",
+      "limitation": "Market valuation data is unavailable.",
+      "capability_list": ["price", "market_cap", "valuation_multiples"]
+    }
+  },
+  "numeric_facts": [
+    {
+      "id": "sec_company_facts.NVDA.revenue_b",
+      "label": "NVIDIA revenue",
+      "raw_value": 215.938,
+      "display_value": "$215.938B",
+      "unit": "usd billions",
+      "precision": 3,
+      "tolerance": 0.005,
+      "source_key": "sec_company_facts.latest_fundamentals.NVDA.revenue_b",
+      "as_of_date": "2026-01-25",
+      "subject": "NVDA",
+      "metric": "revenue_b",
+      "semantic_role": "current_value"
+    }
+  ]
+}

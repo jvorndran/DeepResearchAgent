@@ -1,0 +1,27 @@
+{
+  "status": "success",
+  "chart_ids": ["policy_inflation"],
+  "evidence_bundle_json": "evidence_bundle.json",
+  "source_coverage": {
+    "FRED": {
+      "status": "covered",
+      "series_ids": ["FEDFUNDS", "CPIAUCSL"]
+    }
+  },
+  "numeric_facts": [
+    {
+      "id": "FRED.FEDFUNDS.latest",
+      "label": "Latest federal funds rate",
+      "raw_value": 4.33,
+      "display_value": "4.33%",
+      "unit": "percent",
+      "precision": 2,
+      "tolerance": 0.01,
+      "source_key": "FRED.FEDFUNDS",
+      "as_of_date": "2025-02",
+      "subject": "Federal funds rate",
+      "metric": "fed_funds",
+      "semantic_role": "current_value"
+    }
+  ]
+}

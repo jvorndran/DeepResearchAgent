@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "valid_macro_chart_handoff",
+      "title": "Valid macro chart handoff benchmark",
+      "fixture_dir": "fixtures/valid_macro_chart_handoff",
+      "failure_mode": null,
+      "expected": {
+        "required_chart_ids": ["policy_inflation"],
+        "required_fact_ids": ["FRED.FEDFUNDS.latest"],
+        "required_source_ids": ["FRED"],
+        "report_static_gate": {
+          "passes_gate": true
+        },
+        "chart_audit": {
+          "passes_audit": true
+        },
+        "qa_decision": {
+          "status": "approved"
+        }
+      }
+    },
+    {
+      "id": "missing_non_dropped_chart_handoff",
+      "title": "Missing non-dropped chart handoff benchmark",
+      "fixture_dir": "fixtures/missing_non_dropped_chart_handoff",
+      "failure_mode": "chart_handoff_mismatch",
+      "expected": {
+        "required_chart_ids": [
+          "consumer_stress_dashboard",
+          "savings_credit_stress"
+        ],
+        "required_fact_ids": [],
+        "required_source_ids": ["FRED"],
+        "report_static_gate": {
+          "passes_gate": false,
+          "blocker_contains": "chart_handoff_mismatch"
+        },
+        "chart_audit": {
+          "passes_audit": false,
+          "blocker_contains": "chart_handoff_mismatch"
+        },
+        "qa_decision": {
+          "status": "rejected",
+          "failure_category": "chart_handoff_mismatch"
+        }
+      }
+    },
+    {
+      "id": "unsupported_valuation_claim_without_market_data",
+      "title": "Unsupported valuation claim without market data benchmark",
+      "fixture_dir": "fixtures/unsupported_valuation_claim",
+      "failure_mode": "unsupported_valuation_claim",
+      "expected": {
+        "required_chart_ids": [],
+        "required_fact_ids": ["sec_company_facts.NVDA.revenue_b"],
+        "required_source_ids": [
+          "sec_company_facts",
+          "valuation_market_data"
+        ],
+        "report_static_gate": {
+          "passes_gate": true
+        },
+        "chart_audit": {
+          "passes_audit": true
+        },
+        "qa_decision": {
+          "status": "rejected",
+          "failure_category": "unsupported_valuation_claim"
+        }
+      }
+    }
+  ]
+}

@@ -531,3 +531,13 @@ agent flow it advanced.
   - Tests: cd backend && uv run pytest tests/test_quant_macro_stats.py -k "chart_source_table or grouped_axis_chart or chart_projection or normalize_quant_report_charts"; cd backend && uv run pytest tests/test_quant_macro_stats.py; cd backend && uv run ruff check agents/quant_macro_stats/artifacts/chart_projection_contract.py agents/quant_macro_stats/artifacts/chart_source_validation.py agents/quant_macro_stats/artifacts/recharts_schema_normalization.py agents/quant_macro_stats/artifacts/quant_output_writer.py agents/quant_macro_stats/artifacts/evidence_bundle.py agents/quant_macro_stats/artifacts/execution_summary_normalization.py tests/test_quant_macro_stats.py; git diff --check
   - Implementation: Added a typed grouped chart projection contract that preserves source and render table metadata through execution summaries and evidence bundles.
   - Review: no blocking findings; lossless grouped chart projection contract is coherent and adequately verified
+
+- [x] 2026-05-19T18:15:45-04:00 - Permanent regression benchmark foundation
+  - Roadmap section: Priority 8: Permanent Regression Benchmark Suite
+  - Flow stage: cross-cutting
+  - Run/pass: 20260519-132826 / 7
+  - Summary: /home/vorndranj/projects/DeepResearchAgent/logs/feature-loop/runs/20260519-132826/feature-7/summary.md
+  - Files changed: backend/tests/test_regression_benchmarks.py, backend/tests/regression_benchmarks/manifest.json, backend/tests/regression_benchmarks/fixtures
+  - Tests: cd backend && uv run pytest tests/test_regression_benchmarks.py; cd backend && uv run pytest tests/test_report_chart_audit.py tests/test_technical_writer_flow_boundaries.py -k "chart_handoff or artifact_fact or validate_research_report_file"; cd backend && uv run pytest tests/test_quality_analyst_subagent.py -k "valuation or evidence_bundle or chart_handoff or artifact_fact"; cd backend && uv run ruff check tests/test_regression_benchmarks.py
+  - Implementation: Added a typed fixture benchmark harness that reuses existing report, chart, evidence bundle, and QA gates for one passing case and two recurring failure modes.
+  - Review: no blocking findings; deterministic benchmark foundation matches the planned Priority 8 slice and focused tests pass

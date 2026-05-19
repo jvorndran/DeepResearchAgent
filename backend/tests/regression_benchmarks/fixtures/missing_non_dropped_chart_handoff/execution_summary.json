@@ -1,0 +1,13 @@
+{
+  "status": "success",
+  "chart_ids": ["consumer_stress_dashboard", "savings_credit_stress"],
+  "dropped_chart_ids": [],
+  "evidence_bundle_json": "evidence_bundle.json",
+  "source_coverage": {
+    "FRED": {
+      "status": "covered",
+      "series_ids": ["PSAVERT", "DRCCLACBS"]
+    }
+  },
+  "numeric_facts": []
+}

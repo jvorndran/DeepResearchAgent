@@ -1,0 +1,104 @@
+{
+  "schema_version": 1,
+  "bundle_type": "quant_evidence_bundle",
+  "sources": [
+    {
+      "source_id": "FRED",
+      "provider": "FRED",
+      "series_id": "FEDFUNDS",
+      "title": "Federal Reserve Economic Data",
+      "units": "percent",
+      "unit_family": "rate",
+      "unit_basis": "percent",
+      "frequency": "monthly",
+      "status": "covered",
+      "coverage": {
+        "series_ids": ["FEDFUNDS", "CPIAUCSL"]
+      }
+    }
+  ],
+  "raw_tables": [
+    {
+      "table_id": "fred_policy_raw",
+      "kind": "raw",
+      "path": "raw/fred_policy.csv",
+      "source_id": "FRED",
+      "row_count": 2,
+      "columns": ["date", "fed_funds", "headline_cpi"]
+    }
+  ],
+  "normalized_tables": [
+    {
+      "table_id": "policy_inflation_table",
+      "kind": "normalized",
+      "path": "normalized/policy_inflation.csv",
+      "source_id": "FRED",
+      "row_count": 2,
+      "columns": ["date", "fed_funds", "headline_cpi"]
+    }
+  ],
+  "facts": [
+    {
+      "fact_id": "FRED.FEDFUNDS.latest",
+      "label": "Latest federal funds rate",
+      "raw_value": 4.33,
+      "display_value": "4.33%",
+      "unit": "percent",
+      "precision": 2,
+      "tolerance": 0.01,
+      "source_key": "FRED.FEDFUNDS",
+      "as_of_date": "2025-02",
+      "subject": "Federal funds rate",
+      "metric": "fed_funds",
+      "semantic_role": "current_value"
+    }
+  ],
+  "charts": [
+    {
+      "chart_id": "policy_inflation",
+      "chart_type": "composed",
+      "title": "Policy And Inflation",
+      "description": "Federal funds and headline CPI inflation over time.",
+      "x_axis_key": "date",
+      "series_keys": ["fed_funds", "headline_cpi"],
+      "source_series": ["FEDFUNDS", "CPIAUCSL"],
+      "source_table_ids": ["policy_inflation_table"],
+      "transform_ids": ["policy_inflation_projection"],
+      "data_row_count": 2
+    }
+  ],
+  "transforms": [
+    {
+      "transform_id": "policy_inflation_projection",
+      "operation": "chart_projection",
+      "source_ids": ["FRED"],
+      "source_table_ids": ["policy_inflation_table"],
+      "chart_ids": ["policy_inflation"],
+      "input_unit_families": ["rate"],
+      "input_unit_bases": ["percent"],
+      "input_frequencies": ["monthly"],
+      "period_key": "date"
+    }
+  ],
+  "methods": ["Deterministic benchmark fixture for chart/report handoff validation."],
+  "limitations": [],
+  "validation": {
+    "valid": true,
+    "diagnostics": [],
+    "artifact_fact_consistency": {
+      "valid": true
+    },
+    "chart_normalization_issues": {},
+    "dropped_chart_ids": []
+  },
+  "artifacts": {
+    "charts_json": "charts.json",
+    "execution_summary_json": "execution_summary.json",
+    "evidence_bundle_json": "evidence_bundle.json",
+    "generated_by": {
+      "fixture": "valid_macro_chart_handoff"
+    },
+    "source_files": {},
+    "data_files": {}
+  }
+}

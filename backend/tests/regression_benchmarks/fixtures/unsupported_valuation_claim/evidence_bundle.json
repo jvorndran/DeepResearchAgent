@@ -1,0 +1,106 @@
+{
+  "schema_version": 1,
+  "bundle_type": "quant_evidence_bundle",
+  "sources": [
+    {
+      "source_id": "sec_company_facts",
+      "provider": "SEC EDGAR",
+      "concept_id": "RevenueFromContractWithCustomerExcludingAssessedTax",
+      "title": "SEC company facts",
+      "units": "USD",
+      "unit_family": "currency",
+      "unit_basis": "level",
+      "currency": "USD",
+      "fiscal_period": "FY",
+      "taxonomy": "us-gaap",
+      "form": "10-K",
+      "filing_date": "2026-02-26",
+      "accession_number": "0001045810-26-000042",
+      "as_of_date": "2026-01-25",
+      "status": "covered",
+      "coverage": {
+        "ticker": "NVDA",
+        "metric": "revenue_b"
+      }
+    },
+    {
+      "source_id": "valuation_market_data",
+      "provider": "market_data_provider",
+      "title": "Market valuation data",
+      "status": "not_available",
+      "coverage": {
+        "status": "not_available",
+        "limitation": "Market valuation data is unavailable.",
+        "capability_list": ["price", "market_cap", "valuation_multiples"]
+      }
+    }
+  ],
+  "raw_tables": [
+    {
+      "table_id": "sec_company_facts_raw",
+      "kind": "raw",
+      "path": "raw/sec_company_facts.json",
+      "source_id": "sec_company_facts",
+      "row_count": 1,
+      "columns": ["ticker", "metric", "value"]
+    }
+  ],
+  "normalized_tables": [],
+  "facts": [
+    {
+      "fact_id": "sec_company_facts.NVDA.revenue_b",
+      "label": "NVIDIA revenue",
+      "raw_value": 215.938,
+      "display_value": "$215.938B",
+      "unit": "usd billions",
+      "precision": 3,
+      "tolerance": 0.005,
+      "source_key": "sec_company_facts.latest_fundamentals.NVDA.revenue_b",
+      "as_of_date": "2026-01-25",
+      "subject": "NVDA",
+      "metric": "revenue_b",
+      "semantic_role": "current_value",
+      "attributes": {
+        "source_provenance_schema": "sec_company_facts_v1",
+        "sec_provenance_schema_version": 1,
+        "sec_metric_components": ["revenue"],
+        "sec_fact_provenance": {
+          "revenue": {
+            "taxonomy": "us-gaap",
+            "concept": "RevenueFromContractWithCustomerExcludingAssessedTax",
+            "unit": "USD",
+            "fiscal_period": "FY",
+            "form": "10-K",
+            "filed": "2026-02-26",
+            "accession_number": "0001045810-26-000042",
+            "start": "2025-01-27",
+            "end": "2026-01-25"
+          }
+        }
+      }
+    }
+  ],
+  "charts": [],
+  "transforms": [],
+  "methods": ["SEC company facts fixture with valuation market data unavailable."],
+  "limitations": ["Market valuation data is unavailable in this fixture."],
+  "validation": {
+    "valid": true,
+    "diagnostics": [],
+    "artifact_fact_consistency": {
+      "valid": true
+    },
+    "chart_normalization_issues": {},
+    "dropped_chart_ids": []
+  },
+  "artifacts": {
+    "charts_json": "charts.json",
+    "execution_summary_json": "execution_summary.json",
+    "evidence_bundle_json": "evidence_bundle.json",
+    "generated_by": {
+      "fixture": "unsupported_valuation_claim"
+    },
+    "source_files": {},
+    "data_files": {}
+  }
+}

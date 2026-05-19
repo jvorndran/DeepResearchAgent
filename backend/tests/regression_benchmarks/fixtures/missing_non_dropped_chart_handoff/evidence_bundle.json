@@ -1,0 +1,120 @@
+{
+  "schema_version": 1,
+  "bundle_type": "quant_evidence_bundle",
+  "sources": [
+    {
+      "source_id": "FRED",
+      "provider": "FRED",
+      "series_id": "PSAVERT",
+      "title": "Federal Reserve Economic Data",
+      "units": "index",
+      "unit_family": "index",
+      "unit_basis": "level",
+      "frequency": "monthly",
+      "status": "covered",
+      "coverage": {
+        "series_ids": ["PSAVERT", "DRCCLACBS"]
+      }
+    }
+  ],
+  "raw_tables": [
+    {
+      "table_id": "consumer_stress_raw",
+      "kind": "raw",
+      "path": "raw/consumer_stress.csv",
+      "source_id": "FRED",
+      "row_count": 1,
+      "columns": ["date", "consumer_stress", "savings_credit_stress"]
+    }
+  ],
+  "normalized_tables": [
+    {
+      "table_id": "consumer_stress_table",
+      "kind": "normalized",
+      "path": "normalized/consumer_stress.csv",
+      "source_id": "FRED",
+      "row_count": 1,
+      "columns": ["date", "value"]
+    },
+    {
+      "table_id": "savings_credit_table",
+      "kind": "normalized",
+      "path": "normalized/savings_credit.csv",
+      "source_id": "FRED",
+      "row_count": 1,
+      "columns": ["date", "value"]
+    }
+  ],
+  "facts": [],
+  "charts": [
+    {
+      "chart_id": "consumer_stress_dashboard",
+      "chart_type": "line",
+      "title": "Consumer Stress Dashboard",
+      "description": "Consumer stress over time.",
+      "x_axis_key": "date",
+      "series_keys": ["value"],
+      "source_series": ["PSAVERT"],
+      "source_table_ids": ["consumer_stress_table"],
+      "transform_ids": ["consumer_stress_projection"],
+      "data_row_count": 1
+    },
+    {
+      "chart_id": "savings_credit_stress",
+      "chart_type": "line",
+      "title": "Savings And Credit Stress",
+      "description": "Savings and credit stress over time.",
+      "x_axis_key": "date",
+      "series_keys": ["value"],
+      "source_series": ["DRCCLACBS"],
+      "source_table_ids": ["savings_credit_table"],
+      "transform_ids": ["savings_credit_projection"],
+      "data_row_count": 1
+    }
+  ],
+  "transforms": [
+    {
+      "transform_id": "consumer_stress_projection",
+      "operation": "chart_projection",
+      "source_ids": ["FRED"],
+      "source_table_ids": ["consumer_stress_table"],
+      "chart_ids": ["consumer_stress_dashboard"],
+      "input_unit_families": ["index"],
+      "input_unit_bases": ["level"],
+      "input_frequencies": ["monthly"],
+      "period_key": "date"
+    },
+    {
+      "transform_id": "savings_credit_projection",
+      "operation": "chart_projection",
+      "source_ids": ["FRED"],
+      "source_table_ids": ["savings_credit_table"],
+      "chart_ids": ["savings_credit_stress"],
+      "input_unit_families": ["index"],
+      "input_unit_bases": ["level"],
+      "input_frequencies": ["monthly"],
+      "period_key": "date"
+    }
+  ],
+  "methods": ["Deterministic benchmark fixture for missing chart handoff validation."],
+  "limitations": [],
+  "validation": {
+    "valid": true,
+    "diagnostics": [],
+    "artifact_fact_consistency": {
+      "valid": true
+    },
+    "chart_normalization_issues": {},
+    "dropped_chart_ids": []
+  },
+  "artifacts": {
+    "charts_json": "charts.json",
+    "execution_summary_json": "execution_summary.json",
+    "evidence_bundle_json": "evidence_bundle.json",
+    "generated_by": {
+      "fixture": "missing_non_dropped_chart_handoff"
+    },
+    "source_files": {},
+    "data_files": {}
+  }
+}
