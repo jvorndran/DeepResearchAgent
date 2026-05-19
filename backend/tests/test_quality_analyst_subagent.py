@@ -32,6 +32,15 @@ def _write_valid_evidence_bundle(tmp_path, chart_ids, *, artifacts=None, facts=N
             {"table_id": table_id, "kind": "normalized"}
             for table_id in table_ids
         ],
+        "transforms": [
+            {
+                "transform_id": "unit_test_projection",
+                "operation": "projection",
+                "source_table_ids": [table_id],
+                "chart_ids": [chart_id],
+            }
+            for chart_id, table_id in zip(chart_ids, table_ids)
+        ],
         "validation": {"valid": True, "diagnostics": []},
         "artifacts": artifacts
         or {
@@ -132,6 +141,14 @@ def test_load_report_for_review_returns_compact_review_packet(tmp_path):
                         "table_id": "FRED",
                         "kind": "raw",
                         "source_id": "FRED",
+                    }
+                ],
+                "transforms": [
+                    {
+                        "transform_id": "yield_curve_lead_lag",
+                        "operation": "projection",
+                        "source_table_ids": ["FRED"],
+                        "chart_ids": ["chart_unrate"],
                     }
                 ],
                 "methods": ["yield curve lead-lag"],

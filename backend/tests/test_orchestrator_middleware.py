@@ -31,13 +31,22 @@ def _write_valid_evidence_bundle(evidence_bundle_path, chart_ids):
                     {
                         "chart_id": chart_id,
                         "source_table_ids": [table_id],
-                        "transform_ids": ["unit_test_projection"],
+                        "transform_ids": [f"unit_test_projection:{chart_id}"],
                     }
                     for chart_id, table_id in zip(chart_ids, table_ids)
                 ],
                 "normalized_tables": [
                     {"table_id": table_id, "kind": "normalized"}
                     for table_id in table_ids
+                ],
+                "transforms": [
+                    {
+                        "transform_id": f"unit_test_projection:{chart_id}",
+                        "operation": "projection",
+                        "source_table_ids": [table_id],
+                        "chart_ids": [chart_id],
+                    }
+                    for chart_id, table_id in zip(chart_ids, table_ids)
                 ],
                 "validation": {"valid": True, "diagnostics": []},
                 "artifacts": {

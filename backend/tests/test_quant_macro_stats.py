@@ -1136,6 +1136,9 @@ def test_save_quant_outputs_writes_generic_evidence_payload(tmp_path):
     assert saved_bundle["charts"][0]["chart_id"] == "trend"
     assert saved_bundle["charts"][0]["source_table_ids"] == ["chart_data:trend"]
     assert saved_bundle["charts"][0]["transform_ids"] == ["unit_test_projection"]
+    assert saved_bundle["transforms"][0]["transform_id"] == "unit_test_projection"
+    assert saved_bundle["transforms"][0]["chart_ids"] == ["trend"]
+    assert saved_bundle["transforms"][0]["source_ids"] == ["FRED"]
     assert saved_bundle["normalized_tables"][0]["table_id"] == "chart_data:trend"
     assert saved_bundle["normalized_tables"][0]["source_id"] == "FRED"
     assert saved_bundle["sources"][0]["source_id"] == "FRED"
@@ -1407,6 +1410,526 @@ def test_source_unit_helpers_flag_hourly_weekly_wage_mismatch(tmp_path):
     assert comparison["status"] == "failed"
     assert comparison["compatible"] is False
     assert "Convert compared sources to a common unit" in comparison["error"]
+
+
+def test_save_quant_outputs_persists_source_and_transform_descriptors(tmp_path):
+    hourly = qms.source_unit_metadata(
+        "all_hourly",
+        series_id="CES0500000003",
+        title="Average Hourly Earnings of All Employees, Total Private",
+        units="dollars per hour",
+        frequency="monthly",
+        currency="USD",
+        fiscal_period="calendar_month",
+        revision_policy="latest available vintage",
+    )
+    weekly = qms.source_unit_metadata(
+        "prod_weekly",
+        series_id="CES0500000030",
+        title="Average Weekly Earnings of Production and Nonsupervisory Employees",
+        units="dollars per week",
+        frequency="monthly",
+        currency="USD",
+    )
+    comparison = qms.unit_comparison(
+        "wage_divergence",
+        [hourly, weekly],
+        conversion={"all_hourly": "multiply by average weekly hours"},
+    )
+
+    qms.save_quant_outputs(
+        tmp_path,
+        {},
+        {
+            "source_unit_metadata": [hourly, weekly],
+            "unit_comparisons": [comparison],
+        },
+    )
+
+    saved_bundle = json.loads((tmp_path / "evidence_bundle.json").read_text())
+    sources = {source["source_id"]: source for source in saved_bundle["sources"]}
+    transform = saved_bundle["transforms"][0]
+
+    assert sources["all_hourly"]["unit_family"] == "currency_per_time"
+    assert sources["all_hourly"]["unit_basis"] == "hour"
+    assert sources["all_hourly"]["frequency"] == "monthly"
+    assert sources["all_hourly"]["currency"] == "USD"
+    assert sources["all_hourly"]["fiscal_period"] == "calendar_month"
+    assert sources["all_hourly"]["revision_policy"] == "latest available vintage"
+    assert transform["transform_id"] == "wage_divergence"
+    assert transform["source_ids"] == ["all_hourly", "prod_weekly"]
+    assert transform["source_groups"] == [["all_hourly", "prod_weekly"]]
+    assert transform["conversion"] == {
+        "source_conversions": {"all_hourly": "multiply by average weekly hours"}
+    }
+
+
+def test_save_quant_outputs_rejects_conversion_operation_without_details(tmp_path):
+    hourly = qms.source_unit_metadata(
+        "all_hourly",
+        title="Average Hourly Earnings",
+        units="dollars per hour",
+        frequency="monthly",
+    )
+    weekly = qms.source_unit_metadata(
+        "prod_weekly",
+        title="Average Weekly Earnings",
+        units="dollars per week",
+        frequency="monthly",
+    )
+
+    with pytest.raises(ValueError, match="without conversion"):
+        qms.save_quant_outputs(
+            tmp_path,
+            {},
+            {
+                "source_unit_metadata": [hourly, weekly],
+                "transforms": [
+                    {
+                        "transform_id": "label_only_conversion",
+                        "operation": "conversion",
+                        "source_ids": ["all_hourly", "prod_weekly"],
+                        "source_groups": [["all_hourly", "prod_weekly"]],
+                    }
+                ],
+            },
+        )
+
+
+@pytest.mark.parametrize(
+    ("conversion", "message"),
+    [
+        ("multiply hourly wages by weekly hours", "conversion must be a non-empty mapping"),
+        ({"unrelated_label": "multiply hourly wages by weekly hours"}, "without conversion"),
+        ({"description": "multiply hourly wages by weekly hours"}, "without conversion"),
+        ({"method": "multiply hourly wages by weekly hours"}, "without conversion"),
+    ],
+)
+def test_save_quant_outputs_rejects_unstructured_conversion_payload(
+    tmp_path,
+    conversion,
+    message,
+):
+    hourly = qms.source_unit_metadata(
+        "all_hourly",
+        title="Average Hourly Earnings",
+        units="dollars per hour",
+        frequency="monthly",
+    )
+    weekly = qms.source_unit_metadata(
+        "prod_weekly",
+        title="Average Weekly Earnings",
+        units="dollars per week",
+        frequency="monthly",
+    )
+
+    with pytest.raises(ValueError, match=message):
+        qms.save_quant_outputs(
+            tmp_path,
+            {},
+            {
+                "source_unit_metadata": [hourly, weekly],
+                "transforms": [
+                    {
+                        "transform_id": "unstructured_conversion",
+                        "source_ids": ["all_hourly", "prod_weekly"],
+                        "source_groups": [["all_hourly", "prod_weekly"]],
+                        "conversion": conversion,
+                    }
+                ],
+            },
+        )
+
+
+def test_save_quant_outputs_rejects_flat_source_groups_payload(tmp_path):
+    hourly = qms.source_unit_metadata(
+        "all_hourly",
+        title="Average Hourly Earnings",
+        units="dollars per hour",
+        frequency="monthly",
+    )
+    weekly = qms.source_unit_metadata(
+        "prod_weekly",
+        title="Average Weekly Earnings",
+        units="dollars per week",
+        frequency="monthly",
+    )
+
+    with pytest.raises(ValueError, match="source_groups must be a list"):
+        qms.save_quant_outputs(
+            tmp_path,
+            {},
+            {
+                "source_unit_metadata": [hourly, weekly],
+                "transforms": [
+                    {
+                        "transform_id": "flat_source_groups",
+                        "source_ids": ["all_hourly", "prod_weekly"],
+                        "source_groups": ["all_hourly", "prod_weekly"],
+                        "conversion": {
+                            "all_hourly": "multiply by average weekly hours"
+                        },
+                    }
+                ],
+            },
+        )
+
+
+@pytest.mark.parametrize(
+    ("field_name", "values", "message"),
+    [
+        (
+            "input_unit_families",
+            ["currency_per_time", "index"],
+            "incompatible unit families",
+        ),
+        ("input_unit_bases", ["hour", "week"], "incompatible unit bases"),
+        ("input_frequencies", ["monthly", "quarterly"], "incompatible frequencies"),
+    ],
+)
+def test_save_quant_outputs_rejects_declared_mixed_transform_inputs_without_alignment(
+    tmp_path,
+    field_name,
+    values,
+    message,
+):
+    source_a = qms.source_unit_metadata("source_a", title="Source A")
+    source_b = qms.source_unit_metadata("source_b", title="Source B")
+
+    with pytest.raises(ValueError, match=message):
+        qms.save_quant_outputs(
+            tmp_path,
+            {},
+            {
+                "source_unit_metadata": [source_a, source_b],
+                "transforms": [
+                    {
+                        "transform_id": f"declared_{field_name}",
+                        "source_ids": ["source_a", "source_b"],
+                        "source_groups": [["source_a", "source_b"]],
+                        field_name: values,
+                    }
+                ],
+            },
+        )
+
+
+def test_save_quant_outputs_allows_shared_transform_for_single_source_groups(tmp_path):
+    labor_rate = qms.source_unit_metadata(
+        "labor_rate",
+        title="Monthly unemployment rate",
+        units="percent",
+        frequency="monthly",
+    )
+    revenue = qms.source_unit_metadata(
+        "revenue",
+        title="Company revenue",
+        units="dollars",
+        frequency="quarterly",
+        currency="USD",
+    )
+
+    qms.save_quant_outputs(
+        tmp_path,
+        {
+            "labor_rate_chart": {
+                "type": "line",
+                "data": [{"date": "2026-01", "value": 4.1}],
+                "series": [{"dataKey": "value", "name": "Labor rate"}],
+                "xAxis": {"dataKey": "date"},
+                "transform_id": "line_projection",
+                "provenance": qms.chart_provenance(source_series=["labor_rate"]),
+            },
+            "revenue_chart": {
+                "type": "line",
+                "data": [{"date": "2026-Q1", "value": 125_000_000.0}],
+                "series": [{"dataKey": "value", "name": "Revenue"}],
+                "xAxis": {"dataKey": "date"},
+                "transform_id": "line_projection",
+                "provenance": qms.chart_provenance(source_series=["revenue"]),
+            },
+        },
+        {"source_unit_metadata": [labor_rate, revenue]},
+    )
+
+    saved_bundle = json.loads((tmp_path / "evidence_bundle.json").read_text())
+    transform = saved_bundle["transforms"][0]
+
+    assert transform["transform_id"] == "line_projection"
+    assert transform["source_ids"] == ["labor_rate", "revenue"]
+    assert transform["source_groups"] == [["labor_rate"], ["revenue"]]
+
+
+def test_save_quant_outputs_rejects_mixed_frequency_chart_without_alignment(tmp_path):
+    monthly = qms.source_unit_metadata(
+        "monthly_rate",
+        title="Monthly unemployment rate",
+        units="percent",
+        frequency="monthly",
+    )
+    quarterly = qms.source_unit_metadata(
+        "quarterly_rate",
+        title="Quarterly unemployment rate",
+        units="percent",
+        frequency="quarterly",
+    )
+
+    with pytest.raises(ValueError, match="incompatible frequencies"):
+        qms.save_quant_outputs(
+            tmp_path,
+            {
+                "rate_overlay": {
+                    "type": "line",
+                    "data": [{"date": "2026-Q1", "monthly": 4.1, "quarterly": 4.0}],
+                    "series": [
+                        {"dataKey": "monthly", "name": "Monthly"},
+                        {"dataKey": "quarterly", "name": "Quarterly"},
+                    ],
+                    "xAxis": {"dataKey": "date"},
+                    "transform_id": "direct_overlay",
+                    "provenance": qms.chart_provenance(
+                        source_series=["monthly_rate", "quarterly_rate"],
+                    ),
+                }
+            },
+            {"source_unit_metadata": [monthly, quarterly]},
+        )
+
+
+def test_save_quant_outputs_rejects_mixed_frequency_chart_with_label_only_resampling(
+    tmp_path,
+):
+    monthly = qms.source_unit_metadata(
+        "monthly_rate",
+        title="Monthly unemployment rate",
+        units="percent",
+        frequency="monthly",
+    )
+    quarterly = qms.source_unit_metadata(
+        "quarterly_rate",
+        title="Quarterly unemployment rate",
+        units="percent",
+        frequency="quarterly",
+    )
+
+    with pytest.raises(ValueError, match="incompatible frequencies"):
+        qms.save_quant_outputs(
+            tmp_path,
+            {
+                "rate_overlay": {
+                    "type": "line",
+                    "data": [{"date": "2026-Q1", "monthly": 4.1, "quarterly": 4.0}],
+                    "series": [
+                        {"dataKey": "monthly", "name": "Monthly"},
+                        {"dataKey": "quarterly", "name": "Quarterly"},
+                    ],
+                    "xAxis": {"dataKey": "date"},
+                    "transform_id": "resampling",
+                    "provenance": qms.chart_provenance(
+                        source_series=["monthly_rate", "quarterly_rate"],
+                    ),
+                }
+            },
+            {"source_unit_metadata": [monthly, quarterly]},
+        )
+
+
+def test_save_quant_outputs_allows_mixed_unit_chart_with_provenance_normalization(
+    tmp_path,
+):
+    labor_rate = qms.source_unit_metadata(
+        "labor_rate",
+        title="Monthly unemployment rate",
+        units="percent",
+        frequency="monthly",
+    )
+    retail_sales = qms.source_unit_metadata(
+        "retail_sales",
+        title="Monthly retail sales",
+        units="dollars",
+        frequency="monthly",
+        currency="USD",
+    )
+
+    qms.save_quant_outputs(
+        tmp_path,
+        {
+            "normalized_overlay": {
+                "type": "line",
+                "data": [
+                    {
+                        "date": "2026-01",
+                        "labor_rate_index": 100.0,
+                        "retail_sales_index": 100.0,
+                    },
+                    {
+                        "date": "2026-02",
+                        "labor_rate_index": 101.2,
+                        "retail_sales_index": 99.7,
+                    },
+                ],
+                "series": [
+                    {"dataKey": "labor_rate_index", "name": "Labor rate"},
+                    {"dataKey": "retail_sales_index", "name": "Retail sales"},
+                ],
+                "xAxis": {"dataKey": "date"},
+                "provenance": qms.chart_provenance(
+                    source_series=["labor_rate", "retail_sales"],
+                    normalization={"base_date": "2026-01", "base_value": 100},
+                ),
+            }
+        },
+        {"source_unit_metadata": [labor_rate, retail_sales]},
+    )
+
+    saved_bundle = json.loads((tmp_path / "evidence_bundle.json").read_text())
+    transforms = {
+        transform["transform_id"]: transform for transform in saved_bundle["transforms"]
+    }
+
+    assert saved_bundle["charts"][0]["transform_ids"] == [
+        "normalization.base_date",
+        "normalization.base_value",
+    ]
+    assert transforms["normalization.base_date"]["operation"] == "normalized_index"
+    assert transforms["normalization.base_value"]["operation"] == "normalized_index"
+    assert transforms["normalization.base_date"]["transform_basis"] == (
+        "base_date=2026-01; base_value=100"
+    )
+
+
+def test_save_quant_outputs_requires_transform_basis_for_correlation_facts(tmp_path):
+    with pytest.raises(ValueError, match="transform_basis is required"):
+        qms.save_quant_outputs(
+            tmp_path,
+            {},
+            {
+                "numeric_facts": [
+                    {
+                        "id": "corr_UNRATE_CPIAUCSL",
+                        "label": "Correlation(UNRATE, CPIAUCSL)",
+                        "raw_value": 0.24,
+                        "display_value": "0.24",
+                        "unit": "correlation",
+                        "precision": 2,
+                        "tolerance": 0.005,
+                        "source_key": "scenario_stress.corr.UNRATE.CPIAUCSL",
+                    }
+                ],
+            },
+        )
+
+
+def test_save_quant_outputs_requires_transform_basis_for_typed_fact_operation(tmp_path):
+    fact = qms.numeric_fact(
+        fact_id="cpi_percent_change",
+        label="CPI percent change",
+        raw_value=3.2,
+        unit="percent",
+        precision=1,
+        tolerance=0.05,
+        source_key="CPIAUCSL",
+        operation="percent_change",
+    )
+
+    with pytest.raises(ValueError, match="transform_basis is required"):
+        qms.save_quant_outputs(
+            tmp_path,
+            {},
+            {"numeric_facts": [fact]},
+        )
+
+
+def test_save_quant_outputs_rejects_mixed_source_transform_basis_without_label(
+    tmp_path,
+):
+    level = qms.source_unit_metadata(
+        "unrate_level",
+        title="Unemployment rate",
+        units="percent",
+        frequency="monthly",
+        transform_basis="level",
+    )
+    yoy = qms.source_unit_metadata(
+        "cpi_yoy",
+        title="CPI year-over-year rate",
+        units="percent",
+        frequency="monthly",
+        transform_basis="yoy",
+    )
+
+    with pytest.raises(ValueError, match="incompatible transform bases"):
+        qms.save_quant_outputs(
+            tmp_path,
+            {
+                "mixed_basis_correlation": {
+                    "type": "line",
+                    "data": [
+                        {
+                            "date": "2026-01",
+                            "unrate_level": 4.1,
+                            "cpi_yoy": 2.7,
+                        }
+                    ],
+                    "series": [
+                        {"dataKey": "unrate_level", "name": "Unemployment"},
+                        {"dataKey": "cpi_yoy", "name": "CPI yoy"},
+                    ],
+                    "xAxis": {"dataKey": "date"},
+                    "transform_id": "rolling_correlation",
+                    "transform_basis": "level correlation",
+                    "provenance": qms.chart_provenance(
+                        source_series=["unrate_level", "cpi_yoy"],
+                    ),
+                }
+            },
+            {"source_unit_metadata": [level, yoy]},
+        )
+
+
+def test_save_quant_outputs_allows_labeled_mixed_source_transform_basis(tmp_path):
+    level = qms.source_unit_metadata(
+        "unrate_level",
+        title="Unemployment rate",
+        units="percent",
+        frequency="monthly",
+        transform_basis="level",
+    )
+    yoy = qms.source_unit_metadata(
+        "cpi_yoy",
+        title="CPI year-over-year rate",
+        units="percent",
+        frequency="monthly",
+        transform_basis="yoy",
+    )
+
+    qms.save_quant_outputs(
+        tmp_path,
+        {
+            "mixed_basis_correlation": {
+                "type": "line",
+                "data": [
+                    {"date": "2026-01", "unrate_level": 4.1, "cpi_yoy": 2.7}
+                ],
+                "series": [
+                    {"dataKey": "unrate_level", "name": "Unemployment"},
+                    {"dataKey": "cpi_yoy", "name": "CPI yoy"},
+                ],
+                "xAxis": {"dataKey": "date"},
+                "transform_id": "rolling_correlation",
+                "transform_basis": "level vs yoy correlation",
+                "provenance": qms.chart_provenance(
+                    source_series=["unrate_level", "cpi_yoy"],
+                ),
+            }
+        },
+        {"source_unit_metadata": [level, yoy]},
+    )
+
+    saved_bundle = json.loads((tmp_path / "evidence_bundle.json").read_text())
+    assert saved_bundle["transforms"][0]["transform_basis"] == (
+        "level vs yoy correlation"
+    )
 
 
 def test_save_quant_outputs_preserves_source_unit_metadata_from_source_files(tmp_path):

@@ -261,12 +261,14 @@ QUANT_HELPER_CATALOG: tuple[QuantHelperCategory, ...] = (
                 import_path="agents.quant_macro_stats",
                 signature=(
                     "numeric_fact(*, fact_id, label, raw_value, unit, precision, "
-                    "tolerance, source_key, as_of_date=None, semantic_role=None, "
-                    "literal_required=None, state_description=None)"
+                    "tolerance, source_key, as_of_date=None, subject=None, "
+                    "metric=None, semantic_role=None, operation=None, "
+                    "transform_basis=None, literal_required=None, state_description=None)"
                 ),
                 use_when=(
                     "Record auditable scalar values in execution_summary.numeric_facts; "
-                    "use semantic fields for current-state duration counters."
+                    "set operation and transform_basis for correlations, growth rates, "
+                    "spreads, and normalized indexes."
                 ),
                 preserves=(
                     "id",
@@ -277,6 +279,8 @@ QUANT_HELPER_CATALOG: tuple[QuantHelperCategory, ...] = (
                     "unit",
                     "source_key",
                     "as_of_date",
+                    "operation",
+                    "transform_basis",
                     "semantic_role",
                     "literal_required",
                     "state_description",
@@ -321,12 +325,26 @@ QUANT_HELPER_CATALOG: tuple[QuantHelperCategory, ...] = (
             QuantHelperSpec(
                 name="source_unit_metadata",
                 import_path="agents.quant_macro_stats",
-                signature="source_unit_metadata(source_key, source_file=..., units=...)",
+                signature=(
+                    "source_unit_metadata(source_key, source_file=..., units=..., "
+                    "frequency=...)"
+                ),
                 use_when=(
-                    "Record source units before direct gaps, differences, ratios, or "
+                    "Record source units, frequency, currency/fiscal metadata, and "
+                    "transform basis before direct gaps, differences, ratios, or "
                     "overlays across wage, price, rate, or index series."
                 ),
-                preserves=("source_key", "series_id", "units", "unit_family", "unit_basis"),
+                preserves=(
+                    "source_key",
+                    "series_id",
+                    "units",
+                    "unit_family",
+                    "unit_basis",
+                    "frequency",
+                    "currency",
+                    "fiscal_period",
+                    "transform_basis",
+                ),
             ),
             QuantHelperSpec(
                 name="unit_comparison",

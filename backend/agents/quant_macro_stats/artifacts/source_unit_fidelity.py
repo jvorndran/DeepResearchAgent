@@ -30,6 +30,12 @@ def source_unit_metadata(
     unit_family: str | None = None,
     unit_basis: str | None = None,
     measure: str | None = None,
+    currency: str | None = None,
+    fiscal_period: str | None = None,
+    transform_basis: str | None = None,
+    vintage: str | None = None,
+    as_of_date: str | None = None,
+    revision_policy: str | None = None,
     transformation: str | Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build compact source-unit metadata for one numeric source.
@@ -58,6 +64,12 @@ def source_unit_metadata(
         "source": source or metadata.get("source"),
         "seasonal_adjustment": seasonal_adjustment or metadata.get("seasonal_adjustment"),
         "value_column": value_column,
+        "currency": currency,
+        "fiscal_period": fiscal_period,
+        "transform_basis": transform_basis,
+        "vintage": vintage,
+        "as_of_date": as_of_date,
+        "revision_policy": revision_policy,
         "transformation": transformation,
     }
 
@@ -367,6 +379,8 @@ def _normalize_source_unit_record(candidate: Mapping[str, Any]) -> dict[str, Any
     inferred = infer_unit_contract(values)
     for key in ("unit_family", "unit_basis", "measure"):
         values[key] = _clean_token(values.get(key)) or inferred.get(key)
+    if not values.get("transform_basis") and isinstance(values.get("transformation"), str):
+        values["transform_basis"] = values["transformation"]
     if not values.get("source_key"):
         values["source_key"] = values.get("series_id") or values.get("label")
     return _drop_empty(to_json_safe(values))

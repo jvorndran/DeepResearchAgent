@@ -540,23 +540,44 @@ def _source_coverage(company_count: int, macro_overlay: dict[str, Any]) -> dict[
 def _numeric_facts(latest_by_ticker: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     facts: list[dict[str, Any]] = []
     fact_specs = [
-        ("revenue_b", "revenue", "usd_b", 3, 0.005),
-        ("net_income_b", "net income", "usd_b", 3, 0.005),
-        ("gross_margin_pct", "gross margin", "percent", 2, 0.005),
-        ("operating_margin_pct", "operating margin", "percent", 2, 0.005),
-        ("net_margin_pct", "net margin", "percent", 2, 0.005),
-        ("operating_cash_flow_b", "operating cash flow", "usd_b", 3, 0.005),
-        ("free_cash_flow_b", "free cash flow", "usd_b", 3, 0.005),
-        ("cash_and_securities_b", "cash and marketable securities", "usd_b", 3, 0.005),
-        ("long_term_debt_b", "long-term debt", "usd_b", 3, 0.005),
-        ("assets_b", "assets", "usd_b", 3, 0.005),
-        ("liabilities_b", "liabilities", "usd_b", 3, 0.005),
-        ("diluted_eps", "diluted EPS", "usd", 3, 0.001),
-        ("revenue_growth_pct", "revenue growth", "percent", 2, 0.005),
-        ("revenue_cagr_pct", "revenue CAGR", "percent", 2, 0.005),
+        ("revenue_b", "revenue", "usd_b", 3, 0.005, None),
+        ("net_income_b", "net income", "usd_b", 3, 0.005, None),
+        ("gross_margin_pct", "gross margin", "percent", 2, 0.005, None),
+        ("operating_margin_pct", "operating margin", "percent", 2, 0.005, None),
+        ("net_margin_pct", "net margin", "percent", 2, 0.005, None),
+        ("operating_cash_flow_b", "operating cash flow", "usd_b", 3, 0.005, None),
+        ("free_cash_flow_b", "free cash flow", "usd_b", 3, 0.005, None),
+        (
+            "cash_and_securities_b",
+            "cash and marketable securities",
+            "usd_b",
+            3,
+            0.005,
+            None,
+        ),
+        ("long_term_debt_b", "long-term debt", "usd_b", 3, 0.005, None),
+        ("assets_b", "assets", "usd_b", 3, 0.005, None),
+        ("liabilities_b", "liabilities", "usd_b", 3, 0.005, None),
+        ("diluted_eps", "diluted EPS", "usd", 3, 0.001, None),
+        (
+            "revenue_growth_pct",
+            "revenue growth",
+            "percent",
+            2,
+            0.005,
+            "latest fiscal year revenue divided by prior fiscal year revenue minus one",
+        ),
+        (
+            "revenue_cagr_pct",
+            "revenue CAGR",
+            "percent",
+            2,
+            0.005,
+            "compound annual growth from first to latest fiscal-year revenue",
+        ),
     ]
     for ticker, latest in latest_by_ticker.items():
-        for metric, label, unit, precision, tolerance in fact_specs:
+        for metric, label, unit, precision, tolerance, transform_basis in fact_specs:
             fact = numeric_fact(
                 fact_id=f"sec_company_facts.{ticker}.{metric}",
                 label=f"{ticker} latest {label}",
@@ -568,6 +589,7 @@ def _numeric_facts(latest_by_ticker: dict[str, dict[str, Any]]) -> list[dict[str
                 subject=ticker,
                 metric=metric,
                 as_of_date=latest.get("fiscal_period_end") or latest.get("fiscal_year"),
+                transform_basis=transform_basis,
             )
             if fact:
                 facts.append(fact)

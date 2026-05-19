@@ -82,6 +82,8 @@ def numeric_fact(
     subject: str | None = None,
     metric: str | None = None,
     semantic_role: str | None = None,
+    operation: str | None = None,
+    transform_basis: str | None = None,
     literal_required: bool | None = None,
     state_description: str | None = None,
 ) -> dict[str, Any] | None:
@@ -129,6 +131,10 @@ def numeric_fact(
         fact["subject"] = subject
     if metric:
         fact["metric"] = metric
+    if operation:
+        fact["operation"] = str(operation)
+    if transform_basis:
+        fact["transform_basis"] = str(transform_basis)
     return fact
 
 
@@ -243,6 +249,10 @@ def normalize_numeric_fact(
         fact.setdefault("state_description", _ZERO_DURATION_STATE_DESCRIPTION)
     if semantic_role is not None:
         fact["semantic_role"] = semantic_role
+    if item.get("operation"):
+        fact["operation"] = str(item["operation"])
+    if item.get("transform_basis"):
+        fact["transform_basis"] = str(item["transform_basis"])
     if literal_required is not None:
         fact["literal_required"] = literal_required
     return fact

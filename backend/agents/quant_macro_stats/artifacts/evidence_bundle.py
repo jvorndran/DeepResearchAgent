@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
@@ -11,23 +12,62 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from .chart_provenance import normalize_chart_provenance
 from .json_safety import to_json_safe
 from .numeric_fact_contracts import normalize_numeric_facts
-from .source_unit_fidelity import normalize_source_unit_metadata
+from .source_unit_fidelity import (
+    normalize_source_unit_metadata,
+    normalize_unit_comparisons,
+)
 
 
 _CHART_DATA_TABLE_PREFIX = "chart_data:"
+_TRANSFORM_BASIS_KEYS = (
+    "transform_basis",
+    "correlation_basis",
+    "correlation_transform",
+    "value_transform",
+    "calculation_basis",
+)
+_SOURCE_DESCRIPTOR_KEYS = (
+    "provider",
+    "series_id",
+    "concept_id",
+    "title",
+    "units",
+    "unit_family",
+    "unit_basis",
+    "measure",
+    "frequency",
+    "currency",
+    "fiscal_period",
+    "transform_basis",
+    "vintage",
+    "as_of_date",
+    "revision_policy",
+    "source_file",
+    "status",
+)
 
 
 class _EvidenceModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class EvidenceSource(_EvidenceModel):
+class SourceDescriptor(_EvidenceModel):
     source_id: str
     provider: str | None = None
     series_id: str | None = None
+    concept_id: str | None = None
     title: str | None = None
     units: str | None = None
+    unit_family: str | None = None
+    unit_basis: str | None = None
+    measure: str | None = None
     frequency: str | None = None
+    currency: str | None = None
+    fiscal_period: str | None = None
+    transform_basis: str | None = None
+    vintage: str | None = None
+    as_of_date: str | None = None
+    revision_policy: str | None = None
     source_file: str | None = None
     status: str | None = None
     coverage: dict[str, Any] = Field(default_factory=dict)
@@ -37,6 +77,10 @@ class EvidenceSource(_EvidenceModel):
     @classmethod
     def _source_id_required(cls, value: str) -> str:
         return _require_text(value, "source_id")
+
+
+class EvidenceSource(SourceDescriptor):
+    """Backward-compatible name for source descriptors."""
 
 
 class EvidenceTableRef(_EvidenceModel):
@@ -70,6 +114,7 @@ class EvidenceFact(_EvidenceModel):
     semantic_role: str | None = None
     literal_required: bool | None = None
     state_description: str | None = None
+    operation: str | None = None
     transform_basis: str | None = None
     attributes: dict[str, Any] = Field(default_factory=dict)
 
@@ -104,6 +149,133 @@ class EvidenceChart(_EvidenceModel):
         if not ids:
             raise ValueError(f"{info.field_name} must cite at least one ID")
         return ids
+
+
+class ConversionDescriptor(_EvidenceModel):
+    source_conversions: dict[str, str] = Field(default_factory=dict)
+    from_unit: str | None = None
+    to_unit: str | None = None
+    input_unit: str | None = None
+    output_unit: str | None = None
+    factor: float | None = None
+    formula: str | None = None
+    basis: str | None = None
+
+    @field_validator("source_conversions", mode="before")
+    @classmethod
+    def _source_conversions_are_text(cls, value: Any) -> dict[str, str]:
+        if not _has_value(value):
+            return {}
+        if not isinstance(value, Mapping):
+            raise ValueError("source_conversions must be a mapping")
+        out: dict[str, str] = {}
+        for key, child in value.items():
+            source_id = _clean_text(key)
+            detail = _clean_text(child)
+            if source_id is not None and detail is not None:
+                out[source_id] = detail
+        return out
+
+    @field_validator(
+        "from_unit",
+        "to_unit",
+        "input_unit",
+        "output_unit",
+        "formula",
+        "basis",
+        mode="before",
+    )
+    @classmethod
+    def _optional_text(cls, value: Any) -> str | None:
+        return _clean_text(value)
+
+    @field_validator("factor", mode="before")
+    @classmethod
+    def _factor_is_numeric(cls, value: Any) -> float | None:
+        if not _has_value(value):
+            return None
+        if isinstance(value, bool):
+            raise ValueError("factor must be numeric")
+        try:
+            return float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("factor must be numeric") from exc
+
+    @model_validator(mode="after")
+    def _requires_structured_detail(self):
+        if self.source_conversions or _has_explicit_unit_conversion_details(self):
+            return self
+        raise ValueError(
+            "conversion must include source-specific conversion details or "
+            "from/to unit conversion details"
+        )
+
+
+class TransformDescriptor(_EvidenceModel):
+    transform_id: str
+    operation: str | None = None
+    transform_basis: str | None = None
+    source_ids: list[str] = Field(default_factory=list)
+    source_groups: list[list[str]] = Field(default_factory=list)
+    source_table_ids: list[str] = Field(default_factory=list)
+    chart_ids: list[str] = Field(default_factory=list)
+    fact_ids: list[str] = Field(default_factory=list)
+    input_unit_families: list[str] = Field(default_factory=list)
+    input_unit_bases: list[str] = Field(default_factory=list)
+    input_frequencies: list[str] = Field(default_factory=list)
+    output_unit_family: str | None = None
+    output_unit_basis: str | None = None
+    output_frequency: str | None = None
+    period_key: str | None = None
+    resampling: str | None = None
+    conversion: ConversionDescriptor | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("transform_id")
+    @classmethod
+    def _transform_id_required(cls, value: str) -> str:
+        return _require_text(value, "transform_id")
+
+    @field_validator(
+        "source_ids",
+        "source_table_ids",
+        "chart_ids",
+        "fact_ids",
+        "input_unit_families",
+        "input_unit_bases",
+        "input_frequencies",
+    )
+    @classmethod
+    def _text_list_fields(cls, value: list[str]) -> list[str]:
+        return _text_list(value)
+
+    @field_validator("source_groups", mode="before")
+    @classmethod
+    def _source_groups_are_text_ids(cls, value: Any) -> list[list[str]]:
+        return _source_groups_from_payload(value)
+
+    @field_validator("conversion", mode="before")
+    @classmethod
+    def _conversion_requires_mapping(
+        cls,
+        value: Any,
+    ) -> ConversionDescriptor | dict[str, Any] | None:
+        if not _has_value(value):
+            return None
+        if isinstance(value, ConversionDescriptor):
+            return value
+        if not isinstance(value, Mapping):
+            raise ValueError("conversion must be a non-empty mapping")
+        return _conversion_descriptor_payload(value)
+
+    @model_validator(mode="after")
+    def _basis_required_for_derived_operations(self):
+        if _transform_requires_basis(self) and not self.transform_basis:
+            raise ValueError(
+                "transform_basis is required for correlation, growth-rate, "
+                f"spread, or normalized-index transform {self.transform_id!r}"
+            )
+        return self
 
 
 class EvidenceDiagnostic(_EvidenceModel):
@@ -158,11 +330,12 @@ class EvidenceArtifacts(_EvidenceModel):
 class EvidenceBundle(_EvidenceModel):
     schema_version: Literal[1] = 1
     bundle_type: Literal["quant_evidence_bundle"] = "quant_evidence_bundle"
-    sources: list[EvidenceSource] = Field(default_factory=list)
+    sources: list[SourceDescriptor] = Field(default_factory=list)
     raw_tables: list[EvidenceTableRef] = Field(default_factory=list)
     normalized_tables: list[EvidenceTableRef] = Field(default_factory=list)
     facts: list[EvidenceFact] = Field(default_factory=list)
     charts: list[EvidenceChart] = Field(default_factory=list)
+    transforms: list[TransformDescriptor] = Field(default_factory=list)
     methods: list[str] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
     validation: EvidenceValidation
@@ -184,6 +357,10 @@ class EvidenceBundle(_EvidenceModel):
             "normalized_tables.table_id",
             (table.table_id for table in self.normalized_tables),
         )
+        _require_unique(
+            "transforms.transform_id",
+            (transform.transform_id for transform in self.transforms),
+        )
         _require_table_ids_unique_across_kinds(
             self.raw_tables,
             self.normalized_tables,
@@ -197,6 +374,14 @@ class EvidenceBundle(_EvidenceModel):
             self.charts,
             [*self.raw_tables, *self.normalized_tables],
         )
+        _require_chart_transforms_resolve(self.charts, self.transforms)
+        _require_transform_references_resolve(
+            self.transforms,
+            self.sources,
+            [*self.raw_tables, *self.normalized_tables],
+        )
+        _require_transform_source_semantics(self.transforms, self.sources)
+        _require_fact_transform_basis(self.facts)
         return self
 
 
@@ -246,21 +431,30 @@ def build_evidence_bundle(
     raw_tables = _table_refs(summary, kind="raw", charts=chart_map)
     normalized_tables = _table_refs(summary, kind="normalized", charts=chart_map)
     table_ids = {table.table_id for table in [*raw_tables, *normalized_tables]}
+    sources = _source_descriptors(
+        summary,
+        facts=facts,
+        charts=chart_map,
+        table_refs=[*raw_tables, *normalized_tables],
+    )
+    bundle_charts = [
+        _chart_from_payload(chart_id, chart, summary, table_ids=table_ids)
+        for chart_id, chart in chart_map.items()
+    ]
 
     return EvidenceBundle(
-        sources=_source_descriptors(
-            summary,
-            facts=facts,
-            charts=chart_map,
-            table_refs=[*raw_tables, *normalized_tables],
-        ),
+        sources=sources,
         raw_tables=raw_tables,
         normalized_tables=normalized_tables,
         facts=facts,
-        charts=[
-            _chart_from_payload(chart_id, chart, summary, table_ids=table_ids)
-            for chart_id, chart in chart_map.items()
-        ],
+        charts=bundle_charts,
+        transforms=_transform_descriptors(
+            summary,
+            charts=chart_map,
+            chart_refs=bundle_charts,
+            facts=facts,
+            sources=sources,
+        ),
         methods=_methods(summary.get("methods_used")),
         limitations=_limitations(summary.get("limitations")),
         validation=validation,
@@ -291,6 +485,7 @@ def _fact_from_numeric_fact(fact: dict[str, Any]) -> EvidenceFact:
         "semantic_role",
         "literal_required",
         "state_description",
+        "operation",
         "transform_basis",
         "correlation_basis",
         "correlation_transform",
@@ -321,6 +516,7 @@ def _fact_from_numeric_fact(fact: dict[str, Any]) -> EvidenceFact:
         if isinstance(fact.get("literal_required"), bool)
         else None,
         state_description=_clean_text(fact.get("state_description")),
+        operation=_clean_text(fact.get("operation")),
         transform_basis=transform_basis,
         attributes={
             str(key): to_json_safe(value)
@@ -367,7 +563,7 @@ def _source_descriptors(
     facts: list[EvidenceFact],
     charts: Mapping[str, Any] | None = None,
     table_refs: list[EvidenceTableRef] | None = None,
-) -> list[EvidenceSource]:
+) -> list[SourceDescriptor]:
     by_id: dict[str, dict[str, Any]] = {}
 
     def merge(source_id: str | None, **values: Any) -> None:
@@ -392,8 +588,10 @@ def _source_descriptors(
             if isinstance(value, Mapping):
                 merge(
                     str(source_id),
-                    provider=_clean_text(value.get("provider")) or provider,
-                    status=_clean_text(value.get("status")),
+                    **_source_descriptor_values(
+                        value,
+                        provider_fallback=provider,
+                    ),
                     coverage=value,
                     metadata=value,
                 )
@@ -414,12 +612,7 @@ def _source_descriptors(
         )
         merge(
             source_id,
-            series_id=_clean_text(record.get("series_id")),
-            title=_clean_text(record.get("title")),
-            units=_clean_text(record.get("units")),
-            frequency=_clean_text(record.get("frequency")),
-            source_file=_clean_text(record.get("source_file")),
-            provider=_clean_text(record.get("source")),
+            **_source_descriptor_values(record),
             metadata=record,
         )
 
@@ -459,7 +652,35 @@ def _source_descriptors(
             metadata={"inferred_from_fact_source_key": True},
         )
 
-    return [EvidenceSource(**payload) for payload in by_id.values()]
+    return [SourceDescriptor(**payload) for payload in by_id.values()]
+
+
+def _source_descriptor_values(
+    record: Mapping[str, Any],
+    *,
+    provider_fallback: str | None = None,
+) -> dict[str, Any]:
+    values = {
+        key: _clean_text(record.get(key))
+        for key in _SOURCE_DESCRIPTOR_KEYS
+        if _has_value(record.get(key))
+    }
+    provider = _first_text(
+        record.get("provider"),
+        record.get("source"),
+        provider_fallback,
+    )
+    if provider:
+        values["provider"] = provider
+    transform_basis = _first_text(
+        record.get("transform_basis"),
+        record.get("transformation")
+        if isinstance(record.get("transformation"), str)
+        else None,
+    )
+    if transform_basis:
+        values["transform_basis"] = transform_basis
+    return values
 
 
 def _table_refs(
@@ -826,6 +1047,372 @@ def _chart_transform_ids(
     return _unique_texts(transforms)
 
 
+def _transform_descriptors(
+    summary: Mapping[str, Any],
+    *,
+    charts: Mapping[str, Any],
+    chart_refs: list[EvidenceChart],
+    facts: list[EvidenceFact],
+    sources: list[SourceDescriptor],
+) -> list[TransformDescriptor]:
+    by_id: dict[str, dict[str, Any]] = {}
+    source_ids = {source.source_id for source in sources}
+
+    def merge(transform_id: str | None, **values: Any) -> None:
+        cleaned_id = _clean_text(transform_id)
+        if cleaned_id is None:
+            return
+        current = by_id.setdefault(cleaned_id, {"transform_id": cleaned_id})
+        metadata = values.pop("metadata", None)
+        for key in (
+            "source_ids",
+            "source_table_ids",
+            "chart_ids",
+            "fact_ids",
+            "input_unit_families",
+            "input_unit_bases",
+            "input_frequencies",
+        ):
+            current[key] = _unique_texts(
+                [*current.get(key, []), *_text_list(values.pop(key, None))]
+            )
+        source_groups = values.pop("source_groups", None)
+        if isinstance(source_groups, list):
+            groups = current.setdefault("source_groups", [])
+            for group in source_groups:
+                ids = _text_list(group)
+                if ids and ids not in groups:
+                    groups.append(ids)
+        for key, value in values.items():
+            if _has_value(value) and not _has_value(current.get(key)):
+                current[key] = to_json_safe(value)
+        if isinstance(metadata, Mapping):
+            current.setdefault("metadata", {}).update(_clean_mapping(metadata) or {})
+
+    for payload in _declared_transform_payloads(summary):
+        merge(
+            _first_text(payload.get("transform_id"), payload.get("id")),
+            operation=_clean_text(payload.get("operation")),
+            transform_basis=_transform_basis_from_mapping(payload),
+            source_ids=_text_list(payload.get("source_ids")),
+            source_groups=_source_groups_from_payload(payload.get("source_groups")),
+            source_table_ids=_text_list(payload.get("source_table_ids")),
+            chart_ids=_text_list(payload.get("chart_ids")),
+            fact_ids=_text_list(payload.get("fact_ids")),
+            input_unit_families=_text_list(payload.get("input_unit_families")),
+            input_unit_bases=_text_list(payload.get("input_unit_bases")),
+            input_frequencies=_text_list(payload.get("input_frequencies")),
+            output_unit_family=_clean_text(payload.get("output_unit_family")),
+            output_unit_basis=_clean_text(payload.get("output_unit_basis")),
+            output_frequency=_clean_text(payload.get("output_frequency")),
+            period_key=_clean_text(payload.get("period_key")),
+            resampling=_clean_text(payload.get("resampling")),
+            conversion=payload.get("conversion"),
+            metadata=payload.get("metadata")
+            if isinstance(payload.get("metadata"), Mapping)
+            else payload,
+        )
+
+    chart_by_id = {chart.chart_id: chart for chart in chart_refs}
+    for chart_id, chart in charts.items():
+        payload = chart if isinstance(chart, Mapping) else {}
+        chart_ref = chart_by_id.get(str(chart_id))
+        if chart_ref is None:
+            continue
+        provenance = _chart_provenance(str(chart_id), payload, summary)
+        chart_source_ids = _source_ids_from_chart_provenance(provenance)
+        chart_source_ids = [
+            source_id
+            for source_id in chart_source_ids
+            if _source_key_resolves(source_id, source_ids)
+        ] or chart_source_ids
+        source_group = [chart_source_ids] if chart_source_ids else []
+        transform_basis = _first_text(
+            _transform_basis_from_mapping(payload),
+            _normalization_basis(provenance.get("normalization")),
+        )
+        resampling = _clean_text(provenance.get("resampling"))
+        period_key = _first_text(payload.get("period_key"), provenance.get("period_key"))
+        for transform_id in chart_ref.transform_ids:
+            merge(
+                transform_id,
+                operation=_operation_from_chart_transform_id(transform_id, provenance),
+                transform_basis=transform_basis,
+                source_ids=chart_source_ids,
+                source_groups=source_group,
+                source_table_ids=chart_ref.source_table_ids,
+                chart_ids=[chart_ref.chart_id],
+                period_key=period_key,
+                resampling=resampling,
+                metadata={
+                    "chart_id": chart_ref.chart_id,
+                    "provenance": provenance,
+                },
+            )
+
+    for comparison in normalize_unit_comparisons(summary.get("unit_comparisons")):
+        comparison_source_ids = [
+            source_id
+            for source_id in (
+                _source_id_from_source_unit_record(source)
+                for source in comparison.get("sources", [])
+                if isinstance(source, Mapping)
+            )
+            if source_id is not None
+        ]
+        merge(
+            _first_text(comparison.get("id"), comparison.get("comparison_id")),
+            operation=_clean_text(comparison.get("operation")),
+            transform_basis=_transform_basis_from_mapping(comparison),
+            source_ids=comparison_source_ids,
+            source_groups=[comparison_source_ids] if comparison_source_ids else [],
+            input_unit_families=_text_list(comparison.get("unit_families")),
+            input_unit_bases=_text_list(comparison.get("unit_bases")),
+            conversion=comparison.get("conversion"),
+            metadata={"unit_comparison": comparison},
+        )
+
+    for fact in facts:
+        operation = _operation_from_fact(fact)
+        if not operation and not fact.transform_basis:
+            continue
+        merge(
+            f"fact:{fact.fact_id}",
+            operation=operation,
+            transform_basis=fact.transform_basis,
+            source_ids=[_source_id_from_fact_source_key(fact.source_key)],
+            fact_ids=[fact.fact_id],
+            metadata={
+                "source_key": fact.source_key,
+                "metric": fact.metric,
+                "unit": fact.unit,
+            },
+        )
+
+    return [TransformDescriptor(**payload) for payload in by_id.values()]
+
+
+def _declared_transform_payloads(summary: Mapping[str, Any]) -> list[dict[str, Any]]:
+    value = summary.get("transforms", summary.get("transform_descriptors"))
+    if isinstance(value, Mapping):
+        if _looks_like_transform_descriptor(value):
+            return [dict(value)]
+        payloads: list[dict[str, Any]] = []
+        for fallback_id, item in value.items():
+            if isinstance(item, Mapping):
+                payload = dict(item)
+                payload.setdefault("transform_id", str(fallback_id))
+                payloads.append(payload)
+            elif _has_value(item):
+                payloads.append(
+                    {"transform_id": str(fallback_id), "operation": str(item)}
+                )
+        return payloads
+    if isinstance(value, list):
+        return [dict(item) for item in value if isinstance(item, Mapping)]
+    return []
+
+
+def _looks_like_transform_descriptor(value: Mapping[str, Any]) -> bool:
+    return any(
+        key in value
+        for key in (
+            "transform_id",
+            "id",
+            "operation",
+            "source_ids",
+            "source_groups",
+            "transform_basis",
+        )
+    )
+
+
+def _source_groups_from_payload(value: Any) -> list[list[str]]:
+    if not _has_value(value):
+        return []
+    if not isinstance(value, list):
+        raise ValueError("source_groups must be a list of source ID lists")
+    groups: list[list[str]] = []
+    for group in value:
+        if isinstance(group, str | bytes) or isinstance(group, Mapping):
+            raise ValueError("source_groups must be a list of source ID lists")
+        if not isinstance(group, list | tuple | set):
+            raise ValueError("source_groups must be a list of source ID lists")
+        ids = _text_list(group)
+        if ids:
+            groups.append(ids)
+    return groups
+
+
+def _conversion_descriptor_payload(value: Mapping[str, Any]) -> dict[str, Any]:
+    cleaned = _clean_mapping(value)
+    if cleaned is None:
+        raise ValueError("conversion must be a non-empty mapping")
+
+    payload: dict[str, Any] = {}
+    source_conversions: dict[str, str] = {}
+    descriptor_keys = {
+        "source_conversions",
+        "from_unit",
+        "to_unit",
+        "input_unit",
+        "output_unit",
+        "factor",
+        "formula",
+        "basis",
+    }
+    for key, child in cleaned.items():
+        if key == "source_conversions":
+            if not isinstance(child, Mapping):
+                raise ValueError("source_conversions must be a mapping")
+            source_conversions.update(
+                {
+                    str(source_id): str(detail)
+                    for source_id, detail in child.items()
+                    if _has_value(source_id) and _has_value(detail)
+                }
+            )
+        elif key in descriptor_keys:
+            payload[key] = child
+        else:
+            detail = _clean_text(child)
+            if detail is not None:
+                source_conversions[key] = detail
+    if source_conversions:
+        payload["source_conversions"] = source_conversions
+    return payload
+
+
+def _source_id_from_source_unit_record(record: Mapping[str, Any]) -> str | None:
+    return _first_text(
+        record.get("source_key"),
+        record.get("series_id"),
+        record.get("source_file"),
+        record.get("title"),
+    )
+
+
+def _source_id_from_fact_source_key(source_key: str) -> str:
+    return source_key.split(".", 1)[0] if "." in source_key else source_key
+
+
+def _transform_basis_from_mapping(value: Mapping[str, Any]) -> str | None:
+    return _first_text(*(value.get(key) for key in _TRANSFORM_BASIS_KEYS))
+
+
+def _normalization_basis(value: Any) -> str | None:
+    if not isinstance(value, Mapping):
+        return None
+    parts = [
+        f"{key}={child}"
+        for key, child in value.items()
+        if _has_value(key) and _has_value(child)
+    ]
+    return "; ".join(parts) or None
+
+
+def _operation_from_fact(fact: EvidenceFact) -> str | None:
+    if fact.operation:
+        return fact.operation
+    return _operation_from_text(
+        fact.transform_basis,
+        fact.unit,
+        fact.metric,
+        fact.fact_id,
+        fact.label,
+        fact.source_key,
+    )
+
+
+def _operation_from_transform_id(value: Any) -> str | None:
+    return _operation_from_text(value)
+
+
+def _operation_from_chart_transform_id(
+    value: Any,
+    provenance: Mapping[str, Any],
+) -> str | None:
+    if _has_value(provenance.get("normalization")) and _is_normalization_transform_id(
+        value
+    ):
+        return "normalized_index"
+    return _operation_from_transform_id(value)
+
+
+def _is_normalization_transform_id(value: Any) -> bool:
+    return "normalization" in set(_semantic_tokens(_semantic_text(value)))
+
+
+def _operation_from_text(*values: Any) -> str | None:
+    text = _semantic_text(*values)
+    tokens = set(_semantic_tokens(text))
+    if {"correlation", "corr"} & tokens:
+        return "correlation"
+    if (
+        {"growth", "yoy", "qoq", "mom", "cagr"} & tokens
+        or {"percent", "change"} <= tokens
+        or {"percentage", "change"} <= tokens
+        or ("annualized" in tokens and {"return", "rate", "change"} & tokens)
+    ):
+        return "growth_rate"
+    if {"spread", "delta"} & tokens:
+        return "spread"
+    if "resampling" in tokens or "resample" in tokens:
+        return "resampling"
+    if "period" in tokens and {"align", "alignment", "key"} & tokens:
+        return "period_alignment"
+    if "conversion" in tokens or "convert" in tokens:
+        return "conversion"
+    if _is_normalized_index_text(text, tokens):
+        return "normalized_index"
+    if "projection" in tokens or "forecast" in tokens:
+        return "projection"
+    return None
+
+
+def _transform_requires_basis(transform: TransformDescriptor) -> bool:
+    return _operation_requires_basis(
+        transform.operation,
+        transform.transform_id,
+    )
+
+
+def _fact_requires_transform_basis(fact: EvidenceFact) -> bool:
+    return _operation_requires_basis(fact.operation) or _operation_requires_basis(
+        fact.unit,
+        fact.metric,
+        fact.fact_id,
+        fact.label,
+        fact.source_key,
+    )
+
+
+def _operation_requires_basis(*values: Any) -> bool:
+    return _operation_from_text(*values) in {
+        "correlation",
+        "growth_rate",
+        "normalized_index",
+        "spread",
+    }
+
+
+def _is_normalized_index_text(text: str, tokens: set[str]) -> bool:
+    return (
+        ("normalized" in tokens and "index" in tokens)
+        or "normalized_index" in text
+        or "index_normalized" in text
+        or "indexed_to" in text
+    )
+
+
+def _semantic_text(*values: Any) -> str:
+    return " ".join(str(value).lower() for value in values if _has_value(value))
+
+
+def _semantic_tokens(value: str) -> list[str]:
+    return [token for token in re.split(r"[^a-z0-9]+", value.lower()) if token]
+
+
 def _data_file_mapping(summary: Mapping[str, Any]) -> dict[str, str]:
     data_files = _path_mapping(summary.get("data_files"))
     manifest = summary.get("quant_input_manifest")
@@ -1044,6 +1631,223 @@ def _require_chart_traceability(
         )
 
 
+def _require_chart_transforms_resolve(
+    charts: list[EvidenceChart],
+    transforms: list[TransformDescriptor],
+) -> None:
+    transform_ids = {transform.transform_id for transform in transforms}
+    unresolved: dict[str, list[str]] = {}
+    for chart in charts:
+        missing = [
+            transform_id
+            for transform_id in chart.transform_ids
+            if transform_id not in transform_ids
+        ]
+        if missing:
+            unresolved[chart.chart_id] = missing
+    if unresolved:
+        raise ValueError(
+            "charts.transform_ids must resolve to transforms.transform_id: "
+            f"{unresolved}"
+        )
+
+
+def _require_transform_references_resolve(
+    transforms: list[TransformDescriptor],
+    sources: list[SourceDescriptor],
+    tables: list[EvidenceTableRef],
+) -> None:
+    source_ids = {source.source_id for source in sources}
+    table_ids = {table.table_id for table in tables}
+    unresolved_sources: list[str] = []
+    unresolved_tables: list[str] = []
+    for transform in transforms:
+        for source_id in [
+            *transform.source_ids,
+            *[source_id for group in transform.source_groups for source_id in group],
+        ]:
+            if source_id and not _source_key_resolves(source_id, source_ids):
+                unresolved_sources.append(f"{transform.transform_id}:{source_id}")
+        for table_id in transform.source_table_ids:
+            if table_id not in table_ids:
+                unresolved_tables.append(f"{transform.transform_id}:{table_id}")
+    if unresolved_sources:
+        raise ValueError(
+            "transforms.source_ids must resolve to sources.source_id: "
+            f"{_unique_texts(unresolved_sources)}"
+        )
+    if unresolved_tables:
+        raise ValueError(
+            "transforms.source_table_ids must resolve to raw_tables.table_id or "
+            "normalized_tables.table_id: "
+            f"{_unique_texts(unresolved_tables)}"
+        )
+
+
+def _require_transform_source_semantics(
+    transforms: list[TransformDescriptor],
+    sources: list[SourceDescriptor],
+) -> None:
+    source_by_id = {source.source_id: source for source in sources}
+    for transform in transforms:
+        groups = _semantic_source_groups(transform)
+        for group in groups:
+            group_sources = [
+                source
+                for source_id in group
+                if (source := _resolve_source_descriptor(source_id, source_by_id))
+                is not None
+            ]
+            families = _descriptor_tokens(
+                [
+                    *(source.unit_family for source in group_sources),
+                    *transform.input_unit_families,
+                ]
+            )
+            bases = _descriptor_tokens(
+                [
+                    *(source.unit_basis for source in group_sources),
+                    *transform.input_unit_bases,
+                ]
+            )
+            frequencies = _descriptor_tokens(
+                [
+                    *(source.frequency for source in group_sources),
+                    *transform.input_frequencies,
+                ]
+            )
+            transform_bases = _descriptor_tokens(
+                source.transform_basis for source in group_sources
+            )
+            if len(families) > 1 and not _has_unit_alignment(transform):
+                raise ValueError(
+                    "transforms.source_ids have incompatible unit families "
+                    f"without conversion: {transform.transform_id}={families}"
+                )
+            if len(bases) > 1 and not _has_unit_alignment(transform):
+                raise ValueError(
+                    "transforms.source_ids have incompatible unit bases without "
+                    f"conversion: {transform.transform_id}={bases}"
+                )
+            if len(frequencies) > 1 and not _has_frequency_alignment(transform):
+                raise ValueError(
+                    "transforms.source_ids have incompatible frequencies without "
+                    f"resampling or period_key: {transform.transform_id}={frequencies}"
+                )
+            if len(transform_bases) > 1 and not _has_transform_basis_alignment(
+                transform,
+                transform_bases,
+            ):
+                raise ValueError(
+                    "transforms.source_ids have incompatible transform bases "
+                    "without an explicit mixed-basis label: "
+                    f"{transform.transform_id}={transform_bases}"
+                )
+
+
+def _semantic_source_groups(transform: TransformDescriptor) -> list[list[str]]:
+    groups = [group for group in transform.source_groups if group]
+    if groups:
+        return groups
+    if len(transform.source_ids) > 1:
+        return [transform.source_ids]
+    if transform.input_unit_families or transform.input_unit_bases or transform.input_frequencies:
+        return groups or [[]]
+    return groups
+
+
+def _require_fact_transform_basis(facts: list[EvidenceFact]) -> None:
+    missing = [
+        fact.fact_id
+        for fact in facts
+        if _fact_requires_transform_basis(fact) and not fact.transform_basis
+    ]
+    if missing:
+        raise ValueError(
+            "facts.transform_basis is required for correlation, growth-rate, "
+            "spread, or normalized-index facts: "
+            f"{_unique_texts(missing)}"
+        )
+
+
+def _resolve_source_descriptor(
+    source_id: str,
+    sources: Mapping[str, SourceDescriptor],
+) -> SourceDescriptor | None:
+    if source_id in sources:
+        return sources[source_id]
+    for candidate_id, source in sources.items():
+        if source_id.startswith(f"{candidate_id}."):
+            return source
+    return None
+
+
+def _descriptor_tokens(values: Any) -> list[str]:
+    return _unique_texts(
+        _semantic_text(value).replace(" ", "_")
+        for value in values
+        if _has_value(value)
+    )
+
+
+def _has_transform_basis_alignment(
+    transform: TransformDescriptor,
+    source_bases: list[str],
+) -> bool:
+    transform_tokens = set(_semantic_tokens(_semantic_text(transform.transform_basis)))
+    if not transform_tokens:
+        return False
+    return all(
+        set(_semantic_tokens(source_basis)) <= transform_tokens
+        for source_basis in source_bases
+    )
+
+
+def _transform_source_keys(transform: TransformDescriptor) -> set[str]:
+    return {
+        source_id
+        for source_id in [
+            *transform.source_ids,
+            *[source_id for group in transform.source_groups for source_id in group],
+        ]
+        if source_id
+    }
+
+
+def _has_conversion_details(transform: TransformDescriptor) -> bool:
+    conversion = transform.conversion
+    if not conversion:
+        return False
+    source_keys = _transform_source_keys(transform)
+    if source_keys and any(
+        _source_key_resolves(conversion_source_id, source_keys)
+        for conversion_source_id in conversion.source_conversions
+    ):
+        return True
+    return _has_explicit_unit_conversion_details(conversion)
+
+
+def _has_explicit_unit_conversion_details(conversion: ConversionDescriptor) -> bool:
+    from_unit = _first_text(conversion.from_unit, conversion.input_unit)
+    to_unit = _first_text(conversion.to_unit, conversion.output_unit)
+    has_rule = (
+        conversion.factor is not None
+        or _has_value(conversion.formula)
+        or _has_value(conversion.basis)
+    )
+    return bool(from_unit and to_unit and has_rule)
+
+
+def _has_unit_alignment(transform: TransformDescriptor) -> bool:
+    if _has_conversion_details(transform):
+        return True
+    return transform.operation == "normalized_index" and bool(transform.transform_basis)
+
+
+def _has_frequency_alignment(transform: TransformDescriptor) -> bool:
+    return bool(transform.resampling or transform.period_key)
+
+
 def _source_key_resolves(source_key: str, source_ids: set[str]) -> bool:
     return any(
         source_key == source_id or source_key.startswith(f"{source_id}.")
@@ -1052,6 +1856,7 @@ def _source_key_resolves(source_key: str, source_ids: set[str]) -> bool:
 
 
 __all__ = [
+    "ConversionDescriptor",
     "EvidenceArtifacts",
     "EvidenceBundle",
     "EvidenceChart",
@@ -1060,5 +1865,7 @@ __all__ = [
     "EvidenceSource",
     "EvidenceTableRef",
     "EvidenceValidation",
+    "SourceDescriptor",
+    "TransformDescriptor",
     "build_evidence_bundle",
 ]
