@@ -50,10 +50,14 @@ QUANT_HELPER_CATALOG: tuple[QuantHelperCategory, ...] = (
                 import_path="agents.quant_macro_stats",
                 signature=(
                     "align_period_features(series_frames, *, frequency='M', "
-                    "how='outer', fill_method=None, fill_limit=None)"
+                    "how='outer', fill_method=None, fill_limit=None, "
+                    "fill_scope='lower_frequency')"
                 ),
-                use_when="Align daily, weekly, monthly, or quarterly frames by common period.",
-                preserves=("date", "named feature columns"),
+                use_when=(
+                    "Align daily, weekly, monthly, or quarterly frames by common "
+                    "period without forward-filling same-frequency stale tails."
+                ),
+                preserves=("date", "named feature columns", "source-period freshness"),
             ),
         ),
     ),
@@ -256,11 +260,83 @@ QUANT_HELPER_CATALOG: tuple[QuantHelperCategory, ...] = (
                 name="numeric_fact",
                 import_path="agents.quant_macro_stats",
                 signature=(
-                    "numeric_fact(fact_id, label, raw_value, *, unit, precision, "
-                    "source_key=None)"
+                    "numeric_fact(*, fact_id, label, raw_value, unit, precision, "
+                    "tolerance, source_key, as_of_date=None, semantic_role=None, "
+                    "literal_required=None, state_description=None)"
                 ),
-                use_when="Record auditable scalar values in execution_summary.numeric_facts.",
-                preserves=("id", "label", "value", "display_value", "source_key"),
+                use_when=(
+                    "Record auditable scalar values in execution_summary.numeric_facts; "
+                    "use semantic fields for current-state duration counters."
+                ),
+                preserves=(
+                    "id",
+                    "label",
+                    "raw_value",
+                    "display_value",
+                    "tolerance",
+                    "unit",
+                    "source_key",
+                    "as_of_date",
+                    "semantic_role",
+                    "literal_required",
+                    "state_description",
+                ),
+            ),
+            QuantHelperSpec(
+                name="latest_numeric_fact",
+                import_path="agents.quant_macro_stats",
+                signature=(
+                    "latest_numeric_fact(panel, key, *, fact_id, label, unit, "
+                    "precision, tolerance, source_key=None)"
+                ),
+                use_when=(
+                    "Record the latest non-null panel value as a canonical "
+                    "numeric fact with as_of_date."
+                ),
+                preserves=(
+                    "id",
+                    "label",
+                    "raw_value",
+                    "display_value",
+                    "tolerance",
+                    "source_key",
+                    "as_of_date",
+                ),
+            ),
+            QuantHelperSpec(
+                name="chart_provenance",
+                import_path="agents.quant_macro_stats",
+                signature="chart_provenance(source_series=..., raw_window=..., displayed_window=...)",
+                use_when=(
+                    "Attach raw source dates, displayed labels, resampling, and "
+                    "normalization metadata to each chart before saving."
+                ),
+                preserves=(
+                    "source_series",
+                    "raw_latest_observation",
+                    "displayed_latest_label",
+                    "normalization",
+                ),
+            ),
+            QuantHelperSpec(
+                name="source_unit_metadata",
+                import_path="agents.quant_macro_stats",
+                signature="source_unit_metadata(source_key, source_file=..., units=...)",
+                use_when=(
+                    "Record source units before direct gaps, differences, ratios, or "
+                    "overlays across wage, price, rate, or index series."
+                ),
+                preserves=("source_key", "series_id", "units", "unit_family", "unit_basis"),
+            ),
+            QuantHelperSpec(
+                name="unit_comparison",
+                import_path="agents.quant_macro_stats",
+                signature="unit_comparison(comparison_id, sources, operation='difference')",
+                use_when=(
+                    "Validate that compared source_unit_metadata records share a "
+                    "compatible unit, or document an explicit conversion."
+                ),
+                preserves=("status", "compatible", "sources", "conversion"),
             ),
             QuantHelperSpec(
                 name="attach_methods_used",

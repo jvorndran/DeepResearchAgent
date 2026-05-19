@@ -690,6 +690,98 @@ def test_submit_quality_decision_rejects_claimed_analog_window_without_evidence(
     assert any("computed analog windows" in fix for fix in payload["required_fixes"])
 
 
+def test_submit_quality_decision_allows_historical_coverage_year_language(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "methods_used": ["rate-cut event study"],
+                "limitations": ["FRED S&P 500 observations begin in 2016."],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Test whether the first Fed cut is bullish for stocks.",
+                "title": "Fed Cut Event Study",
+                "executive_summary": "Recent data are supportive but limited.",
+                "markdown": (
+                    "## Caveats\n"
+                    "Historical analog coverage is limited to FRED data from 2016 onward.\n"
+                    "The 1995 and 2001 easing cycles are not covered by this dataset."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 24},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Coverage caveats are stated.",
+            }
+        )
+    )
+
+    assert payload["status"] == "approved"
+
+
+def test_submit_quality_decision_allows_event_study_cycle_years(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "cycles_analyzed": [
+                    {"first_cut_year": 2019, "horizon_months": 6},
+                    {"first_cut_year": 2020, "horizon_months": 6},
+                    {"first_cut_year": 2024, "horizon_months": 6},
+                ],
+                "aggregate_summary": {"cycle_count": 3},
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Test whether the first Fed cut is bullish for stocks.",
+                "title": "Fed Cut Event Study",
+                "executive_summary": "The recent event-study sample is small.",
+                "markdown": (
+                    "## Evidence\n"
+                    "The event-study sample includes the 2019, 2020, and 2024 "
+                    "rate-cut cycles."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 18},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Cycle years describe the event-study sample.",
+            }
+        )
+    )
+
+    assert payload["status"] == "approved"
+
+
 def test_submit_quality_decision_counts_ranking_rows_as_window_coverage(tmp_path):
     report_path = tmp_path / "report.json"
     (tmp_path / "execution_summary.json").write_text(
@@ -1759,6 +1851,113 @@ def test_submit_quality_decision_rejects_missing_helper_evidence_after_sec_fetch
     assert "source_coverage" in payload["reason"]
 
 
+def test_submit_quality_decision_rejects_manual_sec_facts_from_source_files(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "chart_ids": [],
+                "source_files": {
+                    "sec_company_facts": str(tmp_path / "NVDA_sec_edgar_company_facts.csv"),
+                },
+                "numeric_facts": [
+                    {
+                        "id": "latest_revenue",
+                        "display_value": "215,938,000,000",
+                        "raw_value": 215_938_000_000,
+                        "tolerance": 0.1,
+                        "source_key": "sec_company_facts",
+                        "subject": "NVDA",
+                        "metric": "revenue",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "job_id": "qa-manual-sec-facts",
+                "created_at": "2026-05-14T12:00:00Z",
+                "query": "Prepare a stock-specific research report on NVIDIA fundamentals.",
+                "title": "NVIDIA Fundamentals",
+                "executive_summary": "NVIDIA fundamentals are discussed.",
+                "markdown": "## Executive Summary\nNVDA revenue and balance-sheet strength are discussed.",
+                "charts": {},
+                "data_sources": [],
+                "metadata": {"analysis_type": "earnings", "chart_count": 0, "word_count": 9},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "missing_helper_evidence"
+    assert "sec_company_facts.* numeric_facts" in payload["reason"]
+
+
+def test_submit_quality_decision_rejects_missing_helper_evidence_from_data_files_used(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "chart_ids": [],
+                "data_files_used": ["sec_facts"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "job_id": "qa-missing-company-fundamentals-data-files-used",
+                "created_at": "2026-05-14T12:00:00Z",
+                "query": (
+                    "Prepare a stock-specific research report on NVIDIA revenue, "
+                    "margin, cash-flow, balance-sheet trends, and scenarios."
+                ),
+                "title": "NVIDIA Fundamentals",
+                "executive_summary": "NVIDIA growth is discussed.",
+                "markdown": "## Executive Summary\nNVDA revenue and margin trends are discussed.",
+                "charts": {},
+                "data_sources": [],
+                "metadata": {"analysis_type": "earnings", "chart_count": 0, "word_count": 8},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "missing_helper_evidence"
+    assert payload["required_upstream"] == "quantitative-developer"
+    assert "SEC company-facts files are present" in payload["reason"]
+
+
 def test_submit_quality_decision_rejects_company_fundamental_numeric_drift(tmp_path):
     report_path = tmp_path / "report.json"
     (tmp_path / "execution_summary.json").write_text(
@@ -1782,6 +1981,7 @@ def test_submit_quality_decision_rejects_company_fundamental_numeric_drift(tmp_p
                         "source_key": "sec_company_facts.latest_fundamentals.NVDA.revenue_b",
                         "subject": "NVDA",
                         "metric": "revenue_b",
+                        "literal_required": False,
                     },
                     {
                         "id": "sec_company_facts.NVDA.cash_and_securities_b",
@@ -1791,6 +1991,7 @@ def test_submit_quality_decision_rejects_company_fundamental_numeric_drift(tmp_p
                         "source_key": "sec_company_facts.latest_fundamentals.NVDA.cash_and_securities_b",
                         "subject": "NVDA",
                         "metric": "cash_and_securities_b",
+                        "literal_required": False,
                     },
                 ],
             }
@@ -1830,6 +2031,194 @@ def test_submit_quality_decision_rejects_company_fundamental_numeric_drift(tmp_p
     assert payload["required_upstream"] == "technical-writer"
     assert "NVDA revenue_b" in payload["reason"]
     assert "NVDA cash_and_securities_b" in payload["reason"]
+
+
+def test_submit_quality_decision_rejects_helper_complete_cash_and_debt_drift(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "chart_ids": [],
+                "source_files": {
+                    "sec_company_facts": str(tmp_path / "NVDA_sec_edgar_company_facts.csv"),
+                },
+                "source_coverage": {"sec_company_facts": {"status": "covered"}},
+                "latest_fundamentals": {
+                    "NVDA": {
+                        "revenue_b": 215.938,
+                        "cash_and_securities_b": 10.605,
+                        "long_term_debt_b": 7.469,
+                    }
+                },
+                "numeric_facts": [
+                    {
+                        "id": "sec_company_facts.NVDA.cash_and_securities_b",
+                        "display_value": "$10.605B",
+                        "raw_value": 10.605,
+                        "tolerance": 0.005,
+                        "source_key": "sec_company_facts.latest_fundamentals.NVDA.cash_and_securities_b",
+                        "subject": "NVDA",
+                        "metric": "cash_and_securities_b",
+                    },
+                    {
+                        "id": "sec_company_facts.NVDA.long_term_debt_b",
+                        "display_value": "$7.469B",
+                        "raw_value": 7.469,
+                        "tolerance": 0.005,
+                        "source_key": "sec_company_facts.latest_fundamentals.NVDA.long_term_debt_b",
+                        "subject": "NVDA",
+                        "metric": "long_term_debt_b",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "job_id": "qa-helper-complete-company-drift",
+                "created_at": "2026-05-14T12:00:00Z",
+                "query": "Review NVIDIA balance sheet quality.",
+                "title": "NVIDIA Balance Sheet",
+                "executive_summary": "NVIDIA cash and debt are discussed.",
+                "markdown": "## Executive Summary\nNVDA has more than $40B cash and essentially zero debt.",
+                "charts": {},
+                "data_sources": [],
+                "metadata": {"analysis_type": "earnings", "chart_count": 0, "word_count": 11},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "numeric_fact_mismatch"
+    assert "NVDA cash_and_securities_b" in payload["reason"]
+    assert "NVDA long_term_debt_b" in payload["reason"]
+
+
+def test_submit_quality_decision_accepts_zero_duration_current_state_prose(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "numeric_facts": [
+                    {
+                        "id": "inversion",
+                        "label": "Inversion Months",
+                        "value": 0,
+                        "unit": "months",
+                        "precision": 0,
+                        "literal_required": True,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "job_id": "qa-zero-duration-good",
+                "created_at": "2026-05-14T12:00:00Z",
+                "query": "Review whether the yield curve is currently inverted.",
+                "title": "Yield Curve State",
+                "executive_summary": "The yield curve is not currently inverted.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "The yield curve is not currently inverted after a prolonged inversion "
+                    "that ended earlier in 2025."
+                ),
+                "charts": {},
+                "data_sources": [],
+                "metadata": {"analysis_type": "macro", "chart_count": 0, "word_count": 18},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "approved"
+
+
+def test_submit_quality_decision_rejects_zero_duration_as_historical_duration(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "numeric_facts": [
+                    {
+                        "id": "inversion",
+                        "label": "Inversion Months",
+                        "value": 0,
+                        "unit": "months",
+                        "precision": 0,
+                        "literal_required": True,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "job_id": "qa-zero-duration-bad",
+                "created_at": "2026-05-14T12:00:00Z",
+                "query": "Review whether the yield curve is currently inverted.",
+                "title": "Yield Curve State",
+                "executive_summary": "The curve normalized after 0 months.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "The yield curve has normalized after 0 months of inversion."
+                ),
+                "charts": {},
+                "data_sources": [],
+                "metadata": {"analysis_type": "macro", "chart_count": 0, "word_count": 11},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "numeric_fact_mismatch"
+    assert payload["required_upstream"] == "technical-writer"
+    assert "zero-duration" in payload["reason"]
 
 
 def test_submit_quality_decision_rejects_static_chart_semantics_blockers(tmp_path):
@@ -1882,6 +2271,359 @@ def test_submit_quality_decision_rejects_static_chart_semantics_blockers(tmp_pat
     assert payload["failure_category"] == "chart_semantics_mismatch"
     assert payload["required_upstream"] == "quantitative-developer"
     assert "duplicate x-axis rows" in payload["reason"]
+
+
+def test_submit_quality_decision_rejects_mixed_hourly_weekly_wage_gap(tmp_path):
+    hourly_path = tmp_path / "CES0500000003.csv"
+    weekly_path = tmp_path / "CES0500000030.csv"
+    hourly_path.write_text(
+        "date,value,series_id,units\n2025-12-01,37.02,CES0500000003,dollars per hour\n",
+        encoding="utf-8",
+    )
+    weekly_path.write_text(
+        "date,value,series_id\n2025-12-01,1072.67,CES0500000030\n",
+        encoding="utf-8",
+    )
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "source_files": {
+                    "all_hourly": str(hourly_path),
+                    "prod_weekly": str(weekly_path),
+                },
+                "statistical_summary": {"wage_divergence_latest": -802.27},
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Assess whether the consumer is fine using wage evidence.",
+                "title": "Consumer Wage Stress",
+                "executive_summary": "The wage gap is widening.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "A widening real wage gap between all employees and production workers "
+                    "shows hidden stress."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 18},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "source_unit_mismatch"
+    assert payload["required_upstream"] == "quantitative-developer"
+    assert "incompatible unit bases" in payload["reason"]
+    assert "dollars per hour" in payload["reason"]
+    assert "dollars per week" in payload["reason"]
+
+
+def test_submit_quality_decision_rejects_missing_handoff_chart_ids(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "chart_ids": ["consumer_stress_dashboard", "savings_credit_stress"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    chart = {
+        "id": "consumer_stress_dashboard",
+        "type": "line",
+        "title": "Consumer Stress",
+        "description": "Consumer stress over time.",
+        "xAxisKey": "date",
+        "series": [{"dataKey": "value", "label": "Value", "color": "#2563eb"}],
+        "data": [{"date": "2026-01", "value": 1.0}],
+    }
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "job_id": "qa-chart-handoff",
+                "created_at": "2026-05-14T12:00:00Z",
+                "query": "Include charts in the macro report.",
+                "title": "Chart Handoff",
+                "executive_summary": "One chart survived.",
+                "markdown": (
+                    "## Executive Summary\nOne chart survived.\n"
+                    "<!-- CHART:consumer_stress_dashboard -->"
+                ),
+                "charts": {"consumer_stress_dashboard": chart},
+                "data_sources": [],
+                "metadata": {"analysis_type": "macro", "chart_count": 1, "word_count": 6},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "chart_handoff_mismatch"
+    assert payload["required_upstream"] == "quant-developer"
+    assert "missing_report_chart_ids=['savings_credit_stress']" in payload["reason"]
+
+
+def test_submit_quality_decision_rejects_mixed_hourly_weekly_wage_chart_overlay(tmp_path):
+    hourly_path = tmp_path / "CES0500000003.csv"
+    weekly_path = tmp_path / "CES0500000030.csv"
+    hourly_path.write_text(
+        "date,value,series_id,units\n2025-12-01,37.02,CES0500000003,dollars per hour\n",
+        encoding="utf-8",
+    )
+    weekly_path.write_text(
+        "date,value,series_id\n2025-12-01,1072.67,CES0500000030\n",
+        encoding="utf-8",
+    )
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "source_files": {
+                    "all_hourly": str(hourly_path),
+                    "prod_weekly": str(weekly_path),
+                },
+                "statistical_summary": {"latest_all": 37.02, "latest_prod": 1072.67},
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Assess earnings levels for consumer stress.",
+                "title": "Consumer Earnings Stress",
+                "executive_summary": "The labor signal is mixed.",
+                "markdown": "## Executive Summary\nThe labor signal is mixed.",
+                "charts": {
+                    "earnings_levels": {
+                        "id": "earnings_levels",
+                        "type": "line",
+                        "title": "Hourly Earnings Levels",
+                        "description": "All employees and production workers.",
+                        "xAxisKey": "date",
+                        "series": [
+                            {"dataKey": "all_hourly", "label": "All employees"},
+                            {"dataKey": "prod_weekly", "label": "Production workers"},
+                        ],
+                        "data": [
+                            {
+                                "date": "2025-12-01",
+                                "all_hourly": 37.02,
+                                "prod_weekly": 1072.67,
+                            }
+                        ],
+                    }
+                },
+                "data_sources": [],
+                "metadata": {"word_count": 8},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "source_unit_mismatch"
+    assert "direct wage chart overlays" in payload["reason"]
+    assert "earnings_levels" in payload["reason"]
+
+
+def test_submit_quality_decision_allows_same_unit_wage_gap_contract(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "source_unit_metadata": [
+                    {
+                        "source_key": "all_hourly",
+                        "series_id": "CES0500000003",
+                        "units": "dollars per hour",
+                        "unit_family": "currency_per_time",
+                        "unit_basis": "hour",
+                        "measure": "wage",
+                    },
+                    {
+                        "source_key": "prod_hourly",
+                        "series_id": "CES0500000008",
+                        "units": "dollars per hour",
+                        "unit_family": "currency_per_time",
+                        "unit_basis": "hour",
+                        "measure": "wage",
+                    },
+                ],
+                "unit_comparisons": [
+                    {
+                        "id": "hourly_wage_gap",
+                        "status": "passed",
+                        "compatible": True,
+                        "sources": [
+                            {
+                                "source_key": "all_hourly",
+                                "units": "dollars per hour",
+                                "unit_family": "currency_per_time",
+                                "unit_basis": "hour",
+                                "measure": "wage",
+                            },
+                            {
+                                "source_key": "prod_hourly",
+                                "units": "dollars per hour",
+                                "unit_family": "currency_per_time",
+                                "unit_basis": "hour",
+                                "measure": "wage",
+                            },
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Assess the hourly wage gap.",
+                "title": "Hourly Wage Gap",
+                "executive_summary": "Same-unit wage comparison.",
+                "markdown": "## Executive Summary\nThe hourly wage gap is computed from hourly series.",
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 10},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "approved"
+
+
+def test_submit_quality_decision_rejects_artifact_fact_mismatch(tmp_path):
+    report_path = tmp_path / "report.json"
+    chart = {
+        "id": "macro_correlation_heatmap",
+        "type": "bar",
+        "title": "Macro Correlations",
+        "description": "Correlation facts by pair.",
+        "xAxisKey": "pair",
+        "series": [
+            {"dataKey": "correlation", "label": "Correlation", "color": "#2563eb"}
+        ],
+        "data": [
+            {
+                "pair": "(UNRATE, CPIAUCSL)",
+                "var1": "UNRATE",
+                "var2": "CPIAUCSL",
+                "correlation": 0.024,
+            }
+        ],
+    }
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "chart_ids": ["macro_correlation_heatmap"],
+                "scenario_stress": {
+                    "corr": {
+                        "UNRATE": {"UNRATE": 1.0, "CPIAUCSL": 0.908},
+                        "CPIAUCSL": {"UNRATE": 0.908, "CPIAUCSL": 1.0},
+                    }
+                },
+                "numeric_facts": [
+                    {
+                        "id": "corr_UNRATE_CPIAUCSL",
+                        "label": "Correlation(UNRATE, CPIAUCSL)",
+                        "value": 0.024,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "job_id": "qa-artifact-fact",
+                "created_at": "2026-05-14T12:00:00Z",
+                "query": "Include charts in the macro report.",
+                "title": "Artifact Fact Mismatch",
+                "executive_summary": "Macro correlations were charted.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "The UNRATE/CPIAUCSL correlation was 0.024.\n"
+                    "<!-- CHART:macro_correlation_heatmap -->"
+                ),
+                "charts": {"macro_correlation_heatmap": chart},
+                "data_sources": [],
+                "metadata": {"analysis_type": "macro", "chart_count": 1, "word_count": 8},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "artifact_fact_mismatch"
+    assert payload["required_upstream"] == "quant-developer"
+    assert "UNRATE/CPIAUCSL" in payload["reason"]
 
 
 def test_submit_quality_decision_rejects_recession_probability_without_composite_diagnostics(tmp_path):

@@ -1,5 +1,6 @@
 """Quant artifact handoff and pre-write retry state helpers."""
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,57 @@ _NON_HANDOFF_TOOL_NAMES = {
     "write_file",
 }
 _HANDOFF_TOOL_NAMES = {"execute"}
+_ANALYSIS_SCRIPT_WRITE_MARKERS = (
+    "Updated file",
+    "Created file",
+    "Wrote file",
+)
+_ANALYSIS_SCRIPT_PATH_RE = re.compile(
+    r"(?P<path>(?:[A-Za-z]:)?[/\\][^\s`\"'<>]+[/\\]code[/\\]analysis"
+    r"(?:_v\d+)?\.py)"
+)
+
+
+def _analysis_script_write_path(message: Any) -> str | None:
+    if type(message).__name__ != "ToolMessage":
+        return None
+    if _message_tool_name(message) != "write_file":
+        return None
+    if getattr(message, "status", None) == "error":
+        return None
+    content = str(getattr(message, "content", "") or "")
+    if not any(marker in content for marker in _ANALYSIS_SCRIPT_WRITE_MARKERS):
+        return None
+    for match in _ANALYSIS_SCRIPT_PATH_RE.finditer(content):
+        path = match.group("path")
+        if _is_allowed_analysis_script_path(path):
+            return path
+    return None
+
+
+def _latest_written_analysis_script_path(messages: list[Any]) -> str | None:
+    script_path: str | None = None
+    for message in messages:
+        if path := _analysis_script_write_path(message):
+            script_path = path
+    return script_path
+
+
+def _has_execute_after_latest_analysis_script_write(messages: list[Any]) -> bool:
+    latest_write_index = -1
+    for index, message in enumerate(messages):
+        if _analysis_script_write_path(message):
+            latest_write_index = index
+    if latest_write_index < 0:
+        return False
+    for message in messages[latest_write_index + 1 :]:
+        if (
+            type(message).__name__ == "ToolMessage"
+            and _message_tool_name(message) == "execute"
+        ):
+            return True
+    return False
+
 
 def _has_written_analysis_script(messages: list[Any]) -> bool:
     for message in messages:

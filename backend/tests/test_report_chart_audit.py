@@ -3,7 +3,13 @@ import json
 from agents.technical_writer.chart_audit import run_report_chart_audit
 
 
-def _write_report(tmp_path, chart):
+def _write_report(
+    tmp_path,
+    chart,
+    *,
+    analysis_type="macro_indicator",
+    data_sources=None,
+):
     report_path = tmp_path / "report.json"
     report_path.write_text(
         json.dumps(
@@ -20,9 +26,9 @@ def _write_report(tmp_path, chart):
                     "## Research Query\nBuild a macro chart report."
                 ),
                 "charts": {chart["id"]: chart},
-                "data_sources": [],
+                "data_sources": data_sources or [],
                 "metadata": {
-                    "analysis_type": "macro_indicator",
+                    "analysis_type": analysis_type,
                     "chart_count": 1,
                     "word_count": 12,
                 },
@@ -70,6 +76,339 @@ def test_report_chart_audit_accepts_renderable_axis_chart(tmp_path):
     assert audit["passes_audit"] is True
     assert audit["chart_render"]["valid"] is True
     assert audit["chart_semantics"]["valid"] is True
+
+
+def test_report_chart_audit_warns_when_macro_chart_lacks_provenance(tmp_path):
+    report_path = _write_report(
+        tmp_path,
+        {
+            "id": "policy_inflation",
+            "type": "composed",
+            "title": "Policy And Inflation",
+            "description": "Fed funds and inflation over time.",
+            "xAxisKey": "date",
+            "series": [
+                {"dataKey": "fed_funds", "label": "Fed Funds", "color": "#2563eb"},
+            ],
+            "data": [{"date": "2025-01", "fed_funds": 4.33}],
+        },
+    )
+
+    audit = json.loads(run_report_chart_audit(str(report_path)))
+
+    assert audit["passes_audit"] is True
+    assert audit["chart_semantics"]["warnings"]["policy_inflation"] == [
+        "macro chart lacks provenance metadata"
+    ]
+
+
+def test_report_chart_audit_warns_when_custom_macro_source_chart_lacks_provenance(
+    tmp_path,
+):
+    report_path = _write_report(
+        tmp_path,
+        {
+            "id": "policy_inflation",
+            "type": "composed",
+            "title": "Policy And Inflation",
+            "description": "Fed funds and inflation over time.",
+            "xAxisKey": "date",
+            "series": [
+                {"dataKey": "fed_funds", "label": "Fed Funds", "color": "#2563eb"},
+            ],
+            "data": [{"date": "2025-01", "fed_funds": 4.33}],
+        },
+        analysis_type="custom",
+        data_sources=[
+            {
+                "provider": "FRED",
+                "description": "Federal Reserve Economic Data time series.",
+                "series_ids": ["FEDFUNDS"],
+            }
+        ],
+    )
+
+    audit = json.loads(run_report_chart_audit(str(report_path)))
+
+    assert audit["passes_audit"] is True
+    assert audit["chart_semantics"]["warnings"]["policy_inflation"] == [
+        "macro chart lacks provenance metadata"
+    ]
+
+
+def test_report_chart_audit_rejects_display_window_provenance_mismatch(tmp_path):
+    report_path = _write_report(
+        tmp_path,
+        {
+            "id": "yield_spread",
+            "type": "line",
+            "title": "Yield Spread",
+            "description": "Monthly yield spread.",
+            "xAxisKey": "date",
+            "series": [{"dataKey": "spread", "label": "10Y-2Y", "color": "#2563eb"}],
+            "data": [
+                {"date": "2026-01", "spread": -0.1},
+                {"date": "2026-02", "spread": 0.2},
+            ],
+            "provenance": {
+                "source_series": ["T10Y2Y"],
+                "raw_latest_observation": {"T10Y2Y": "2026-02-15"},
+                "displayed_window": {"start": "2026-01", "end": "2026-03"},
+                "displayed_latest_label": "2026-03",
+                "resampling": "daily observations shown as monthly labels",
+            },
+        },
+    )
+
+    audit = json.loads(run_report_chart_audit(str(report_path)))
+
+    assert audit["passes_audit"] is False
+    assert audit["chart_semantics"]["blockers"]["yield_spread"] == [
+        "displayed_window.end=2026-03 does not match last x-axis value 2026-02",
+        "displayed_latest_label=2026-03 does not match last x-axis value 2026-02",
+    ]
+
+
+def test_report_chart_audit_rejects_missing_handoff_chart_ids(tmp_path):
+    report_path = _write_report(
+        tmp_path,
+        {
+            "id": "consumer_stress_dashboard",
+            "type": "line",
+            "title": "Consumer Stress",
+            "description": "Consumer stress over time.",
+            "xAxisKey": "date",
+            "series": [{"dataKey": "value", "label": "Value", "color": "#2563eb"}],
+            "data": [{"date": "2026-01", "value": 1.0}],
+        },
+    )
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "chart_ids": [
+                    "consumer_stress_dashboard",
+                    "savings_credit_stress",
+                    "company_net_margins",
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    audit = json.loads(run_report_chart_audit(str(report_path)))
+
+    assert audit["passes_audit"] is False
+    assert audit["chart_handoff"]["missing_report_chart_ids"] == [
+        "savings_credit_stress",
+        "company_net_margins",
+    ]
+    assert "chart_handoff_mismatch" in audit["blockers"][0]
+
+
+def test_report_chart_audit_rejects_malformed_sibling_execution_summary(tmp_path):
+    report_path = _write_report(
+        tmp_path,
+        {
+            "id": "consumer_stress_dashboard",
+            "type": "line",
+            "title": "Consumer Stress",
+            "description": "Consumer stress over time.",
+            "xAxisKey": "date",
+            "series": [{"dataKey": "value", "label": "Value", "color": "#2563eb"}],
+            "data": [{"date": "2026-01", "value": 1.0}],
+        },
+    )
+    (tmp_path / "execution_summary.json").write_text("{not-json", encoding="utf-8")
+
+    audit = json.loads(run_report_chart_audit(str(report_path)))
+
+    assert audit["passes_audit"] is False
+    assert audit["chart_handoff"] == {}
+    assert audit["artifact_fact_consistency"] == {}
+    assert audit["blockers"][0].startswith(
+        "failed to load sibling execution_summary.json: Invalid execution_summary.json"
+    )
+
+
+def test_report_chart_audit_rejects_raw_latest_provenance_outpaced_by_display_label(
+    tmp_path,
+):
+    report_path = _write_report(
+        tmp_path,
+        {
+            "id": "yield_spread",
+            "type": "line",
+            "title": "Yield Spread",
+            "description": "Monthly yield spread.",
+            "xAxisKey": "date",
+            "series": [{"dataKey": "spread", "label": "10Y-2Y", "color": "#2563eb"}],
+            "data": [
+                {"date": "2026-04-30", "spread": 0.3},
+                {"date": "2026-05-31", "spread": 0.5},
+            ],
+            "provenance": {
+                "source_series": ["T10Y2Y"],
+                "raw_latest_observation": {"T10Y2Y": "2026-05-15"},
+                "displayed_window": {"start": "2026-04-30", "end": "2026-05-31"},
+                "displayed_latest_label": "2026-05-31",
+                "resampling": "daily observations shown as monthly labels",
+            },
+        },
+    )
+
+    audit = json.loads(run_report_chart_audit(str(report_path)))
+
+    assert audit["passes_audit"] is False
+    assert audit["chart_semantics"]["blockers"]["yield_spread"] == [
+        "displayed_latest_label=2026-05-31 outpaces "
+        "raw_latest_observation.T10Y2Y=2026-05-15"
+    ]
+
+
+def test_report_chart_audit_accepts_per_series_latest_labels_with_staggered_endpoints(
+    tmp_path,
+):
+    report_path = _write_report(
+        tmp_path,
+        {
+            "id": "sentiment_labor",
+            "type": "line",
+            "title": "Sentiment And Labor",
+            "description": "Sentiment and payrolls with staggered latest dates.",
+            "xAxisKey": "date",
+            "series": [
+                {"dataKey": "payrolls", "label": "Payrolls", "color": "#2563eb"},
+                {"dataKey": "sentiment", "label": "Sentiment", "color": "#f59e0b"},
+            ],
+            "data": [
+                {"date": "2026-01", "payrolls": 151.1, "sentiment": 72.0},
+                {"date": "2026-02", "payrolls": 151.3, "sentiment": 74.0},
+                {"date": "2026-03", "payrolls": None, "sentiment": 76.0},
+            ],
+            "provenance": {
+                "source_series": {
+                    "payrolls": "PAYEMS",
+                    "sentiment": "UMCSENT",
+                },
+                "raw_latest_observation": {
+                    "PAYEMS": "2026-02-06",
+                    "UMCSENT": "2026-03-15",
+                },
+                "displayed_window": {"start": "2026-01", "end": "2026-03"},
+                "displayed_latest_label": {
+                    "PAYEMS": "2026-02",
+                    "UMCSENT": "2026-03",
+                },
+                "resampling": "monthly labels preserve each source series endpoint",
+            },
+        },
+    )
+
+    audit = json.loads(run_report_chart_audit(str(report_path)))
+
+    assert audit["passes_audit"] is True
+    assert "sentiment_labor" not in audit["chart_semantics"]["blockers"]
+
+
+def test_report_chart_audit_matches_raw_latest_through_source_series_aliases(
+    tmp_path,
+):
+    report_path = _write_report(
+        tmp_path,
+        {
+            "id": "sentiment_labor",
+            "type": "line",
+            "title": "Sentiment And Labor",
+            "description": "Sentiment and payrolls with staggered latest dates.",
+            "xAxisKey": "date",
+            "series": [
+                {"dataKey": "payrolls", "label": "Payrolls", "color": "#2563eb"},
+                {"dataKey": "sentiment", "label": "Sentiment", "color": "#f59e0b"},
+            ],
+            "data": [
+                {"date": "2026-01", "payrolls": 151.1, "sentiment": 72.0},
+                {"date": "2026-02", "payrolls": 151.3, "sentiment": 74.0},
+                {"date": "2026-03", "payrolls": 151.5, "sentiment": 76.0},
+            ],
+            "provenance": {
+                "source_series": {
+                    "payrolls": "PAYEMS",
+                    "sentiment": "UMCSENT",
+                },
+                "raw_latest_observation": {
+                    "PAYEMS": "2026-02-06",
+                    "UMCSENT": "2026-03-15",
+                },
+                "displayed_window": {"start": "2026-01", "end": "2026-03"},
+                "displayed_latest_label": {
+                    "payrolls": "2026-03",
+                    "sentiment": "2026-03",
+                },
+                "resampling": "monthly labels preserve each source series endpoint",
+            },
+        },
+    )
+
+    audit = json.loads(run_report_chart_audit(str(report_path)))
+
+    assert audit["passes_audit"] is False
+    assert audit["chart_semantics"]["blockers"]["sentiment_labor"] == [
+        "displayed_latest_label.payrolls=2026-03 outpaces "
+        "raw_latest_observation.PAYEMS=2026-02-06"
+    ]
+
+
+def test_report_chart_audit_rejects_artifact_fact_mismatch(tmp_path):
+    report_path = _write_report(
+        tmp_path,
+        {
+            "id": "macro_correlation_heatmap",
+            "type": "bar",
+            "title": "Macro Correlations",
+            "description": "Correlation facts by pair.",
+            "xAxisKey": "pair",
+            "series": [
+                {"dataKey": "correlation", "label": "Correlation", "color": "#2563eb"}
+            ],
+            "data": [
+                {
+                    "pair": "(UNRATE, CPIAUCSL)",
+                    "var1": "UNRATE",
+                    "var2": "CPIAUCSL",
+                    "correlation": 0.024,
+                }
+            ],
+        },
+    )
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "chart_ids": ["macro_correlation_heatmap"],
+                "scenario_stress": {
+                    "corr": {
+                        "UNRATE": {"UNRATE": 1.0, "CPIAUCSL": 0.908},
+                        "CPIAUCSL": {"UNRATE": 0.908, "CPIAUCSL": 1.0},
+                    }
+                },
+                "numeric_facts": [
+                    {
+                        "id": "corr_UNRATE_CPIAUCSL",
+                        "label": "Correlation(UNRATE, CPIAUCSL)",
+                        "value": 0.024,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    audit = json.loads(run_report_chart_audit(str(report_path)))
+
+    assert audit["passes_audit"] is False
+    assert audit["artifact_fact_consistency"]["valid"] is False
+    assert "artifact_fact_mismatch" in audit["blockers"][0]
 
 
 def test_report_chart_audit_accepts_broad_governed_chart_families(tmp_path):
@@ -304,6 +643,34 @@ def test_report_chart_audit_rejects_duplicate_axis_rows(tmp_path):
     assert audit["passes_audit"] is False
     assert audit["chart_semantics"]["blockers"]["yield_spread"] == [
         "1 duplicate x-axis rows may render ambiguously"
+    ]
+
+
+def test_report_chart_audit_rejects_duplicate_axis_series_data_keys(tmp_path):
+    report_path = _write_report(
+        tmp_path,
+        {
+            "id": "peer_growth",
+            "type": "bar",
+            "title": "Peer Growth",
+            "description": "Peer growth comparison.",
+            "xAxisKey": "year",
+            "series": [
+                {"dataKey": "value", "label": "AAPL", "color": "#3b82f6"},
+                {"dataKey": "value", "label": "MSFT", "color": "#f59e0b"},
+            ],
+            "data": [
+                {"year": "2024", "value": 6.0},
+                {"year": "2025", "value": 8.0},
+            ],
+        },
+    )
+
+    audit = json.loads(run_report_chart_audit(str(report_path)))
+
+    assert audit["passes_audit"] is False
+    assert audit["chart_semantics"]["blockers"]["peer_growth"] == [
+        "duplicate axis series dataKey values are ambiguous: value"
     ]
 
 

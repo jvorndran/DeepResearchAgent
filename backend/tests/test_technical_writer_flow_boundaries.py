@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from langchain.agents.middleware.types import ModelResponse
 from langchain_core.messages import AIMessage, ToolMessage
 
+from agents import quant_macro_stats as qms
 from agents.technical_writer.subagent import (
     TECHNICAL_WRITER_SUBAGENT,
     TechnicalWriterToolBoundaryMiddleware,
@@ -27,6 +28,18 @@ class _Request:
             kwargs.get("tools", self.tools),
             messages=kwargs.get("messages", self.messages),
         )
+
+
+def _line_chart(chart_id: str) -> dict:
+    return {
+        "id": chart_id,
+        "type": "line",
+        "title": chart_id.replace("_", " ").title(),
+        "description": f"{chart_id} over time.",
+        "xAxisKey": "date",
+        "series": [{"dataKey": "value", "label": "Value", "color": "#2563eb"}],
+        "data": [{"date": "2026-01", "value": 1.0}],
+    }
 
 
 def test_plan_report_structure_infers_macro_for_fred_consumer_query(tmp_path):
@@ -152,6 +165,136 @@ def test_plan_report_structure_surfaces_generic_company_helper_evidence(tmp_path
     assert "valuation_market_data" in result["execution_summary_for_draft"]
 
 
+def test_plan_report_structure_surfaces_source_unit_comparison_status(tmp_path):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text(
+        json.dumps(
+            {
+                "real_wages": {
+                    "id": "real_wages",
+                    "type": "line",
+                    "title": "Real Wages",
+                    "xAxisKey": "date",
+                    "series": [{"dataKey": "all_hourly", "label": "All hourly"}],
+                    "data": [{"date": "2025-12", "all_hourly": 37.02}],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    execution_summary = {
+        "source_unit_metadata": [
+            {
+                "source_key": "all_hourly",
+                "series_id": "CES0500000003",
+                "units": "dollars per hour",
+                "unit_family": "currency_per_time",
+                "unit_basis": "hour",
+            },
+            {
+                "source_key": "prod_weekly",
+                "series_id": "CES0500000030",
+                "units": "dollars per week",
+                "unit_family": "currency_per_time",
+                "unit_basis": "week",
+            },
+        ],
+        "unit_comparisons": [
+            {
+                "id": "wage_gap",
+                "status": "failed",
+                "compatible": False,
+                "metric": "real wage gap",
+                "error": "hourly and weekly wage sources are incompatible",
+            }
+        ],
+    }
+
+    result = json.loads(
+        plan_report_structure.func(
+            query_type="macro_indicator",
+            charts_json_path=str(charts_path),
+            execution_summary=json.dumps(execution_summary),
+            original_query="Challenge the consumer is fine using wage evidence.",
+            runtime=_Runtime(),
+        )
+    )
+
+    draft = result["execution_summary_for_draft"]
+    assert "Source-unit contract from execution_summary.json" in draft
+    assert "all_hourly; series_id=CES0500000003; units=dollars per hour" in draft
+    assert "wage_gap; status=failed; compatible=False" in draft
+    assert result["helper_evidence_for_draft"]["unit_comparisons"][0]["id"] == "wage_gap"
+
+
+def test_plan_report_structure_uses_sec_helper_scaled_numeric_facts(tmp_path):
+    sec_path = tmp_path / "NVDA_sec_edgar_company_facts.csv"
+    sec_path.write_text(
+        "\n".join(
+            [
+                "fiscal_year,revenue,gross_profit,operating_income,net_income,"
+                "operating_cash_flow,capital_expenditures,cash_and_equivalents,"
+                "marketable_securities_current,long_term_debt,stockholders_equity,"
+                "assets,liabilities,diluted_eps,shares",
+                "2025,130497000000,97858000000,81453000000,72880000000,"
+                "64089000000,3236000000,8589000000,1716000000,8463000000,"
+                "65000000000,111601000000,32274000000,2.94,24700000000",
+                "2026,215938000000,153865000000,136859000000,120224000000,"
+                "118200000000,21524000000,8589000000,2016000000,7469000000,"
+                "79000000000,124092000000,45000000000,4.90,24514000000",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "quant"
+    qms.save_quant_outputs(
+        output_dir,
+        {
+            "income_statement": {
+                "type": "line",
+                "title": "Revenue",
+                "data": [{"fiscal_year": "2026", "revenue": 215_938_000_000}],
+                "series": [{"dataKey": "revenue", "name": "Revenue"}],
+                "xAxis": {"dataKey": "fiscal_year"},
+            }
+        },
+        {
+            "title": "NVIDIA AI spending resilience",
+            "source_files": {"sec_company_facts": str(sec_path)},
+            "numeric_facts": [
+                qms.numeric_fact(
+                    fact_id="latest_revenue",
+                    label="Latest revenue",
+                    raw_value=215_938_000_000,
+                    unit="$M",
+                    precision=0,
+                    tolerance=0.1,
+                    source_key=sec_path.name,
+                )
+            ],
+        },
+    )
+
+    result = json.loads(
+        plan_report_structure.func(
+            query_type="earnings_analysis",
+            charts_json_path=str(output_dir / "charts.json"),
+            execution_summary=(output_dir / "execution_summary.json").read_text(
+                encoding="utf-8"
+            ),
+            original_query="Assess whether NVIDIA remains a great business if AI spending cools.",
+            runtime=_Runtime(),
+        )
+    )
+
+    draft = result["execution_summary_for_draft"]
+    assert "$215.938B" in draft
+    assert "$10.605B" in draft
+    assert "$7.469B" in draft
+    assert "215,938,000,000" not in draft
+    assert "(latest_revenue=" not in draft
+
+
 def test_plan_report_structure_surfaces_chart_facts_for_draft(tmp_path):
     charts_path = tmp_path / "charts.json"
     charts_path.write_text(
@@ -177,6 +320,14 @@ def test_plan_report_structure_surfaces_chart_facts_for_draft(tmp_path):
                         }
                     ],
                     "referenceAreas": [{"label": "Latest year", "x1": "2025-01", "x2": "2026-01"}],
+                    "provenance": {
+                        "source_series": ["FEDFUNDS", "T10Y2Y", "PCEPI"],
+                        "raw_latest_observation": {"T10Y2Y": "2026-01-15"},
+                        "displayed_window": {"start": "2026-01", "end": "2026-01"},
+                        "displayed_latest_label": "2026-01",
+                        "resampling": "T10Y2Y daily series resampled to monthly last observation",
+                        "normalization": {"PCEPI": "year-over-year percent change"},
+                    },
                 }
             }
         ),
@@ -199,6 +350,9 @@ def test_plan_report_structure_surfaces_chart_facts_for_draft(tmp_path):
     assert "rates_inflation_overlay: type=composed" in chart_facts
     assert "Fed funds (FEDFUNDS, line)" in chart_facts
     assert "10Y-2Y yield spread (CURVE_SPREAD, line)" in chart_facts
+    assert "raw_latest_observation=T10Y2Y:2026-01-15" in chart_facts
+    assert "displayed_latest_label=2026-01" in chart_facts
+    assert "normalization=PCEPI:year-over-year percent change" in chart_facts
     assert "referenceAreas=Latest year" in chart_facts
     assert draft.startswith("Chart facts from charts.json")
     assert "Computed macro facts." in draft
@@ -1160,6 +1314,7 @@ def test_plan_report_structure_surfaces_generic_scenario_score_evidence(tmp_path
     assert result["helper_evidence_for_draft"]["tables"]["scenario_score_rows"][2]["scenario"] == "bear"
     assert result["helper_evidence_for_draft"]["tables"]["scenario_score_rows"]
 
+
 def test_plan_report_structure_prioritizes_generic_backtest_values(tmp_path):
     charts_path = tmp_path / "charts.json"
     charts_path.write_text("{}", encoding="utf-8")
@@ -1636,6 +1791,7 @@ def test_write_research_report_rejects_company_fundamental_numeric_drift(tmp_pat
                 "source_key": "sec_company_facts.latest_fundamentals.NVDA.revenue_b",
                 "subject": "NVDA",
                 "metric": "revenue_b",
+                "literal_required": False,
             },
             {
                 "id": "sec_company_facts.NVDA.cash_and_securities_b",
@@ -1645,6 +1801,7 @@ def test_write_research_report_rejects_company_fundamental_numeric_drift(tmp_pat
                 "source_key": "sec_company_facts.latest_fundamentals.NVDA.cash_and_securities_b",
                 "subject": "NVDA",
                 "metric": "cash_and_securities_b",
+                "literal_required": False,
             },
         ],
     }
@@ -1669,6 +1826,190 @@ def test_write_research_report_rejects_company_fundamental_numeric_drift(tmp_pat
     assert result["failure_category"] == "numeric_fact_mismatch"
     assert "NVDA revenue_b" in result["message"]
     assert "NVDA cash_and_securities_b" in result["message"]
+
+
+def test_plan_report_structure_adds_zero_duration_state_guidance(tmp_path):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text("{}", encoding="utf-8")
+
+    result = json.loads(
+        plan_report_structure.func(
+            query_type="macro_indicator",
+            charts_json_path=str(charts_path),
+            execution_summary=json.dumps(
+                {
+                    "numeric_facts": [
+                        {
+                            "id": "inversion",
+                            "label": "Inversion Months",
+                            "value": 0,
+                            "unit": "months",
+                            "precision": 0,
+                            "literal_required": True,
+                        }
+                    ]
+                }
+            ),
+            original_query="Review whether the yield curve is currently inverted.",
+            runtime=_Runtime(),
+        )
+    )
+
+    draft = result["execution_summary_for_draft"]
+    assert "inversion=0 months" in draft
+    assert "semantic_role=current_state_duration" in draft
+    assert "literal_required=false" in draft
+    assert "no active/current episode" in draft
+    assert result["helper_evidence_for_draft"]["numeric_facts"][0]["literal_required"] is False
+
+
+def test_write_research_report_accepts_zero_duration_current_state_prose(tmp_path):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text("{}", encoding="utf-8")
+    summary = {
+        "numeric_facts": [
+            {
+                "id": "inversion",
+                "label": "Inversion Months",
+                "value": 0,
+                "unit": "months",
+                "precision": 0,
+                "literal_required": True,
+            }
+        ]
+    }
+
+    result = json.loads(
+        write_research_report.func(
+            markdown=(
+                "## Executive Summary\n"
+                "The yield curve is not currently inverted after a prolonged inversion "
+                "that ended earlier in 2025.\n\n"
+                "## Research Query\nReview whether the yield curve is currently inverted."
+            ),
+            charts_json_path=str(charts_path),
+            original_query="Review whether the yield curve is currently inverted.",
+            execution_summary=json.dumps(summary),
+            runtime=SimpleNamespace(
+                context=SimpleNamespace(job_id="job-zero-duration-good", output_dir=str(tmp_path))
+            ),
+        )
+    )
+
+    assert result["report_path"].endswith("report.json")
+    assert result["validation_issues"] == []
+
+
+def test_write_research_report_rejects_zero_duration_as_historical_duration(tmp_path):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text("{}", encoding="utf-8")
+    summary = {
+        "numeric_facts": [
+            {
+                "id": "inversion",
+                "label": "Inversion Months",
+                "value": 0,
+                "unit": "months",
+                "precision": 0,
+                "literal_required": True,
+            }
+        ]
+    }
+
+    result = json.loads(
+        write_research_report.func(
+            markdown=(
+                "## Executive Summary\n"
+                "The yield curve has normalized after 0 months of inversion.\n\n"
+                "## Research Query\nReview whether the yield curve is currently inverted."
+            ),
+            charts_json_path=str(charts_path),
+            original_query="Review whether the yield curve is currently inverted.",
+            execution_summary=json.dumps(summary),
+            runtime=SimpleNamespace(
+                context=SimpleNamespace(job_id="job-zero-duration-bad", output_dir=str(tmp_path))
+            ),
+        )
+    )
+
+    assert result["status"] == "error"
+    assert result["failure_category"] == "numeric_fact_mismatch"
+    assert "zero-duration" in result["message"]
+
+
+def test_write_research_report_rejects_conflicting_correlation_artifacts(tmp_path):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text(
+        json.dumps(
+            {
+                "macro_correlation_heatmap": {
+                    "id": "macro_correlation_heatmap",
+                    "type": "bar",
+                    "title": "Macro Correlations",
+                    "description": "Correlation facts by pair.",
+                    "xAxisKey": "pair",
+                    "series": [
+                        {
+                            "dataKey": "correlation",
+                            "label": "Correlation",
+                            "color": "#2563eb",
+                        }
+                    ],
+                    "data": [
+                        {
+                            "pair": "(UNRATE, CPIAUCSL)",
+                            "var1": "UNRATE",
+                            "var2": "CPIAUCSL",
+                            "correlation": 0.024,
+                        }
+                    ],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    summary = {
+        "scenario_stress": {
+            "corr": {
+                "UNRATE": {"UNRATE": 1.0, "CPIAUCSL": 0.908},
+                "CPIAUCSL": {"UNRATE": 0.908, "CPIAUCSL": 1.0},
+            }
+        },
+        "numeric_facts": [
+            {
+                "id": "corr_UNRATE_CPIAUCSL",
+                "label": "Correlation(UNRATE, CPIAUCSL)",
+                "value": 0.024,
+                "display_value": "0.024",
+            }
+        ],
+    }
+
+    result = json.loads(
+        write_research_report.func(
+            markdown=(
+                "## Executive Summary\n"
+                "The UNRATE/CPIAUCSL correlation was 0.024.\n\n"
+                "<!-- CHART:macro_correlation_heatmap -->\n\n"
+                "## Research Query\nReview next-year macro risks."
+            ),
+            charts_json_path=str(charts_path),
+            original_query="Review next-year macro risks with charts.",
+            execution_summary=json.dumps(summary),
+            runtime=SimpleNamespace(
+                context=SimpleNamespace(
+                    job_id="job-correlation-mismatch",
+                    output_dir=str(tmp_path),
+                )
+            ),
+        )
+    )
+
+    assert result["status"] == "error"
+    assert result["failure_category"] == "artifact_fact_mismatch"
+    assert result["required_upstream"] == "quant-developer"
+    assert result["report_path"] == str((tmp_path / "report.json").resolve())
+    assert "UNRATE/CPIAUCSL" in result["message"]
 
 
 def test_plan_report_structure_preserves_dict_backtest_model_and_simulation_metrics(tmp_path):
@@ -2260,6 +2601,64 @@ def test_write_research_report_embeds_chart_id_list_shape(tmp_path):
     assert chart["series"][0]["dataKey"] == "spread"
 
 
+def test_write_research_report_returns_handoff_error_for_unrenderable_expected_chart(
+    tmp_path,
+):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text(
+        json.dumps(
+            {
+                "consumer_stress": _line_chart("consumer_stress"),
+                "international_comparison": {
+                    "id": "international_comparison",
+                    "type": "grouped_bar",
+                    "title": "International Comparison",
+                    "data": [{"country": "US", "stress": 1.0}],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    summary_path = tmp_path / "execution_summary.json"
+    summary_path.write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "chart_ids": ["consumer_stress", "international_comparison"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    runtime = SimpleNamespace(context=SimpleNamespace(job_id="job-1", output_dir=str(tmp_path)))
+
+    result = json.loads(
+        write_research_report.func(
+            runtime=runtime,
+            markdown=(
+                "## Executive Summary\nConsumer stress has cross-country context.\n\n"
+                "Domestic stress is charted.\n\n<!-- CHART:consumer_stress -->\n\n"
+                "International comparison is charted.\n\n"
+                "<!-- CHART:international_comparison -->\n\n"
+                "## Research Query\nBuild charts showing consumer stress."
+            ),
+            charts_json_path=str(charts_path),
+            original_query="Build charts showing consumer stress.",
+            title="Consumer Stress",
+            executive_summary="Consumer stress has cross-country context.",
+            analysis_type="macro_indicator",
+            execution_summary=str(summary_path),
+        )
+    )
+
+    assert result["status"] == "error"
+    assert result["failure_category"] == "chart_handoff_mismatch"
+    assert result["required_upstream"] == "quant-developer"
+    assert result["chart_handoff"]["missing_report_chart_ids"] == [
+        "international_comparison"
+    ]
+    assert not (tmp_path / "report.json").exists()
+
+
 def test_write_research_report_recovers_original_query_from_markdown_section(tmp_path):
     charts_path = tmp_path / "charts.json"
     charts_path.write_text(
@@ -2787,6 +3186,269 @@ def test_validate_research_report_file_rejects_zero_charts_for_chart_query(tmp_p
     ]
 
 
+def test_validate_research_report_file_rejects_missing_handoff_chart_ids(tmp_path):
+    report_path = tmp_path / "report.json"
+    final_chart_ids = [
+        "consumer_stress_dashboard",
+        "labor_income_pressure",
+        "credit_delinquency",
+        "inflation_real_wages",
+    ]
+    expected_chart_ids = final_chart_ids + [
+        "savings_credit_stress",
+        "company_net_margins",
+        "international_comparison",
+    ]
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps({"status": "success", "chart_ids": expected_chart_ids}),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "job_id": "job-1",
+                "created_at": "2026-04-29T00:00:00+00:00",
+                "query": "Build a compact dashboard with charts showing consumer stress.",
+                "title": "Consumer Stress Dashboard",
+                "executive_summary": "Four charts were preserved.",
+                "markdown": (
+                    "## Executive Summary\nFour charts were preserved.\n\n"
+                    + "\n\n".join(
+                        f"<!-- CHART:{chart_id} -->" for chart_id in final_chart_ids
+                    )
+                    + "\n\n## Research Query\nBuild a compact dashboard with charts showing consumer stress."
+                ),
+                "charts": {chart_id: _line_chart(chart_id) for chart_id in final_chart_ids},
+                "data_sources": [],
+                "metadata": {
+                    "analysis_type": "macro_indicator",
+                    "chart_count": 4,
+                    "word_count": 24,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    runtime = SimpleNamespace(context=SimpleNamespace(job_id="job-1", output_dir=str(tmp_path)))
+
+    gate = json.loads(
+        validate_research_report_file.func(
+            runtime=runtime,
+            report_json_path=str(report_path),
+            auto_patch=False,
+        )
+    )
+
+    assert gate["passes_gate"] is False
+    assert gate["chart_handoff"]["expected_chart_ids"] == expected_chart_ids
+    assert gate["chart_handoff"]["missing_report_chart_ids"] == [
+        "savings_credit_stress",
+        "company_net_margins",
+        "international_comparison",
+    ]
+    assert "chart_handoff_mismatch" in gate["blockers"][0]
+
+
+def test_validate_research_report_file_rejects_artifact_fact_mismatch(tmp_path):
+    report_path = tmp_path / "report.json"
+    chart = {
+        "id": "macro_correlation_heatmap",
+        "type": "bar",
+        "title": "Macro Correlations",
+        "description": "Correlation facts by pair.",
+        "xAxisKey": "pair",
+        "series": [
+            {"dataKey": "correlation", "label": "Correlation", "color": "#2563eb"}
+        ],
+        "data": [
+            {
+                "pair": "(UNRATE, CPIAUCSL)",
+                "var1": "UNRATE",
+                "var2": "CPIAUCSL",
+                "correlation": 0.024,
+            }
+        ],
+    }
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "chart_ids": ["macro_correlation_heatmap"],
+                "scenario_stress": {
+                    "corr": {
+                        "UNRATE": {"UNRATE": 1.0, "CPIAUCSL": 0.908},
+                        "CPIAUCSL": {"UNRATE": 0.908, "CPIAUCSL": 1.0},
+                    }
+                },
+                "numeric_facts": [
+                    {
+                        "id": "corr_UNRATE_CPIAUCSL",
+                        "label": "Correlation(UNRATE, CPIAUCSL)",
+                        "value": 0.024,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "job_id": "job-1",
+                "created_at": "2026-04-29T00:00:00+00:00",
+                "query": "Build a macro chart report.",
+                "title": "Macro Chart Report",
+                "executive_summary": "Macro correlations were charted.",
+                "markdown": (
+                    "## Executive Summary\nMacro correlations were charted.\n\n"
+                    "<!-- CHART:macro_correlation_heatmap -->"
+                ),
+                "charts": {"macro_correlation_heatmap": chart},
+                "data_sources": [],
+                "metadata": {
+                    "analysis_type": "macro_indicator",
+                    "chart_count": 1,
+                    "word_count": 8,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    runtime = SimpleNamespace(context=SimpleNamespace(job_id="job-1", output_dir=str(tmp_path)))
+
+    gate = json.loads(
+        validate_research_report_file.func(
+            runtime=runtime,
+            report_json_path=str(report_path),
+            auto_patch=False,
+        )
+    )
+
+    assert gate["passes_gate"] is False
+    assert gate["artifact_fact_consistency"]["valid"] is False
+    assert "artifact_fact_mismatch" in gate["blockers"][0]
+
+
+def test_validate_research_report_file_rejects_malformed_sibling_execution_summary(
+    tmp_path,
+):
+    report_path = tmp_path / "report.json"
+    chart = _line_chart("consumer_stress_dashboard")
+    (tmp_path / "execution_summary.json").write_text("{not-json", encoding="utf-8")
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "job_id": "job-1",
+                "created_at": "2026-04-29T00:00:00+00:00",
+                "query": "Build a compact dashboard with charts showing consumer stress.",
+                "title": "Consumer Stress Dashboard",
+                "executive_summary": "Consumer stress was charted.",
+                "markdown": (
+                    "## Executive Summary\nConsumer stress was charted.\n\n"
+                    "<!-- CHART:consumer_stress_dashboard -->"
+                ),
+                "charts": {"consumer_stress_dashboard": chart},
+                "data_sources": [],
+                "metadata": {
+                    "analysis_type": "macro_indicator",
+                    "chart_count": 1,
+                    "word_count": 8,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    runtime = SimpleNamespace(context=SimpleNamespace(job_id="job-1", output_dir=str(tmp_path)))
+
+    gate = json.loads(
+        validate_research_report_file.func(
+            runtime=runtime,
+            report_json_path=str(report_path),
+            auto_patch=False,
+        )
+    )
+
+    assert gate["passes_gate"] is False
+    assert gate["chart_handoff"] == {}
+    assert gate["artifact_fact_consistency"] == {}
+    assert gate["load_error"].startswith(
+        f"failed to load sibling execution_summary.json for {report_path}: "
+        "Invalid execution_summary.json"
+    )
+    assert gate["blockers"] == [gate["load_error"]]
+
+
+def test_validate_research_report_file_allows_explicitly_dropped_handoff_chart_ids(
+    tmp_path,
+):
+    report_path = tmp_path / "report.json"
+    final_chart_ids = [
+        "consumer_stress_dashboard",
+        "labor_income_pressure",
+        "credit_delinquency",
+        "inflation_real_wages",
+    ]
+    dropped_chart_ids = [
+        "savings_credit_stress",
+        "company_net_margins",
+        "international_comparison",
+    ]
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "chart_ids": final_chart_ids + dropped_chart_ids,
+                "dropped_chart_ids": dropped_chart_ids,
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "job_id": "job-1",
+                "created_at": "2026-04-29T00:00:00+00:00",
+                "query": "Build a compact dashboard with charts showing consumer stress.",
+                "title": "Consumer Stress Dashboard",
+                "executive_summary": "Only non-dropped charts were preserved.",
+                "markdown": (
+                    "## Executive Summary\nOnly non-dropped charts were preserved.\n\n"
+                    + "\n\n".join(
+                        f"<!-- CHART:{chart_id} -->" for chart_id in final_chart_ids
+                    )
+                    + "\n\n## Research Query\nBuild a compact dashboard with charts showing consumer stress."
+                ),
+                "charts": {chart_id: _line_chart(chart_id) for chart_id in final_chart_ids},
+                "data_sources": [],
+                "metadata": {
+                    "analysis_type": "macro_indicator",
+                    "chart_count": 4,
+                    "word_count": 24,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    runtime = SimpleNamespace(context=SimpleNamespace(job_id="job-1", output_dir=str(tmp_path)))
+
+    gate = json.loads(
+        validate_research_report_file.func(
+            runtime=runtime,
+            report_json_path=str(report_path),
+            auto_patch=False,
+        )
+    )
+
+    assert gate["passes_gate"] is True
+    assert gate["blockers"] == []
+    assert gate["chart_handoff"]["expected_chart_ids"] == final_chart_ids
+    assert gate["chart_handoff"]["dropped_chart_ids"] == dropped_chart_ids
+
+
 def test_validate_research_report_file_does_not_strip_broken_chart_markers_for_chart_query(
     tmp_path,
 ):
@@ -3136,6 +3798,7 @@ def test_validate_research_report_file_directory_path_resolves_report_json(tmp_p
     )
 
     assert result["passes_gate"] is False
+    assert result["report_path"] == str(tmp_path / "report.json")
     assert result["load_error"] == f"File not found: {tmp_path / 'report.json'}"
 
 
@@ -3323,6 +3986,7 @@ def test_write_research_report_preserves_quant_combo_chart_type(tmp_path):
 
     assert result["validation_issues"] == []
     assert gate["passes_gate"] is True
+    assert gate["report_path"] == result["report_path"]
     assert gate["charts"]["defined_charts"] == ["rates_composite"]
     assert gate["chart_render"]["checked_charts"] == ["rates_composite"]
     assert chart["type"] == "composed"
@@ -3408,6 +4072,57 @@ def test_technical_writer_middleware_stops_after_successful_validation():
     }
 
 
+def test_technical_writer_middleware_rejects_validation_after_failed_write():
+    middleware = next(
+        item
+        for item in TECHNICAL_WRITER_SUBAGENT["middleware"]
+        if isinstance(item, TechnicalWriterToolBoundaryMiddleware)
+    )
+    request = _Request(
+        [
+            SimpleNamespace(name="write_research_report"),
+            SimpleNamespace(name="validate_research_report_file"),
+        ],
+        messages=[
+            ToolMessage(
+                content=json.dumps(
+                    {
+                        "status": "error",
+                        "error": "numeric_fact_mismatch",
+                        "failure_category": "numeric_fact_mismatch",
+                    }
+                ),
+                name="write_research_report",
+                tool_call_id="call-write",
+                status="error",
+            ),
+            ToolMessage(
+                content=json.dumps(
+                    {
+                        "passes_gate": True,
+                        "report_path": "/tmp/outputs/job-1/report.json",
+                        "charts": {"defined_charts": ["macro_signal"]},
+                    }
+                ),
+                name="validate_research_report_file",
+                tool_call_id="call-validate",
+            ),
+        ],
+    )
+
+    response = middleware.wrap_model_call(
+        request,
+        lambda req: ModelResponse(result=[AIMessage(content="should not run")]),
+    )
+
+    handoff = json.loads(response.result[0].content)
+    assert handoff["status"] == "failed"
+    assert handoff["report_json"] == "/tmp/outputs/job-1/report.json"
+    assert handoff["required_upstream"] == "technical-writer"
+    assert handoff["failure_category"] == "stale_report_validation"
+    assert "write_research_report" in handoff["reason"]
+
+
 def test_technical_writer_middleware_returns_quant_failure_for_zero_chart_gate():
     middleware = next(
         item
@@ -3458,6 +4173,207 @@ def test_technical_writer_middleware_returns_quant_failure_for_zero_chart_gate()
     assert handoff["required_upstream"] == "quant-developer"
     assert handoff["chart_ids"] == []
     assert "zero chart definitions" in handoff["reason"]
+
+
+def test_technical_writer_middleware_returns_quant_failure_for_chart_handoff_mismatch():
+    middleware = next(
+        item
+        for item in TECHNICAL_WRITER_SUBAGENT["middleware"]
+        if isinstance(item, TechnicalWriterToolBoundaryMiddleware)
+    )
+    request = _Request(
+        [
+            SimpleNamespace(name="write_research_report"),
+            SimpleNamespace(name="validate_research_report_file"),
+        ],
+        messages=[
+            ToolMessage(
+                content=json.dumps(
+                    {
+                        "report_path": "/tmp/outputs/job-1/report.json",
+                        "chart_count": 4,
+                        "validation_issues": [],
+                    }
+                ),
+                name="write_research_report",
+                tool_call_id="call-write",
+            ),
+            ToolMessage(
+                content=json.dumps(
+                    {
+                        "passes_gate": False,
+                        "charts": {
+                            "defined_charts": [
+                                "consumer_stress_dashboard",
+                                "labor_income_pressure",
+                                "credit_delinquency",
+                                "inflation_real_wages",
+                            ]
+                        },
+                        "chart_handoff": {
+                            "expected_chart_ids": [
+                                "consumer_stress_dashboard",
+                                "labor_income_pressure",
+                                "credit_delinquency",
+                                "inflation_real_wages",
+                                "savings_credit_stress",
+                            ],
+                            "missing_report_chart_ids": ["savings_credit_stress"],
+                            "dropped_chart_ids": [],
+                        },
+                        "blockers": [
+                            "chart_handoff_mismatch: final report did not preserve non-dropped execution_summary.chart_ids"
+                        ],
+                    }
+                ),
+                name="validate_research_report_file",
+                tool_call_id="call-validate",
+            ),
+        ],
+    )
+
+    response = middleware.wrap_model_call(
+        request,
+        lambda req: ModelResponse(result=[AIMessage(content="should not run")]),
+    )
+
+    handoff = json.loads(response.result[0].content)
+    assert handoff["status"] == "failed"
+    assert handoff["report_json"] == "/tmp/outputs/job-1/report.json"
+    assert handoff["required_upstream"] == "quant-developer"
+    assert handoff["chart_ids"] == [
+        "consumer_stress_dashboard",
+        "labor_income_pressure",
+        "credit_delinquency",
+        "inflation_real_wages",
+        "savings_credit_stress",
+    ]
+    assert handoff["missing_report_chart_ids"] == ["savings_credit_stress"]
+    assert "chart_handoff_mismatch" in handoff["reason"]
+
+
+def test_technical_writer_middleware_returns_quant_failure_for_artifact_fact_mismatch():
+    middleware = next(
+        item
+        for item in TECHNICAL_WRITER_SUBAGENT["middleware"]
+        if isinstance(item, TechnicalWriterToolBoundaryMiddleware)
+    )
+    reason = (
+        "artifact_fact_mismatch: conflicting correlation values for "
+        "UNRATE/CPIAUCSL"
+    )
+    request = _Request(
+        [
+            SimpleNamespace(name="write_research_report"),
+            SimpleNamespace(name="validate_research_report_file"),
+        ],
+        messages=[
+            ToolMessage(
+                content=json.dumps(
+                    {
+                        "status": "error",
+                        "error": "artifact_fact_mismatch",
+                        "failure_category": "artifact_fact_mismatch",
+                        "required_upstream": "quant-developer",
+                        "report_path": "/tmp/outputs/job-1/report.json",
+                        "blockers": [reason],
+                        "message": reason,
+                    }
+                ),
+                name="write_research_report",
+                tool_call_id="call-write",
+            ),
+        ],
+    )
+
+    response = middleware.wrap_model_call(
+        request,
+        lambda req: ModelResponse(result=[AIMessage(content="should not run")]),
+    )
+
+    handoff = json.loads(response.result[0].content)
+    assert handoff["status"] == "failed"
+    assert handoff["report_json"] == "/tmp/outputs/job-1/report.json"
+    assert handoff["required_upstream"] == "quant-developer"
+    assert handoff["failure_category"] == "artifact_fact_mismatch"
+    assert "UNRATE/CPIAUCSL" in handoff["reason"]
+    assert "numeric_facts" in handoff["required_fixes"][0]
+
+
+def test_technical_writer_middleware_prefers_latest_success_over_stale_mismatches():
+    middleware = next(
+        item
+        for item in TECHNICAL_WRITER_SUBAGENT["middleware"]
+        if isinstance(item, TechnicalWriterToolBoundaryMiddleware)
+    )
+    request = _Request(
+        [
+            SimpleNamespace(name="write_research_report"),
+            SimpleNamespace(name="validate_research_report_file"),
+        ],
+        messages=[
+            ToolMessage(
+                content=json.dumps(
+                    {
+                        "passes_gate": False,
+                        "chart_handoff": {
+                            "expected_chart_ids": ["consumer_stress"],
+                            "missing_report_chart_ids": ["consumer_stress"],
+                            "dropped_chart_ids": [],
+                        },
+                        "blockers": ["chart_handoff_mismatch: stale failure"],
+                    }
+                ),
+                name="validate_research_report_file",
+                tool_call_id="call-stale-chart",
+            ),
+            ToolMessage(
+                content=json.dumps(
+                    {
+                        "status": "error",
+                        "failure_category": "artifact_fact_mismatch",
+                        "report_path": "/tmp/outputs/job-1/report.json",
+                        "message": "artifact_fact_mismatch: stale failure",
+                    }
+                ),
+                name="write_research_report",
+                tool_call_id="call-stale-fact",
+            ),
+            ToolMessage(
+                content=json.dumps(
+                    {
+                        "report_path": "/tmp/outputs/job-1/report.json",
+                        "chart_count": 1,
+                        "validation_issues": [],
+                    }
+                ),
+                name="write_research_report",
+                tool_call_id="call-write",
+            ),
+            ToolMessage(
+                content=json.dumps(
+                    {
+                        "passes_gate": True,
+                        "report_path": "/tmp/outputs/job-1/report.json",
+                        "charts": {"defined_charts": ["consumer_stress"]},
+                        "blockers": [],
+                    }
+                ),
+                name="validate_research_report_file",
+                tool_call_id="call-validate",
+            ),
+        ],
+    )
+
+    response = middleware.wrap_model_call(
+        request,
+        lambda req: ModelResponse(result=[AIMessage(content="should not run")]),
+    )
+
+    handoff = json.loads(response.result[0].content)
+    assert handoff["status"] == "success"
+    assert handoff["report_json"] == "/tmp/outputs/job-1/report.json"
+    assert handoff["chart_ids"] == ["consumer_stress"]
 
 
 def test_technical_writer_middleware_blocks_inherited_filesystem_tool_calls():

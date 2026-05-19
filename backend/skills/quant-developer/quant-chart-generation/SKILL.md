@@ -15,10 +15,15 @@ triggers: [chart, Recharts, AxisChartDef, ScatterChartDef, PieChartDef, TreemapC
 7. **Unique axis labels:** Every axis chart must have at most one data row per
    `xAxisKey` value. Aggregate daily or weekly FRED series to the chart period
    before merging, then assert the final chart frame has no duplicate labels.
-8. **Dual axes:** Use a right axis only when series have materially different
+8. **Grouped comparisons:** Use canonical wide rows for peer or scenario
+   comparisons: one row per `xAxisKey` value and one numeric column per series.
+   Do not emit long-form grouped axis charts with repeated `series.dataKey` and
+   `config.groupBy`; unsupported grouped shapes are rejected or repaired before
+   handoff.
+9. **Dual axes:** Use a right axis only when series have materially different
    units or scales. Same-unit growth/rate series with similar numeric ranges
    should share the left axis so the chart does not imply a false divergence.
-9. **Chart-heavy requests:** When the user asks for charts, a chart pack,
+10. **Chart-heavy requests:** When the user asks for charts, a chart pack,
    dashboard, visual evidence, or chart validation, create a rich pack of 6-8
    distinct renderable charts when the data supports it. Prefer at least three
    chart families when each one clarifies a different analytical question. Cover the requested
@@ -27,19 +32,26 @@ triggers: [chart, Recharts, AxisChartDef, ScatterChartDef, PieChartDef, TreemapC
    historical replay or analogs, stress components, and missing-data/source
    coverage where applicable. Do not return an empty chart map for a chart
    request; emit a failed quantitative handoff if charts cannot be generated.
-10. **Insight check:** Before saving, ask whether each chart makes the report
+11. **Insight check:** Before saving, ask whether each chart makes the report
    more insightful than a table or sentence. Keep charts that answer a distinct
    analytical question; replace redundant charts with a better view rather than
    merely increasing count. Do not add novelty charts unless they make the
    user's decision easier; a mostly time-series pack is acceptable when time
    series are genuinely the most insightful views.
-11. **Method labels:** For deterministic macro statistics, include `methods_used`
+12. **Method labels:** For deterministic macro statistics, include `methods_used`
    on each relevant chart definition and in `execution_summary.json`.
-12. **Saving artifacts:** Prefer
+13. **Provenance:** For charts that resample, index, normalize, or truncate
+   source data, attach `provenance` from
+   `chart_provenance(...)`: raw source window/latest observation, displayed
+   window/latest label, frequency/resampling, normalization base, and
+   limitations.
+14. **Saving artifacts:** Prefer
    `save_quant_outputs(output_dir, charts, execution_summary)` from
    `agents.quant_macro_stats`. It writes strict JSON, derives `chart_ids` from
-   the saved chart map, saves `execution_summary.json`, and returns the compact
-   handoff to print. Never import `agents.quant_utils`.
+   the saved chart map, mirrors chart provenance into
+   `execution_summary.json`, saves the actual generating script path when
+   available, and returns the compact handoff to print. Never import
+   `agents.quant_utils`.
 
 ## AxisChart (Line, Bar, Area, Composed)
 ```json

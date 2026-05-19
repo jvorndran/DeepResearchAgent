@@ -6,6 +6,10 @@ import pandas as pd
 import pytest
 
 from agents import quant_macro_stats as qms
+from agents.artifact_fact_consistency import (
+    artifact_fact_consistency_blocker,
+    artifact_fact_consistency_dict,
+)
 from agents.quant_macro_stats.artifacts.recharts_schema_normalization import (
     normalize_quant_report_charts,
 )
@@ -14,6 +18,29 @@ from agents.quant_macro_stats.data.series_input_resolution import SeriesSpec, lo
 
 def _write_series(path: Path, values: list[tuple[str, float]]) -> str:
     pd.DataFrame(values, columns=["date", "value"]).to_csv(path, index=False)
+    return str(path)
+
+
+def _write_nvda_sec_company_facts(path: Path) -> str:
+    pd.DataFrame(
+        {
+            "fiscal_year": [2025, 2026],
+            "revenue": [130_497_000_000, 215_938_000_000],
+            "gross_profit": [97_858_000_000, 153_865_000_000],
+            "operating_income": [81_453_000_000, 136_859_000_000],
+            "net_income": [72_880_000_000, 120_224_000_000],
+            "operating_cash_flow": [64_089_000_000, 118_200_000_000],
+            "capital_expenditures": [3_236_000_000, 21_524_000_000],
+            "cash_and_equivalents": [8_589_000_000, 8_589_000_000],
+            "marketable_securities_current": [1_716_000_000, 2_016_000_000],
+            "long_term_debt": [8_463_000_000, 7_469_000_000],
+            "stockholders_equity": [65_000_000_000, 79_000_000_000],
+            "assets": [111_601_000_000, 124_092_000_000],
+            "liabilities": [32_274_000_000, 45_000_000_000],
+            "diluted_eps": [2.94, 4.90],
+            "shares": [24_700_000_000, 24_514_000_000],
+        }
+    ).to_csv(path, index=False)
     return str(path)
 
 
@@ -36,6 +63,11 @@ def test_quant_macro_stats_public_exports_are_helper_only():
         "normalize_quant_execution_summary",
         "QUANT_HELPER_CATALOG",
         "format_quant_helper_catalog_for_prompt",
+        "chart_provenance",
+        "source_unit_metadata",
+        "source_unit_metadata_from_csv",
+        "unit_comparison",
+        "latest_numeric_fact",
     }
     removed_report_generators = {
         "build_company_fundamental_outputs",
@@ -83,6 +115,12 @@ def test_quant_helper_catalog_is_compact_agent_context():
     assert "direct_ols_forecast(data, target_col, feature_cols" in catalog
     assert "signal_framework_backtest(data, *, component_cols" in catalog
     assert "sec_company_facts_evidence(data_files" in catalog
+    assert "chart_provenance(source_series=..." in catalog
+    assert "source_unit_metadata(source_key, source_file=..." in catalog
+    assert "unit_comparison(comparison_id, sources" in catalog
+    assert "latest_numeric_fact(panel, key" in catalog
+    assert "raw_value" in catalog
+    assert "display_value" in catalog
     assert "save_quant_outputs(output_dir, charts, execution_summary)" in catalog
     assert {"load_monthly_panel", "direct_ols_forecast", "save_quant_outputs"}.issubset(
         helper_names
@@ -183,6 +221,204 @@ def test_load_monthly_panel_resolves_reusable_series_specs(tmp_path):
     }
     assert list(loaded.panel.columns) == ["date", "UNRATE", "PAYEMS"]
     assert loaded.panel["UNRATE"].tolist() == [3.8, 3.9]
+
+
+def test_align_period_features_does_not_fill_monthly_tails_when_weekly_extends():
+    panel = qms.align_period_features(
+        {
+            "PAYEMS": pd.DataFrame(
+                {
+                    "date": ["2026-03-01", "2026-04-01"],
+                    "value": [158_000.0, 158_100.0],
+                }
+            ),
+            "JTSJOL": pd.DataFrame(
+                {
+                    "date": ["2026-02-01", "2026-03-01"],
+                    "value": [7_100.0, 6_900.0],
+                }
+            ),
+            "ICSA": pd.DataFrame(
+                {
+                    "date": ["2026-05-02", "2026-05-09"],
+                    "value": [240_000.0, 250_000.0],
+                }
+            ),
+            "T5YIE": pd.DataFrame(
+                {
+                    "date": ["2026-05-14", "2026-05-15"],
+                    "value": [2.30, 2.40],
+                }
+            ),
+        },
+        frequency="M",
+        how="outer",
+        fill_method="ffill",
+        fill_limit=2,
+        max_date=None,
+    )
+
+    rows = panel.set_index(panel["date"].dt.strftime("%Y-%m"))
+    assert rows.loc["2026-04", "PAYEMS"] == 158_100.0
+    assert pd.isna(rows.loc["2026-04", "JTSJOL"])
+    assert pd.isna(rows.loc["2026-05", "PAYEMS"])
+    assert pd.isna(rows.loc["2026-05", "JTSJOL"])
+    assert rows.loc["2026-05", "ICSA"] == 245_000.0
+    assert rows.loc["2026-05", "T5YIE"] == pytest.approx(2.35)
+
+
+def test_align_period_features_carries_quarterly_values_only_within_quarter():
+    panel = qms.align_period_features(
+        {
+            "GDPC1": pd.DataFrame(
+                {
+                    "date": ["2026-01-01", "2026-04-01"],
+                    "value": [23_000.0, 23_100.0],
+                }
+            ),
+            "UNRATE": pd.DataFrame(
+                {
+                    "date": pd.date_range("2026-01-01", periods=7, freq="MS"),
+                    "value": [4.0, 4.1, 4.1, 4.2, 4.2, 4.3, 4.3],
+                }
+            ),
+        },
+        frequency="M",
+        how="outer",
+        fill_method="ffill",
+        fill_limit=3,
+        max_date=None,
+    )
+
+    rows = panel.set_index(panel["date"].dt.strftime("%Y-%m"))
+    assert rows.loc["2026-01", "GDPC1"] == 23_000.0
+    assert rows.loc["2026-02", "GDPC1"] == 23_000.0
+    assert rows.loc["2026-03", "GDPC1"] == 23_000.0
+    assert rows.loc["2026-04", "GDPC1"] == 23_100.0
+    assert rows.loc["2026-05", "GDPC1"] == 23_100.0
+    assert rows.loc["2026-06", "GDPC1"] == 23_100.0
+    assert pd.isna(rows.loc["2026-07", "GDPC1"])
+
+
+def test_latest_numeric_fact_uses_latest_finite_value_from_mixed_frequency_panel():
+    panel = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2026-03-01", "2026-04-01", "2026-05-01"]),
+            "CPI_YOY": [3.1, 3.0, None],
+            "DGS10": [4.2, 4.3, 4.5],
+        }
+    )
+
+    fact = qms.latest_numeric_fact(
+        panel,
+        "CPI_YOY",
+        fact_id="macro.cpi_yoy.latest",
+        label="Latest CPI year-over-year",
+        unit="percent",
+        precision=1,
+        tolerance=0.05,
+        source_key="panel.CPI_YOY",
+    )
+
+    assert fact == {
+        "id": "macro.cpi_yoy.latest",
+        "label": "Latest CPI year-over-year",
+        "raw_value": 3.0,
+        "display_value": "3.0%",
+        "unit": "percent",
+        "precision": 1,
+        "tolerance": 0.05,
+        "source_key": "panel.CPI_YOY",
+        "as_of_date": "2026-04",
+        "metric": "CPI_YOY",
+    }
+
+
+def test_normalize_quant_summary_rejects_malformed_numeric_facts():
+    with pytest.raises(ValueError) as error:
+        qms.normalize_quant_execution_summary(
+            {
+                "numeric_facts": [
+                    {
+                        "id": "macro.cpi_yoy.latest",
+                        "label": "Latest CPI year-over-year",
+                        "value": None,
+                        "source_key": "panel.CPI_YOY",
+                    },
+                    None,
+                ]
+            }
+        )
+
+    message = str(error.value)
+    assert "Invalid execution_summary.numeric_facts" in message
+    assert "numeric_facts[0] must include a finite raw_value or value" in message
+
+
+def test_normalize_quant_summary_requires_facts_for_latest_scalar_snapshot():
+    with pytest.raises(ValueError) as error:
+        qms.normalize_quant_execution_summary(
+            {
+                "statistical_summary": {
+                    "latest_date": "2026-05-01",
+                    "cpi_yoy": 3.0,
+                    "core_pce": 2.8,
+                }
+            }
+        )
+
+    message = str(error.value)
+    assert "execution_summary.numeric_facts is required" in message
+    assert "statistical_summary" in message
+    assert "latest_numeric_fact(...)" in message
+
+
+def test_normalize_quant_summary_rejects_null_latest_scalar_slots_with_unrelated_fact():
+    with pytest.raises(ValueError) as error:
+        qms.normalize_quant_execution_summary(
+            {
+                "statistical_summary": {
+                    "latest_date": "2026-05-01",
+                    "cpi_yoy": None,
+                    "core_pce": None,
+                },
+                "numeric_facts": [
+                    qms.numeric_fact(
+                        fact_id="macro.unrelated.latest",
+                        label="Unrelated latest value",
+                        raw_value=1.0,
+                        unit="index",
+                        precision=1,
+                        tolerance=0.1,
+                        source_key="panel.UNRELATED",
+                    )
+                ],
+            }
+        )
+
+    message = str(error.value)
+    assert "current/latest scalar snapshots cannot include null scalar fields" in message
+    assert "statistical_summary.cpi_yoy" in message
+    assert "statistical_summary.core_pce" in message
+    assert "latest_numeric_fact(...)" in message
+
+
+def test_normalize_quant_summary_rejects_empty_facts_for_latest_scalar_snapshot():
+    with pytest.raises(ValueError) as error:
+        qms.normalize_quant_execution_summary(
+            {
+                "statistical_summary": {
+                    "latest_date": "2026-05-01",
+                    "cpi_yoy": 3.0,
+                },
+                "numeric_facts": [],
+            }
+        )
+
+    message = str(error.value)
+    assert "execution_summary.numeric_facts cannot be empty" in message
+    assert "statistical_summary" in message
+    assert "numeric_fact(...)" in message
 
 
 def test_direct_ols_forecast_and_signal_backtest_are_reusable_helpers():
@@ -595,6 +831,157 @@ def test_normalize_quant_summary_does_not_promote_legacy_signal_packets(containe
     assert summary["methods_used"] == []
 
 
+def test_normalize_quant_summary_canonicalizes_legacy_numeric_facts():
+    summary = qms.normalize_quant_execution_summary(
+        {
+            "numeric_facts": [
+                {
+                    "id": "unrate",
+                    "label": "UNRATE",
+                    "value": 4.3,
+                    "unit": "%",
+                    "precision": 1,
+                },
+                {
+                    "id": "inversion",
+                    "label": "Inversion Months",
+                    "value": 0,
+                    "unit": "months",
+                    "precision": 0,
+                },
+            ]
+        }
+    )
+
+    unrate, inversion = summary["numeric_facts"]
+    assert unrate["raw_value"] == 4.3
+    assert unrate["display_value"] == "4.3%"
+    assert unrate["source_key"] == "unrate"
+    assert unrate.get("literal_required", True) is True
+
+    assert inversion["raw_value"] == 0.0
+    assert inversion["display_value"] == "0 months"
+    assert inversion["source_key"] == "inversion"
+    assert inversion["semantic_role"] == "current_state_duration"
+    assert inversion["literal_required"] is False
+    assert "no active/current episode" in inversion["state_description"]
+
+
+def test_current_state_zero_duration_ignores_literal_required_override():
+    fact = {
+        "id": "inversion",
+        "label": "Inversion Months",
+        "value": 0,
+        "unit": "months",
+        "precision": 0,
+        "literal_required": True,
+    }
+
+    normalized = qms.normalize_numeric_facts([fact], strict=True)[0]
+
+    assert normalized["semantic_role"] == "current_state_duration"
+    assert normalized["literal_required"] is False
+    assert qms.numeric_fact_literal_required(normalized) is False
+    assert qms.numeric_fact_current_state_duration_misuse(
+        "The curve normalized after 0 months of inversion.",
+        fact | {"raw_value": 0, "semantic_role": "current_state_duration"},
+    )
+
+    helper_fact = qms.numeric_fact(
+        fact_id="inversion",
+        label="Inversion Months",
+        raw_value=0,
+        unit="months",
+        precision=0,
+        tolerance=0,
+        source_key="inversion",
+        literal_required=True,
+    )
+    assert helper_fact is not None
+    assert helper_fact["literal_required"] is False
+
+
+@pytest.mark.parametrize("literal_required", [None, 0, ""])
+def test_numeric_fact_literal_required_malformed_values_do_not_opt_out(literal_required):
+    fact = {
+        "id": "nvda_revenue_b",
+        "label": "NVDA revenue",
+        "value": 130.5,
+        "unit": "usd_b",
+        "precision": 1,
+        "subject": "NVDA",
+        "metric": "revenue_b",
+        "literal_required": literal_required,
+    }
+
+    normalized = qms.normalize_numeric_facts([fact])
+
+    assert qms.numeric_fact_literal_required(fact) is True
+    assert "literal_required" not in normalized[0]
+    assert qms.numeric_fact_literal_required(normalized[0]) is True
+    with pytest.raises(ValueError, match="literal_required"):
+        qms.normalize_numeric_facts([fact], strict=True)
+
+
+def test_numeric_fact_literal_required_false_requires_current_state_duration():
+    fact = {
+        "id": "nvda_revenue_b",
+        "label": "NVDA revenue",
+        "value": 130.5,
+        "unit": "usd_b",
+        "precision": 1,
+        "subject": "NVDA",
+        "metric": "revenue_b",
+        "literal_required": False,
+    }
+
+    normalized = qms.normalize_numeric_facts([fact])
+
+    assert qms.numeric_fact_literal_required(fact) is True
+    assert "literal_required" not in normalized[0]
+    assert qms.numeric_fact_literal_required(normalized[0]) is True
+    with pytest.raises(ValueError, match="current_state_duration"):
+        qms.normalize_numeric_facts([fact], strict=True)
+    with pytest.raises(ValueError, match="current_state_duration"):
+        qms.numeric_fact(
+            fact_id="nvda_revenue_b",
+            label="NVDA revenue",
+            raw_value=130.5,
+            unit="usd_b",
+            precision=1,
+            tolerance=0.1,
+            source_key="sec_company_facts.NVDA.revenue_b",
+            subject="NVDA",
+            metric="revenue_b",
+            literal_required=False,
+        )
+
+
+def test_zero_duration_with_explicit_non_current_role_remains_literal():
+    fact = {
+        "id": "completed_inversion_duration",
+        "label": "Completed inversion duration",
+        "value": 0,
+        "unit": "months",
+        "precision": 0,
+        "semantic_role": "historical_duration",
+    }
+
+    normalized = qms.normalize_numeric_facts([fact])[0]
+
+    assert normalized["semantic_role"] == "historical_duration"
+    assert "literal_required" not in normalized
+    assert "state_description" not in normalized
+    assert qms.numeric_fact_literal_required(normalized) is True
+
+    opt_out = dict(fact, literal_required=False)
+    normalized_opt_out = qms.normalize_numeric_facts([opt_out])[0]
+    assert "literal_required" not in normalized_opt_out
+    assert qms.numeric_fact_literal_required(normalized_opt_out) is True
+    with pytest.raises(ValueError, match="current_state_duration"):
+        qms.normalize_numeric_facts([opt_out], strict=True)
+
+
 def test_composite_regime_and_scenario_helpers_return_generic_payloads():
     frame = pd.DataFrame(
         {
@@ -729,6 +1116,350 @@ def test_save_quant_outputs_writes_generic_evidence_payload(tmp_path):
     assert "preserved_report_aligned_charts" not in handoff
 
 
+def test_save_quant_outputs_preserves_chart_provenance_and_generator_path(
+    tmp_path, monkeypatch
+):
+    code_dir = tmp_path / "code"
+    code_dir.mkdir()
+    script_path = code_dir / "analysis_v2.py"
+    script_path.write_text("# generated script\n", encoding="utf-8")
+    monkeypatch.setattr("sys.argv", [str(script_path)])
+    provenance = qms.chart_provenance(
+        source_series=["T10Y2Y"],
+        source_files={"T10Y2Y": tmp_path / "t10y2y.csv"},
+        raw_window={"start": "2026-05-01", "end": "2026-05-15"},
+        raw_latest_observation={"T10Y2Y": "2026-05-15"},
+        displayed_window={"start": "2026-05", "end": "2026-05"},
+        displayed_latest_label="2026-05",
+        frequency="daily",
+        resampling="monthly last observation with month labels",
+        normalization={"base_date": "2016-01", "base_value": 100},
+        limitations=["partial latest month"],
+    )
+    charts = {
+        "yield_spread": {
+            "type": "line",
+            "title": "Yield Spread",
+            "data": [{"date": "2026-05", "spread": 0.5}],
+            "series": [{"dataKey": "spread", "name": "Spread"}],
+            "xAxis": {"dataKey": "date"},
+            "provenance": provenance,
+        }
+    }
+
+    handoff = qms.save_quant_outputs(tmp_path, charts, {"methods_used": ["unit"]})
+    saved_summary = json.loads((tmp_path / "execution_summary.json").read_text())
+    saved_charts = json.loads((tmp_path / "charts.json").read_text())
+
+    assert saved_charts["yield_spread"]["provenance"]["raw_latest_observation"] == {
+        "T10Y2Y": "2026-05-15"
+    }
+    assert saved_summary["chart_provenance"]["yield_spread"]["displayed_latest_label"] == (
+        "2026-05"
+    )
+    assert saved_summary["generated_by"]["script_path"] == str(script_path)
+    assert handoff["chart_provenance"]["yield_spread"]["frequency"] == "daily"
+    assert handoff["generated_by"]["script_path"] == str(script_path)
+
+
+def test_source_unit_helpers_flag_hourly_weekly_wage_mismatch(tmp_path):
+    hourly_path = tmp_path / "hourly.csv"
+    weekly_path = tmp_path / "weekly.csv"
+    pd.DataFrame(
+        [
+            {
+                "date": "2025-12-01",
+                "value": 37.02,
+                "series_id": "CES0500000008",
+                "title": "Average Hourly Earnings of Production and Nonsupervisory Employees",
+                "units": "dollars per hour",
+            }
+        ]
+    ).to_csv(hourly_path, index=False)
+    pd.DataFrame(
+        [
+            {
+                "date": "2025-12-01",
+                "value": 1072.67,
+                "series_id": "CES0500000030",
+                "title": "Average Weekly Earnings of Production and Nonsupervisory Employees",
+                "units": "dollars per week",
+            }
+        ]
+    ).to_csv(weekly_path, index=False)
+
+    hourly = qms.source_unit_metadata("prod_hourly", source_file=hourly_path)
+    weekly = qms.source_unit_metadata("prod_weekly", source_file=weekly_path)
+    comparison = qms.unit_comparison(
+        "production_wage_gap",
+        [hourly, weekly],
+        operation="difference",
+        metric="production/nonsupervisory earnings gap",
+    )
+
+    assert hourly["unit_basis"] == "hour"
+    assert weekly["unit_basis"] == "week"
+    assert comparison["status"] == "failed"
+    assert comparison["compatible"] is False
+    assert "Convert compared sources to a common unit" in comparison["error"]
+
+
+def test_save_quant_outputs_preserves_source_unit_metadata_from_source_files(tmp_path):
+    weekly_path = tmp_path / "CES0500000030.csv"
+    pd.DataFrame(
+        [
+            {
+                "date": "2025-12-01",
+                "value": 1072.67,
+                "series_id": "CES0500000030",
+            }
+        ]
+    ).to_csv(weekly_path, index=False)
+
+    charts = {
+        "weekly_wages": {
+            "type": "line",
+            "title": "Weekly Wages",
+            "data": [{"date": "2025-12-01", "wages": 1072.67}],
+            "series": [{"dataKey": "wages", "name": "Wages"}],
+            "xAxis": {"dataKey": "date"},
+        }
+    }
+    handoff = qms.save_quant_outputs(
+        tmp_path,
+        charts,
+        {
+            "methods_used": ["unit_test_method"],
+            "source_files": {"weekly_wages": str(weekly_path)},
+        },
+    )
+    saved_summary = json.loads((tmp_path / "execution_summary.json").read_text())
+
+    source_units = saved_summary["source_unit_metadata"]
+    assert source_units[0]["series_id"] == "CES0500000030"
+    assert source_units[0]["units"] == "dollars per week"
+    assert source_units[0]["unit_basis"] == "week"
+    assert handoff["source_unit_metadata"][0]["unit_family"] == "currency_per_time"
+
+
+def test_save_quant_outputs_rejects_failed_source_unit_comparison(tmp_path):
+    hourly = qms.source_unit_metadata(
+        "all_hourly",
+        series_id="CES0500000003",
+        title="Average Hourly Earnings of All Employees, Total Private",
+        units="dollars per hour",
+    )
+    weekly = qms.source_unit_metadata(
+        "prod_weekly",
+        series_id="CES0500000030",
+        title="Average Weekly Earnings of Production and Nonsupervisory Employees",
+        units="dollars per week",
+    )
+    comparison = qms.unit_comparison("wage_divergence", [hourly, weekly])
+
+    with pytest.raises(ValueError, match="wage_divergence failed source-unit validation"):
+        qms.save_quant_outputs(
+            tmp_path,
+            {"wages": {"type": "line", "data": [{"date": "2025", "value": 1}]}},
+            {
+                "source_unit_metadata": [hourly, weekly],
+                "unit_comparisons": [comparison],
+            },
+        )
+
+
+def test_save_quant_outputs_auto_attaches_sec_helper_evidence(tmp_path):
+    sec_path = Path(_write_nvda_sec_company_facts(tmp_path / "NVDA_sec_edgar_company_facts.csv"))
+    charts = {
+        "income_statement": {
+            "type": "line",
+            "title": "Revenue",
+            "data": [{"fiscal_year": "2026", "revenue": 215_938_000_000}],
+            "series": [{"dataKey": "revenue", "name": "Revenue"}],
+            "xAxis": {"dataKey": "fiscal_year"},
+        }
+    }
+    manual_fact_source_keys = [
+        "sec_company_facts",
+        "NVDA_SEC",
+        str(sec_path),
+        sec_path.name,
+        sec_path.stem,
+    ]
+    summary = {
+        "title": "NVIDIA AI spending resilience",
+        "source_files": {"sec_company_facts": str(sec_path)},
+        "quant_input_manifest": {"data_files": {"NVDA_SEC": str(sec_path)}},
+        "methods_used": ["manual_sec_summary"],
+        "numeric_facts": [
+            qms.numeric_fact(
+                fact_id=f"manual_revenue_{index}",
+                label="Latest revenue",
+                raw_value=215_938_000_000,
+                unit="$M",
+                precision=0,
+                tolerance=0.1,
+                source_key=source_key,
+            )
+            for index, source_key in enumerate(manual_fact_source_keys)
+        ]
+        + [
+            qms.numeric_fact(
+                fact_id="fred_latest",
+                label="FRED latest",
+                raw_value=4.5,
+                unit="percent",
+                precision=1,
+                tolerance=0.1,
+                source_key="FRED.FEDFUNDS",
+            )
+        ],
+    }
+
+    handoff = qms.save_quant_outputs(tmp_path, charts, summary)
+    saved_summary = json.loads((tmp_path / "execution_summary.json").read_text())
+
+    fact_ids = {fact["id"] for fact in saved_summary["numeric_facts"]}
+    assert saved_summary["latest_fundamentals"]["NVDA"]["revenue_b"] == pytest.approx(215.938)
+    assert saved_summary["latest_fundamentals"]["NVDA"]["cash_and_securities_b"] == pytest.approx(10.605)
+    assert saved_summary["latest_fundamentals"]["NVDA"]["long_term_debt_b"] == pytest.approx(7.469)
+    assert saved_summary["company_history_rows"][-1]["ticker"] == "NVDA"
+    assert saved_summary["source_coverage"]["sec_company_facts"]["status"] == "covered"
+    assert "sec_company_fundamentals" in saved_summary["methods_used"]
+    assert not any(fact_id.startswith("manual_revenue_") for fact_id in fact_ids)
+    assert "fred_latest" in fact_ids
+    assert "sec_company_facts.NVDA.revenue_b" in fact_ids
+    assert handoff["latest_fundamentals"]["NVDA"]["revenue_b"] == pytest.approx(215.938)
+
+
+def test_save_quant_outputs_rejects_unbuildable_sec_helper_evidence(tmp_path):
+    missing_path = tmp_path / "NVDA_sec_edgar_company_facts.csv"
+
+    with pytest.raises(ValueError, match="SEC company-facts files are present"):
+        qms.save_quant_outputs(
+            tmp_path,
+            {},
+            {
+                "source_files": {"NVDA_SEC": str(missing_path)},
+                "numeric_facts": [
+                    {
+                        "id": "latest_revenue",
+                        "display_value": "215,938,000,000",
+                        "raw_value": 215_938_000_000,
+                        "source_key": "NVDA_SEC",
+                    }
+                ],
+            },
+        )
+
+
+def test_save_quant_outputs_rejects_conflicting_correlation_facts(tmp_path):
+    charts = {
+        "macro_correlation_heatmap": {
+            "type": "bar",
+            "title": "Macro Correlations",
+            "data": [
+                {
+                    "pair": "(UNRATE, CPIAUCSL)",
+                    "var1": "UNRATE",
+                    "var2": "CPIAUCSL",
+                    "correlation": 0.024,
+                }
+            ],
+            "series": [{"dataKey": "correlation", "name": "Correlation"}],
+            "xAxis": {"dataKey": "pair"},
+        }
+    }
+    summary = {
+        "scenario_stress": {
+            "corr": {
+                "UNRATE": {"UNRATE": 1.0, "CPIAUCSL": 0.908},
+                "CPIAUCSL": {"UNRATE": 0.908, "CPIAUCSL": 1.0},
+            }
+        },
+        "numeric_facts": [
+            {
+                "id": "corr_UNRATE_CPIAUCSL",
+                "label": "Correlation(UNRATE, CPIAUCSL)",
+                "raw_value": 0.024,
+                "display_value": "0.024",
+                "unit": "correlation",
+                "tolerance": 0.005,
+                "source_key": "scenario_stress.corr.UNRATE.CPIAUCSL",
+            }
+        ],
+    }
+
+    with pytest.raises(ValueError, match="artifact_fact_mismatch"):
+        qms.save_quant_outputs(tmp_path, charts, summary)
+
+    assert not (tmp_path / "charts.json").exists()
+    assert not (tmp_path / "execution_summary.json").exists()
+
+
+def test_artifact_fact_consistency_uses_numeric_fact_id_only_correlation_pair():
+    consistency = artifact_fact_consistency_dict(
+        execution_summary={
+            "numeric_facts": [
+                {
+                    "id": "corr_UNRATE_CPIAUCSL",
+                    "value": 0.024,
+                    "display_value": "0.024",
+                }
+            ]
+        },
+        charts={
+            "macro_correlation_heatmap": {
+                "type": "bar",
+                "data": [
+                    {
+                        "pair": "(UNRATE, CPIAUCSL)",
+                        "var1": "UNRATE",
+                        "var2": "CPIAUCSL",
+                        "correlation": 0.908,
+                    }
+                ],
+            }
+        },
+    )
+
+    assert consistency["valid"] is False
+    assert consistency["mismatches"][0]["pair"] == ["UNRATE", "CPIAUCSL"]
+    assert "artifact_fact_mismatch" in artifact_fact_consistency_blocker(consistency)
+
+
+def test_artifact_fact_consistency_parses_chart_pair_label_correlation_pair():
+    consistency = artifact_fact_consistency_dict(
+        execution_summary={
+            "numeric_facts": [
+                {
+                    "id": "corr_UNRATE_CPIAUCSL",
+                    "value": 0.024,
+                    "display_value": "0.024",
+                }
+            ]
+        },
+        charts={
+            "macro_correlation_heatmap": {
+                "type": "bar",
+                "data": [
+                    {
+                        "pair": "UNRATE/CPIAUCSL",
+                        "correlation": 0.908,
+                    }
+                ],
+            }
+        },
+    )
+
+    assert consistency["valid"] is False
+    assert consistency["mismatches"][0]["pair"] == ["UNRATE", "CPIAUCSL"]
+    assert any(
+        "macro_correlation_heatmap.data[0]" in observation["source"]
+        for observation in consistency["mismatches"][0]["observations"]
+    )
+
+
 def test_save_quant_outputs_does_not_shape_scenario_score_rows(tmp_path):
     charts = {
         "scenario_scores": {
@@ -842,6 +1573,103 @@ def test_save_quant_outputs_ignores_report_aligned_preservation_flags(tmp_path):
     assert "preserved_report_aligned_charts" not in saved_summary
 
 
+def test_save_quant_outputs_drops_ambiguous_grouped_axis_chart_with_issue(tmp_path):
+    charts = {
+        "margin_comparison": {
+            "type": "line",
+            "title": "Margin Comparison",
+            "xAxisKey": "fiscal_year",
+            "data": [
+                {"fiscal_year": 2024, "ticker": "AAPL", "value": 45.0},
+                {"fiscal_year": 2024, "ticker": "AAPL", "value": 31.0},
+                {"fiscal_year": 2024, "ticker": "MSFT", "value": 44.0},
+            ],
+            "series": [
+                {"dataKey": "value", "label": "AAPL", "color": "#3b82f6"},
+                {"dataKey": "value", "label": "MSFT", "color": "#f59e0b"},
+            ],
+            "config": {"groupBy": "ticker"},
+        }
+    }
+
+    handoff = qms.save_quant_outputs(
+        tmp_path,
+        charts,
+        {"methods_used": ["unit_test_method"]},
+    )
+    saved_summary = json.loads((tmp_path / "execution_summary.json").read_text())
+    saved_charts = json.loads((tmp_path / "charts.json").read_text())
+
+    expected_issue = (
+        "dropped unsupported groupBy=ticker chart: duplicate finite values "
+        "for fiscal_year/ticker pairs"
+    )
+    assert saved_charts == {}
+    assert handoff["chart_ids"] == []
+    assert handoff["dropped_chart_ids"] == ["margin_comparison"]
+    assert saved_summary["chart_ids"] == []
+    assert saved_summary["dropped_chart_ids"] == ["margin_comparison"]
+    assert saved_summary["chart_normalization_issues"] == {
+        "margin_comparison": [expected_issue]
+    }
+    assert handoff["chart_normalization_issues"] == {
+        "margin_comparison": [expected_issue]
+    }
+
+
+def test_save_quant_outputs_drops_multi_datakey_grouped_axis_chart_with_issue(tmp_path):
+    charts = {
+        "multi_metric_peer_chart": {
+            "type": "bar",
+            "title": "Peer Metrics",
+            "xAxisKey": "fiscal_year",
+            "data": [
+                {
+                    "fiscal_year": 2024,
+                    "ticker": "AAPL",
+                    "revenue_growth": 6.0,
+                    "operating_margin": 31.5,
+                },
+                {
+                    "fiscal_year": 2024,
+                    "ticker": "MSFT",
+                    "revenue_growth": 15.7,
+                    "operating_margin": 44.6,
+                },
+            ],
+            "series": [
+                {"dataKey": "revenue_growth", "label": "Revenue Growth"},
+                {"dataKey": "operating_margin", "label": "Operating Margin"},
+            ],
+            "config": {"groupBy": "ticker"},
+        }
+    }
+
+    handoff = qms.save_quant_outputs(
+        tmp_path,
+        charts,
+        {"methods_used": ["unit_test_method"]},
+    )
+    saved_summary = json.loads((tmp_path / "execution_summary.json").read_text())
+    saved_charts = json.loads((tmp_path / "charts.json").read_text())
+
+    expected_issue = (
+        "dropped unsupported groupBy=ticker chart: multiple series dataKeys "
+        "cannot be pivoted (revenue_growth, operating_margin)"
+    )
+    assert saved_charts == {}
+    assert handoff["chart_ids"] == []
+    assert handoff["dropped_chart_ids"] == ["multi_metric_peer_chart"]
+    assert saved_summary["chart_ids"] == []
+    assert saved_summary["dropped_chart_ids"] == ["multi_metric_peer_chart"]
+    assert saved_summary["chart_normalization_issues"] == {
+        "multi_metric_peer_chart": [expected_issue]
+    }
+    assert handoff["chart_normalization_issues"] == {
+        "multi_metric_peer_chart": [expected_issue]
+    }
+
+
 def test_normalize_quant_report_charts_returns_dropped_ids():
     result = normalize_quant_report_charts(
         {
@@ -857,3 +1685,78 @@ def test_normalize_quant_report_charts_returns_dropped_ids():
 
     assert result["chart_ids"] == ["usable"]
     assert result["dropped_chart_ids"] == ["blank"]
+
+
+def test_normalize_quant_report_charts_pivots_grouped_axis_long_form():
+    result = normalize_quant_report_charts(
+        {
+            "cagr_summary": {
+                "type": "bar",
+                "title": "5-Year CAGR Comparison",
+                "xAxisKey": "metric",
+                "data": [
+                    {"metric": "Revenue", "ticker": "AAPL", "cagr": 6.2},
+                    {"metric": "Revenue", "ticker": "MSFT", "cagr": 12.1},
+                    {"metric": "FCF", "ticker": "AAPL", "cagr": 8.4},
+                    {"metric": "FCF", "ticker": "MSFT", "cagr": 9.7},
+                ],
+                "series": [
+                    {"dataKey": "cagr", "label": "AAPL", "color": "#3b82f6"},
+                    {"dataKey": "cagr", "label": "MSFT", "color": "#f59e0b"},
+                ],
+                "config": {"groupBy": "ticker"},
+            }
+        }
+    )
+
+    chart = result["charts"]["cagr_summary"]
+
+    assert result["chart_ids"] == ["cagr_summary"]
+    assert result["dropped_chart_ids"] == []
+    assert chart["series"] == [
+        {"dataKey": "AAPL", "label": "AAPL", "color": "#3b82f6"},
+        {"dataKey": "MSFT", "label": "MSFT", "color": "#f59e0b"},
+    ]
+    assert chart["data"] == [
+        {"metric": "Revenue", "AAPL": 6.2, "MSFT": 12.1},
+        {"metric": "FCF", "AAPL": 8.4, "MSFT": 9.7},
+    ]
+    assert "config" not in chart
+    assert result["chart_normalization_issues"] == {
+        "cagr_summary": [
+            "converted unsupported groupBy=ticker long-form cagr chart into wide series columns"
+        ]
+    }
+
+
+def test_normalize_quant_report_charts_labels_single_metric_grouped_series_by_group():
+    result = normalize_quant_report_charts(
+        {
+            "cagr_summary": {
+                "type": "bar",
+                "title": "5-Year CAGR Comparison",
+                "xAxisKey": "metric",
+                "data": [
+                    {"metric": "Revenue", "ticker": "AAPL", "cagr": 6.2},
+                    {"metric": "Revenue", "ticker": "MSFT", "cagr": 12.1},
+                    {"metric": "FCF", "ticker": "AAPL", "cagr": 8.4},
+                    {"metric": "FCF", "ticker": "MSFT", "cagr": 9.7},
+                ],
+                "series": [
+                    {"dataKey": "cagr", "label": "CAGR", "color": "#3b82f6"},
+                ],
+                "config": {"groupBy": "ticker"},
+            }
+        }
+    )
+
+    chart = result["charts"]["cagr_summary"]
+
+    assert chart["series"] == [
+        {"dataKey": "AAPL", "label": "AAPL", "color": "#3b82f6"},
+        {"dataKey": "MSFT", "label": "MSFT", "color": "#2563eb"},
+    ]
+    assert chart["data"] == [
+        {"metric": "Revenue", "AAPL": 6.2, "MSFT": 12.1},
+        {"metric": "FCF", "AAPL": 8.4, "MSFT": 9.7},
+    ]

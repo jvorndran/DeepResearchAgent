@@ -29,7 +29,18 @@ from pydantic import ValidationError
 
 from core.report_schema import ResearchReport
 
-from ..report_artifacts import chart_marker_ids, inject_auto_report_footer, load_report_json
+from ..artifact_fact_consistency import (
+    artifact_fact_consistency_blocker,
+    artifact_fact_consistency_dict,
+)
+from ..report_artifacts import (
+    chart_handoff_blocker,
+    chart_handoff_dict,
+    chart_marker_ids,
+    inject_auto_report_footer,
+    load_report_json,
+    load_sibling_execution_summary_json,
+)
 from .chart_audit import chart_render_dict, chart_semantics_dict, query_requests_charts
 
 def content_warnings(report: ResearchReport) -> list[str]:
@@ -84,6 +95,8 @@ def structural_blockers(
     scenarios: dict | None = None,
     chart_render: dict | None = None,
     chart_semantics: dict | None = None,
+    chart_handoff: dict | None = None,
+    artifact_fact_consistency: dict | None = None,
     chart_required: bool = False,
 ) -> list[str]:
     blockers: list[str] = []
@@ -116,6 +129,12 @@ def structural_blockers(
             "charts fail chart data semantics audit: "
             f"{chart_semantics['blockers']}"
         )
+    handoff_blocker = chart_handoff_blocker(chart_handoff or {})
+    if handoff_blocker:
+        blockers.append(handoff_blocker)
+    fact_blocker = artifact_fact_consistency_blocker(artifact_fact_consistency or {})
+    if fact_blocker:
+        blockers.append(fact_blocker)
     return blockers
 
 
@@ -161,6 +180,7 @@ def apply_safe_patches(
 def _gate_payload(
     *,
     passes_gate: bool,
+    report_path: str = "",
     fmt: dict,
     charts: dict,
     scenarios: dict | None,
@@ -170,6 +190,8 @@ def _gate_payload(
     auto_patched: bool,
     patches_applied: list[str],
     blockers: list[str],
+    chart_handoff: dict | None = None,
+    artifact_fact_consistency: dict | None = None,
     load_error: str | None = None,
 ) -> str:
     body: dict = {
@@ -179,14 +201,39 @@ def _gate_payload(
         "scenarios": scenarios or {},
         "chart_render": chart_render or {},
         "chart_semantics": chart_semantics or {},
+        "chart_handoff": chart_handoff or {},
+        "artifact_fact_consistency": artifact_fact_consistency or {},
         "warnings": warnings,
         "auto_patched": auto_patched,
         "patches_applied": patches_applied,
         "blockers": blockers,
     }
+    if report_path:
+        body["report_path"] = report_path
     if load_error is not None:
         body["load_error"] = load_error
     return json.dumps(body)
+
+
+def _chart_handoff_for_report(path: Path, report: ResearchReport) -> dict:
+    summary, load_error = load_sibling_execution_summary_json(path)
+    if load_error is not None:
+        raise RuntimeError(
+            f"failed to load sibling execution_summary.json for {path}: {load_error}"
+        )
+    return chart_handoff_dict(report.model_dump(), summary)
+
+
+def _artifact_fact_consistency_for_report(path: Path, report: ResearchReport) -> dict:
+    summary, load_error = load_sibling_execution_summary_json(path)
+    if load_error is not None:
+        raise RuntimeError(
+            f"failed to load sibling execution_summary.json for {path}: {load_error}"
+        )
+    return artifact_fact_consistency_dict(
+        execution_summary=summary,
+        report_data=report.model_dump(),
+    )
 
 
 def run_report_static_gate(report_json_path: str, auto_patch: bool = True) -> str:
@@ -201,14 +248,18 @@ def run_report_static_gate(report_json_path: str, auto_patch: bool = True) -> st
         auto_patch: If True, re-apply canonical footer (idempotent) / strip broken chart markers
 
     Returns:
-        JSON string with passes_gate, format, charts, scenarios, chart_render,
-        chart_semantics, warnings, auto_patched, patches_applied, and blockers.
+        JSON string with passes_gate, report_path, format, charts, scenarios,
+        chart_render, chart_semantics, chart_handoff,
+        artifact_fact_consistency, warnings, auto_patched, patches_applied,
+        and blockers.
     """
-    path = Path(report_json_path)
+    path = Path(report_json_path).expanduser().resolve()
+    resolved_report_path = str(path)
     data, load_err = load_report_json(report_json_path)
     if load_err or data is None:
         return _gate_payload(
             passes_gate=False,
+            report_path=resolved_report_path,
             fmt={},
             charts={},
             scenarios={},
@@ -226,6 +277,7 @@ def run_report_static_gate(report_json_path: str, auto_patch: bool = True) -> st
     except ValidationError as e:
         return _gate_payload(
             passes_gate=False,
+            report_path=resolved_report_path,
             fmt={"valid": False, "schema_errors": [str(e)], "missing_elements": []},
             charts={},
             scenarios={},
@@ -243,6 +295,27 @@ def run_report_static_gate(report_json_path: str, auto_patch: bool = True) -> st
     chart_semantics = chart_semantics_dict(report)
     scenarios = scenario_dict(report)
     warnings = content_warnings(report)
+    try:
+        chart_handoff = _chart_handoff_for_report(path, report)
+        artifact_fact_consistency = _artifact_fact_consistency_for_report(path, report)
+    except RuntimeError as exc:
+        load_error = str(exc)
+        return _gate_payload(
+            passes_gate=False,
+            report_path=resolved_report_path,
+            fmt=fmt_ok,
+            charts=charts,
+            scenarios=scenarios,
+            chart_render=chart_render,
+            chart_semantics=chart_semantics,
+            chart_handoff={},
+            artifact_fact_consistency={},
+            warnings=warnings,
+            auto_patched=False,
+            patches_applied=[],
+            blockers=[load_error],
+            load_error=load_error,
+        )
 
     if auto_patch:
         updated_data, patches = apply_safe_patches(
@@ -256,6 +329,7 @@ def run_report_static_gate(report_json_path: str, auto_patch: bool = True) -> st
             except ValidationError as e:
                 return _gate_payload(
                     passes_gate=False,
+                    report_path=resolved_report_path,
                     fmt=fmt_ok,
                     charts=charts,
                     scenarios=scenarios,
@@ -272,6 +346,7 @@ def run_report_static_gate(report_json_path: str, auto_patch: bool = True) -> st
             except OSError as e:
                 return _gate_payload(
                     passes_gate=False,
+                    report_path=resolved_report_path,
                     fmt=fmt_ok,
                     charts=charts,
                     scenarios=scenarios,
@@ -291,21 +366,48 @@ def run_report_static_gate(report_json_path: str, auto_patch: bool = True) -> st
             chart_semantics = chart_semantics_dict(report)
             warnings = content_warnings(report)
             scenarios = scenario_dict(report)
+            try:
+                chart_handoff = _chart_handoff_for_report(path, report)
+                artifact_fact_consistency = _artifact_fact_consistency_for_report(
+                    path,
+                    report,
+                )
+            except RuntimeError as exc:
+                load_error = str(exc)
+                return _gate_payload(
+                    passes_gate=False,
+                    report_path=resolved_report_path,
+                    fmt=fmt_ok,
+                    charts=charts,
+                    scenarios=scenarios,
+                    chart_render=chart_render,
+                    chart_semantics=chart_semantics,
+                    warnings=warnings,
+                    auto_patched=False,
+                    patches_applied=patches,
+                    blockers=[load_error],
+                    load_error=load_error,
+                )
             blockers = structural_blockers(
                 charts,
                 scenarios,
                 chart_render,
                 chart_semantics,
+                chart_handoff,
+                artifact_fact_consistency,
                 chart_required=query_requests_charts(report.query),
             )
             passes = len(blockers) == 0
             return _gate_payload(
                 passes_gate=passes,
+                report_path=resolved_report_path,
                 fmt=fmt_ok,
                 charts=charts,
                 scenarios=scenarios,
                 chart_render=chart_render,
                 chart_semantics=chart_semantics,
+                chart_handoff=chart_handoff,
+                artifact_fact_consistency=artifact_fact_consistency,
                 warnings=warnings,
                 auto_patched=True,
                 patches_applied=patches,
@@ -317,16 +419,21 @@ def run_report_static_gate(report_json_path: str, auto_patch: bool = True) -> st
         scenarios,
         chart_render,
         chart_semantics,
+        chart_handoff,
+        artifact_fact_consistency,
         chart_required=query_requests_charts(report.query),
     )
     passes = len(blockers) == 0
     return _gate_payload(
         passes_gate=passes,
+        report_path=resolved_report_path,
         fmt=fmt_ok,
         charts=charts,
         scenarios=scenarios,
         chart_render=chart_render,
         chart_semantics=chart_semantics,
+        chart_handoff=chart_handoff,
+        artifact_fact_consistency=artifact_fact_consistency,
         warnings=warnings,
         auto_patched=False,
         patches_applied=[],

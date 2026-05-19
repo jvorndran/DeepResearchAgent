@@ -3,14 +3,64 @@ import json
 import re
 from pathlib import Path
 from datetime import datetime, timezone
+from typing import Iterable
 
 from pydantic import ValidationError
 
 from core.report_schema import ResearchReport
 
-from ..report_artifacts import load_report_json
+from ..artifact_fact_consistency import (
+    artifact_fact_consistency_blocker,
+    artifact_fact_consistency_dict,
+)
+from agents.quant_macro_stats.artifacts.numeric_fact_contracts import (
+    normalize_numeric_facts,
+    numeric_fact_current_state_duration_misuse,
+    numeric_fact_literal_required,
+)
+from agents.quant_macro_stats.artifacts.execution_summary_normalization import (
+    normalize_quant_execution_summary,
+)
+from ..report_artifacts import (
+    chart_handoff_blocker,
+    chart_handoff_dict,
+    load_report_json,
+    load_sibling_execution_summary_json,
+)
 from ..technical_writer.chart_audit import chart_semantics_dict
+from ..quant_macro_stats.artifacts.source_unit_fidelity import (
+    attach_source_unit_metadata,
+    failed_unit_comparison_messages,
+    has_passing_mixed_wage_unit_comparison,
+    mixed_wage_period_sources,
+    normalize_source_unit_metadata,
+)
 from .utils import _truncate
+
+_SEC_COMPANY_FACTS_REF_MARKERS = (
+    "sec_facts",
+    "sec_company_facts",
+    "sec_edgar_company_facts",
+    "edgar_company_facts",
+)
+
+
+def _looks_like_sec_company_facts_ref(value: object) -> bool:
+    text = str(value).strip()
+    if not text:
+        return False
+    upper = text.upper()
+    normalized = text.lower().replace("-", "_").replace(" ", "_")
+    path_name = Path(text).name.lower().replace("-", "_").replace(" ", "_")
+    return (
+        upper.startswith("SEC_")
+        or upper.endswith("_SEC")
+        or any(
+            marker in normalized or marker in path_name
+            for marker in _SEC_COMPANY_FACTS_REF_MARKERS
+        )
+    )
+
 
 def _load_sibling_execution_summary(report_path: Path) -> dict[str, object]:
     """Return a compact quant summary from execution_summary.json when available."""
@@ -37,6 +87,10 @@ def _load_sibling_execution_summary(report_path: Path) -> dict[str, object]:
             "path": str(summary_path),
             "error": "Expected execution_summary.json to contain a JSON object.",
         }
+    try:
+        parsed = normalize_quant_execution_summary(parsed)
+    except ValueError:
+        pass
 
     source_status = str(parsed.get("status") or "success")
     compact: dict[str, object] = {
@@ -52,6 +106,7 @@ def _load_sibling_execution_summary(report_path: Path) -> dict[str, object]:
         "statistical_text",
         "brief_analysis_summary",
         "chart_ids",
+        "dropped_chart_ids",
         "validation_window",
         "state_comparison",
         "numeric_facts",
@@ -99,11 +154,17 @@ def _load_sibling_execution_summary(report_path: Path) -> dict[str, object]:
         "company_macro_sensitivity",
         "diagnostics",
         "source_coverage",
+        "source_files",
+        "source_unit_metadata",
+        "unit_comparisons",
+        "source_unit_errors",
+        "data_files",
     ):
         value = parsed.get(key)
         if value is not None:
-            if key in {"chart_ids", "methods_used", "limitations"} and isinstance(
-                value, list
+            if (
+                key in {"chart_ids", "dropped_chart_ids", "methods_used", "limitations"}
+                and isinstance(value, list)
             ):
                 compact[key] = [str(chart_id) for chart_id in value]
             elif isinstance(value, (dict, list)):
@@ -114,12 +175,8 @@ def _load_sibling_execution_summary(report_path: Path) -> dict[str, object]:
 
 
 def _load_execution_summary_payload(report_path: Path) -> dict[str, object] | None:
-    summary_path = report_path.with_name("execution_summary.json")
-    try:
-        parsed = json.loads(summary_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    return parsed if isinstance(parsed, dict) else None
+    parsed, _ = load_sibling_execution_summary_json(report_path)
+    return parsed
 
 
 def _numeric_text_variants(value: object) -> set[str]:
@@ -194,11 +251,7 @@ def _numeric_facts_from_summary(summary: dict[str, object]) -> list[dict[str, ob
     facts: list[dict[str, object]] = []
     seen: set[str] = set()
     for candidate in candidates:
-        if not isinstance(candidate, list):
-            continue
-        for item in candidate:
-            if not isinstance(item, dict):
-                continue
+        for item in normalize_numeric_facts(candidate):
             fact_id = str(item.get("id") or item.get("source_key") or "")
             if not fact_id or fact_id in seen:
                 continue
@@ -303,6 +356,7 @@ def _numeric_fact_fidelity_blockers(
 
     markdown_lower = markdown.lower()
     missing: list[str] = []
+    semantic_misuse: list[str] = []
     for fact in facts:
         subject = str(fact.get("subject") or "").strip()
         metric = str(fact.get("metric") or fact.get("id") or fact.get("source_key") or "").strip()
@@ -311,10 +365,25 @@ def _numeric_fact_fidelity_blockers(
         markers = _metric_markers_for_fact(fact)
         if markers and not any(marker in markdown_lower for marker in markers):
             continue
+        label = " ".join(part for part in (subject, metric) if part)
+        label = label or str(
+            fact.get("label") or fact.get("id") or fact.get("source_key") or "numeric fact"
+        )
+        if numeric_fact_current_state_duration_misuse(markdown, fact):
+            semantic_misuse.append(label)
+            continue
+        if not numeric_fact_literal_required(fact):
+            continue
         if not _contains_numeric_fact_value(markdown, fact):
-            label = " ".join(part for part in (subject, metric) if part)
-            missing.append(label or str(fact.get("id") or fact.get("source_key") or "numeric fact"))
+            missing.append(label)
 
+    if semantic_misuse:
+        return [
+            "Report treats current-state zero-duration numeric_facts as historical "
+            f"durations for {', '.join(semantic_misuse[:8])}. Regenerate the "
+            "affected prose from state_description instead of saying an episode "
+            "lasted 0 months."
+        ]
     if not missing:
         return []
     return [
@@ -353,6 +422,8 @@ def _report_claims_company_fundamental_analysis(report_data: dict[str, object]) 
 
 
 def _has_reusable_company_evidence(summary: dict[str, object]) -> bool:
+    if _sec_company_files_present(summary):
+        return _has_complete_sec_company_helper_evidence(summary)
     if _numeric_facts_from_summary(summary):
         return True
     latest = summary.get("latest_fundamentals")
@@ -364,6 +435,32 @@ def _has_reusable_company_evidence(summary: dict[str, object]) -> bool:
         if isinstance(coverage, dict) and coverage.get("status") == "covered":
             return True
     return False
+
+
+def _has_complete_sec_company_helper_evidence(summary: dict[str, object]) -> bool:
+    latest = summary.get("latest_fundamentals")
+    if not isinstance(latest, dict) or not latest:
+        return False
+
+    source_coverage = summary.get("source_coverage")
+    if not isinstance(source_coverage, dict):
+        return False
+    sec_coverage = source_coverage.get("sec_company_facts")
+    if not isinstance(sec_coverage, dict) or sec_coverage.get("status") != "covered":
+        return False
+
+    return any(
+        _is_sec_company_helper_fact(fact)
+        for fact in _numeric_facts_from_summary(summary)
+    )
+
+
+def _is_sec_company_helper_fact(fact: dict[str, object]) -> bool:
+    fact_id = str(fact.get("id") or "")
+    source_key = str(fact.get("source_key") or "")
+    return fact_id.startswith("sec_company_facts.") and source_key.startswith(
+        "sec_company_facts.latest_fundamentals."
+    )
 
 
 def _missing_helper_evidence_blocker(
@@ -378,11 +475,12 @@ def _missing_helper_evidence_blocker(
         return None
     return (
         "Report includes stock-specific company-fundamentals claims and SEC "
-        "company-facts files are present in the quantitative input manifest, "
-        "but execution_summary.json lacks reusable helper evidence such as "
-        "numeric_facts, latest_fundamentals, source_coverage, methods, and "
-        "limitations. Rerun quantitative-developer so analysis.py composes the "
-        "SEC helper output before writer synthesis."
+        "company-facts files are present in the quantitative handoff, but "
+        "execution_summary.json lacks complete reusable SEC helper evidence: "
+        "latest_fundamentals, source_coverage.sec_company_facts=covered, and "
+        "sec_company_facts.* numeric_facts from sec_company_facts_evidence(...). "
+        "Rerun quantitative-developer so analysis.py composes the SEC helper "
+        "output before writer synthesis."
     )
 
 
@@ -391,13 +489,25 @@ _CLOSEST_ANALOG_RE = re.compile(
     re.IGNORECASE,
 )
 _ANALOG_YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
-_ANALOG_CLAIM_RE = re.compile(
-    r"\b(?:analog|analogue|closest|distance|similarity|recession|cycle)\b",
+_ANALOG_TOPIC_RE = re.compile(r"\b(?:analog|analogue)\b", re.IGNORECASE)
+_ANALOG_ANALYTIC_CLAIM_RE = re.compile(
+    r"\b(?:closest|most similar|similarity|distance|ranked|ranking)\b|"
+    r"\b(?:best|top)\s+(?:analog|analogue|match|fit|window|episode)\b|"
+    r"\b(?:resembles?|look(?:s|ed)?\s+(?:more\s+|most\s+)?like)\b",
     re.IGNORECASE,
 )
 _ANALOG_LIMITATION_RE = re.compile(
     r"\b(?:unavailable|not\s+available|not\s+covered|insufficient|excluded|missing|"
     r"not\s+present)\b",
+    re.IGNORECASE,
+)
+_ANALOG_COVERAGE_CONTEXT_RE = re.compile(
+    r"\b(?:data|dataset|sample|series|coverage|available|availability|"
+    r"observations?|history)\b[^\n.]{0,80}\b(?:from|since|starting|starts?|"
+    r"begins?|onward|through|limited|only|excludes?|excluded|missing)\b|"
+    r"\b(?:from|since|starting|starts?|begins?|onward|through|limited)\b"
+    r"[^\n.]{0,80}\b(?:data|dataset|sample|series|coverage|available|"
+    r"availability|observations?|history)\b",
     re.IGNORECASE,
 )
 
@@ -416,6 +526,16 @@ def _analog_labels_match(claimed: object, expected: object) -> bool:
     claimed_years = _analog_years(claimed_text)
     expected_years = _analog_years(expected_text)
     return bool(claimed_years and expected_years and claimed_years == expected_years)
+
+
+def _line_claims_historical_analog_evidence(line: str) -> bool:
+    if _ANALOG_LIMITATION_RE.search(line):
+        return False
+    if _ANALOG_COVERAGE_CONTEXT_RE.search(line):
+        return bool(_ANALOG_ANALYTIC_CLAIM_RE.search(line))
+    return bool(
+        _ANALOG_TOPIC_RE.search(line) or _ANALOG_ANALYTIC_CLAIM_RE.search(line)
+    )
 
 
 def _execution_summary_analog_years(summary: dict[str, object]) -> set[str]:
@@ -464,15 +584,15 @@ def _claimed_historical_analog_years(markdown: str) -> set[str]:
             in_research_query = heading == "research query"
             if in_research_query:
                 continue
-        if in_research_query or _ANALOG_LIMITATION_RE.search(line):
+        if in_research_query:
+            continue
+        if not _line_claims_historical_analog_evidence(line):
             continue
         for match in _ANALOG_YEAR_RE.finditer(line):
             before = line[max(0, match.start() - 32) : match.start()].lower()
             if re.search(r"\bcurrent\b[^\n.]{0,32}$", before):
                 continue
-            context = line[max(0, match.start() - 80) : match.end() + 80]
-            if _ANALOG_CLAIM_RE.search(context):
-                claimed.add(match.group(0))
+            claimed.add(match.group(0))
     return claimed
 
 
@@ -526,9 +646,7 @@ def _unsupported_historical_analog_claim_blocker(
                 label_lower in line_lower or any(year in line for year in years)
             ):
                 continue
-            if _ANALOG_LIMITATION_RE.search(line_lower):
-                continue
-            if _ANALOG_CLAIM_RE.search(line_lower):
+            if _line_claims_historical_analog_evidence(line_lower):
                 claimed.append(label)
                 break
     if not claimed:
@@ -707,16 +825,48 @@ def _sec_company_files_present(summary: dict[str, object]) -> bool:
     status = summary.get("company_context_status")
     if isinstance(status, dict) and status.get("sec_source_keys"):
         return True
-    manifest = summary.get("quant_input_manifest")
-    data_files = manifest.get("data_files") if isinstance(manifest, dict) else None
-    if not isinstance(data_files, dict):
-        return False
-    for key, path in data_files.items():
-        key_upper = str(key).upper()
-        path_name = Path(str(path)).name.lower()
-        if key_upper.endswith("_SEC") or "sec_edgar_company_facts" in path_name:
+    if _data_files_used_has_sec_company_facts(summary.get("data_files_used")):
+        return True
+    for key, path in _iter_sec_company_data_file_candidates(summary):
+        if (
+            _is_sec_company_file_reference(key, path)
+            or _looks_like_sec_company_facts_ref(key)
+            or _looks_like_sec_company_facts_ref(path)
+        ):
             return True
     return False
+
+
+def _iter_sec_company_data_file_candidates(
+    summary: dict[str, object],
+) -> Iterable[tuple[object, object]]:
+    for container_key in ("source_files", "data_files"):
+        container = summary.get(container_key)
+        if isinstance(container, dict):
+            yield from container.items()
+
+    manifest = summary.get("quant_input_manifest")
+    data_files = manifest.get("data_files") if isinstance(manifest, dict) else None
+    if isinstance(data_files, dict):
+        yield from data_files.items()
+
+
+def _is_sec_company_file_reference(key: object, path: object) -> bool:
+    key_upper = str(key).upper()
+    path_name = Path(str(path)).name.lower()
+    return key_upper.endswith("_SEC") or "sec_edgar_company_facts" in path_name
+
+
+def _data_files_used_has_sec_company_facts(value: object) -> bool:
+    if isinstance(value, dict):
+        return any(
+            _looks_like_sec_company_facts_ref(key)
+            or _data_files_used_has_sec_company_facts(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, (list, tuple, set)):
+        return any(_data_files_used_has_sec_company_facts(item) for item in value)
+    return _looks_like_sec_company_facts_ref(value)
 
 
 _MODEL_CLAIM_RE = re.compile(
@@ -852,6 +1002,242 @@ def _model_claim_evidence_blockers(
     ]
 
 
+_WAGE_GAP_CLAIM_RE = re.compile(
+    r"\b(wage|earnings|pay)\b.{0,80}\b(gap|diverg|difference|spread|versus|vs\.?|compare|comparison)\b"
+    r"|\b(gap|diverg|difference|spread|versus|vs\.?|compare|comparison)\b.{0,80}\b(wage|earnings|pay)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _summary_contains_wage_gap_metric(value: object, *, depth: int = 0) -> bool:
+    if depth > 4:
+        return False
+    if isinstance(value, dict):
+        for key, child in value.items():
+            key_text = str(key).lower()
+            if (
+                any(token in key_text for token in ("wage", "earnings", "pay"))
+                and any(
+                    token in key_text
+                    for token in ("gap", "diverg", "difference", "spread", "compare")
+                )
+            ):
+                return True
+            if _summary_contains_wage_gap_metric(child, depth=depth + 1):
+                return True
+    elif isinstance(value, list):
+        return any(_summary_contains_wage_gap_metric(item, depth=depth + 1) for item in value)
+    return False
+
+
+def _chart_text_for_wage_unit_review(report_data: dict[str, object]) -> str:
+    pieces: list[str] = []
+    for chart in _iter_report_charts(report_data):
+        for key in ("id", "title", "description"):
+            value = chart.get(key)
+            if isinstance(value, str):
+                pieces.append(value)
+        series = chart.get("series")
+        if isinstance(series, list):
+            for item in series:
+                if not isinstance(item, dict):
+                    continue
+                for key in ("dataKey", "label", "name"):
+                    value = item.get(key)
+                    if isinstance(value, str):
+                        pieces.append(value)
+    return "\n".join(pieces)
+
+
+def _iter_report_charts(report_data: dict[str, object]) -> list[dict[str, object]]:
+    charts = report_data.get("charts")
+    if isinstance(charts, dict):
+        chart_items = charts.values()
+    elif isinstance(charts, list):
+        chart_items = charts
+    else:
+        return []
+    return [chart for chart in chart_items if isinstance(chart, dict)]
+
+
+def _chart_series_count(chart: dict[str, object]) -> int:
+    series = chart.get("series")
+    if isinstance(series, list):
+        return len([item for item in series if isinstance(item, dict)])
+
+    data = chart.get("data")
+    if not isinstance(data, list) or not data or not isinstance(data[0], dict):
+        return 0
+    x_axis_key = str(chart.get("xAxisKey") or chart.get("x_axis_key") or "").strip()
+    excluded = {"date", "period", "year", "month", "quarter", "label", "name", x_axis_key}
+    return len(
+        [
+            key
+            for key, value in data[0].items()
+            if str(key).strip().lower() not in excluded and isinstance(value, (int, float))
+        ]
+    )
+
+
+def _mixed_wage_unit_chart_overlays(
+    report_data: dict[str, object],
+    source_unit_metadata: object,
+) -> list[str]:
+    source_basis_by_token = _wage_source_basis_by_token(source_unit_metadata)
+    if len(set(source_basis_by_token.values())) < 2:
+        return []
+
+    overlays: list[str] = []
+    for chart in _iter_report_charts(report_data):
+        chart_tokens = _chart_source_tokens(chart)
+        matched_bases = {
+            source_basis_by_token[token]
+            for token in chart_tokens
+            if token in source_basis_by_token
+        }
+        if _chart_series_count(chart) < 2 or len(matched_bases) < 2:
+            continue
+        label = str(chart.get("id") or chart.get("title") or "unnamed chart")
+        title = str(chart.get("title") or "").strip()
+        overlays.append(f"{label} ({title})" if title and title != label else label)
+    return overlays
+
+
+def _wage_source_basis_by_token(source_unit_metadata: object) -> dict[str, str]:
+    basis_by_token: dict[str, str] = {}
+    for record in normalize_source_unit_metadata(source_unit_metadata):
+        family = str(record.get("unit_family") or "").lower()
+        basis = str(record.get("unit_basis") or "").strip().lower()
+        measure = str(record.get("measure") or "").lower()
+        text = f"{record.get('title') or ''} {record.get('units') or ''}".lower()
+        if family != "currency_per_time" or not basis:
+            continue
+        if measure != "wage" and "wage" not in text and "earnings" not in text:
+            continue
+        for key in ("source_key", "series_id"):
+            token = _source_unit_token(record.get(key))
+            if token:
+                basis_by_token[token] = basis
+        source_file = record.get("source_file")
+        if isinstance(source_file, str) and source_file.strip():
+            token = _source_unit_token(Path(source_file).stem)
+            if token:
+                basis_by_token[token] = basis
+    return basis_by_token
+
+
+def _chart_source_tokens(chart: dict[str, object]) -> set[str]:
+    tokens: set[str] = set()
+    for key in ("id",):
+        token = _source_unit_token(chart.get(key))
+        if token:
+            tokens.add(token)
+
+    series = chart.get("series")
+    if isinstance(series, list):
+        for item in series:
+            if not isinstance(item, dict):
+                continue
+            for key in ("dataKey", "label", "name", "source_key", "series_id"):
+                token = _source_unit_token(item.get(key))
+                if token:
+                    tokens.add(token)
+
+    data = chart.get("data")
+    if isinstance(data, list) and data and isinstance(data[0], dict):
+        for key in data[0]:
+            token = _source_unit_token(key)
+            if token:
+                tokens.add(token)
+
+    provenance = chart.get("provenance")
+    if isinstance(provenance, dict):
+        for key in ("source_series", "source_files"):
+            _add_source_unit_tokens(tokens, provenance.get(key))
+    return tokens
+
+
+def _add_source_unit_tokens(tokens: set[str], value: object) -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            for item in (key, child):
+                token = _source_unit_token(Path(item).stem if isinstance(item, str) else item)
+                if token:
+                    tokens.add(token)
+    elif isinstance(value, list):
+        for item in value:
+            token = _source_unit_token(Path(item).stem if isinstance(item, str) else item)
+            if token:
+                tokens.add(token)
+    else:
+        token = _source_unit_token(value)
+        if token:
+            tokens.add(token)
+
+
+def _source_unit_token(value: object) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+
+
+def _source_unit_fidelity_blockers(
+    summary: dict[str, object],
+    markdown: str,
+    report_data: dict[str, object],
+) -> list[str]:
+    if not summary:
+        return []
+
+    enriched_summary = dict(summary)
+    attach_source_unit_metadata(enriched_summary)
+
+    blockers = [
+        f"execution_summary.json source-unit comparison failed: {message}"
+        for message in failed_unit_comparison_messages(enriched_summary)
+    ]
+
+    mixed_wage_sources = mixed_wage_period_sources(
+        enriched_summary.get("source_unit_metadata")
+    )
+    if len(mixed_wage_sources) < 2:
+        return blockers
+    if has_passing_mixed_wage_unit_comparison(enriched_summary):
+        return blockers
+
+    chart_overlays = _mixed_wage_unit_chart_overlays(
+        report_data,
+        enriched_summary.get("source_unit_metadata"),
+    )
+    review_text = "\n".join(
+        (
+            markdown,
+            _chart_text_for_wage_unit_review(report_data),
+        )
+    )
+    mentions_wage_gap = bool(_WAGE_GAP_CLAIM_RE.search(review_text))
+    mentions_summary_gap = _summary_contains_wage_gap_metric(enriched_summary)
+    if not chart_overlays and not mentions_wage_gap and not mentions_summary_gap:
+        return blockers
+
+    basis_details = "; ".join(
+        f"{basis}: {', '.join(labels[:4])}"
+        for basis, labels in sorted(mixed_wage_sources.items())
+    )
+    comparison_context = "wage gap/divergence claims"
+    if chart_overlays:
+        comparison_context = "direct wage chart overlays"
+        chart_details = ", ".join(chart_overlays[:4])
+        if mentions_wage_gap or mentions_summary_gap:
+            comparison_context += " and wage gap/divergence claims"
+        comparison_context += f" ({chart_details})"
+    blockers.append(
+        f"Report or execution_summary.json contains {comparison_context} while "
+        "using wage sources with incompatible unit bases and no passing "
+        f"unit_comparisons contract ({basis_details}). Regenerate quant artifacts "
+        "after converting to a common unit, or remove the direct wage gap claim."
+    )
+    return blockers
+
+
 def _execution_summary_fidelity_blockers(
     report_data: dict[str, object], report_path: Path
 ) -> list[str]:
@@ -872,6 +1258,7 @@ def _execution_summary_fidelity_blockers(
     )
     if missing_helper_evidence:
         blockers.append(missing_helper_evidence)
+    blockers.extend(_source_unit_fidelity_blockers(summary, markdown, report_data))
     blockers.extend(_state_comparison_fidelity_blockers(summary, markdown))
     blockers.extend(_numeric_fact_fidelity_blockers(summary, markdown))
 
@@ -1115,6 +1502,17 @@ def _approval_blockers(report_path: str) -> list[str]:
     freshness_blocker = _current_helper_evidence_freshness_blocker(data, full_summary)
     if freshness_blocker:
         blockers.append(freshness_blocker)
+    handoff_blocker = chart_handoff_blocker(chart_handoff_dict(data, full_summary))
+    if handoff_blocker:
+        blockers.append(handoff_blocker)
+    fact_blocker = artifact_fact_consistency_blocker(
+        artifact_fact_consistency_dict(
+            execution_summary=full_summary,
+            report_data=data,
+        )
+    )
+    if fact_blocker:
+        blockers.append(fact_blocker)
     blockers.extend(_chart_semantics_approval_blockers(data))
     blockers.extend(_execution_summary_fidelity_blockers(data, Path(report_path)))
     if summary.get("status") in {"failed", "error", "missing"}:
@@ -1187,6 +1585,29 @@ def _approval_failure_metadata(report_path: str) -> dict[str, str]:
     if not summary:
         return {}
     markdown = str(data.get("markdown", ""))
+    if _source_unit_fidelity_blockers(summary, markdown, data):
+        return {
+            "failure_category": "source_unit_mismatch",
+            "required_upstream": "quantitative-developer",
+        }
+    chart_handoff = chart_handoff_dict(data, summary)
+    if chart_handoff_blocker(chart_handoff):
+        required_upstream = (
+            "quant-developer"
+            if chart_handoff.get("missing_report_chart_ids")
+            else "technical-writer"
+        )
+        return {
+            "failure_category": "chart_handoff_mismatch",
+            "required_upstream": required_upstream,
+        }
+    if artifact_fact_consistency_blocker(
+        artifact_fact_consistency_dict(execution_summary=summary, report_data=data)
+    ):
+        return {
+            "failure_category": "artifact_fact_mismatch",
+            "required_upstream": "quant-developer",
+        }
     if _chart_semantics_approval_blockers(data):
         return {
             "failure_category": "chart_semantics_mismatch",

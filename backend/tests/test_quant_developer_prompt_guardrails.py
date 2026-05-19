@@ -1,4 +1,5 @@
 import json
+import shlex
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -35,6 +36,10 @@ def test_quant_prompt_requires_analysis_script_not_prebuilt_report_tools():
     assert "source coverage" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "# HELPER SELECTION CATALOG" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "direct_ols_forecast(data, target_col, feature_cols" in QUANT_DEVELOPER_SYSTEM_PROMPT
+    assert "chart_provenance(source_series=..." in QUANT_DEVELOPER_SYSTEM_PROMPT
+    assert "latest_numeric_fact(panel, key" in QUANT_DEVELOPER_SYSTEM_PROMPT
+    assert "raw_value" in QUANT_DEVELOPER_SYSTEM_PROMPT
+    assert "display_value" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "save_quant_outputs(output_dir, charts, execution_summary)" in QUANT_DEVELOPER_SYSTEM_PROMPT
 
     removed_surfaces = [
@@ -155,6 +160,69 @@ def test_successful_execute_handoff_stops_future_tool_use():
     assert response.result[0].content == handoff
 
 
+def test_model_call_forces_execute_after_written_script_without_tool_call(tmp_path):
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    script_path = tmp_path / "outputs" / "job-execute" / "code" / "analysis.py"
+    request = _Request(
+        [SimpleNamespace(name="execute"), SimpleNamespace(name="read_file")],
+        messages=[
+            ToolMessage(
+                content=f"Updated file {script_path}",
+                name="write_file",
+                tool_call_id="call-write",
+            )
+        ],
+    )
+
+    response = middleware.wrap_model_call(
+        request,
+        lambda req: ModelResponse(
+            result=[
+                AIMessage(
+                    content=(
+                        "Failed to call tool due to error: Tool write_file failed. "
+                        "This is a system error - please try sending this function again."
+                    )
+                )
+            ]
+        ),
+    )
+
+    tool_call = response.result[0].tool_calls[0]
+    expected_command = f"{shlex.quote(quant_dev.PYTHON_EXECUTABLE)} {shlex.quote(str(script_path))}"
+    assert tool_call["name"] == "execute"
+    assert tool_call["args"] == {"command": expected_command}
+
+
+def test_model_call_does_not_repeat_execute_after_latest_write_failure(tmp_path):
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    script_path = tmp_path / "outputs" / "job-execute" / "code" / "analysis.py"
+    request = _Request(
+        [SimpleNamespace(name="execute"), SimpleNamespace(name="read_file")],
+        messages=[
+            ToolMessage(
+                content=f"Updated file {script_path}",
+                name="write_file",
+                tool_call_id="call-write",
+            ),
+            ToolMessage(
+                content="Command failed with traceback",
+                name="execute",
+                tool_call_id="call-execute",
+                status="error",
+            ),
+        ],
+    )
+
+    response = middleware.wrap_model_call(
+        request,
+        lambda req: ModelResponse(result=[AIMessage(content="I need to inspect stderr.")]),
+    )
+
+    assert response.result[0].content == "I need to inspect stderr."
+    assert response.result[0].tool_calls == []
+
+
 def test_prewrite_failure_handoff_overwrites_prior_quant_artifacts(tmp_path, monkeypatch):
     monkeypatch.setattr(quant_dev, "OUTPUT_BASE_DIR", str(tmp_path))
     output_dir = tmp_path / "job-stale"
@@ -220,6 +288,156 @@ def _blocked_write_response(tmp_path, content):
     )
 
 
+def _allowed_write_response(tmp_path, content):
+    script_path = tmp_path / "outputs" / "job-guardrail" / "code" / "analysis.py"
+    request = SimpleNamespace(
+        tool_call={
+            "name": "write_file",
+            "id": "call-write",
+            "args": {"file_path": str(script_path), "content": content},
+        },
+        state={"messages": []},
+    )
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+
+    return middleware.wrap_tool_call(
+        request,
+        lambda req: ToolMessage(
+            content="write allowed",
+            name="write_file",
+            tool_call_id="call-write",
+            status="success",
+        ),
+    )
+
+
+def test_quant_guardrail_blocks_sec_company_facts_without_helper_evidence(tmp_path):
+    sec_path = tmp_path / "NVDA_sec_edgar_company_facts.csv"
+    sec_path.write_text("fiscal_year,revenue\n2025,130000\n", encoding="utf-8")
+    content = f'''
+from agents.quant_macro_stats import save_quant_outputs
+
+DATA_FILES = {{"sec_facts": {str(sec_path)!r}}}
+charts = {{}}
+execution_summary = {{"data_files_used": ["sec_facts"]}}
+handoff = save_quant_outputs(output_dir, charts, execution_summary)
+'''
+
+    response = _blocked_write_response(tmp_path, content)
+
+    assert response.status == "error"
+    assert "does not call `sec_company_facts_evidence(...)`" in response.content
+    assert "`numeric_facts`" in response.content
+    assert "summary passed to `save_quant_outputs`" in response.content
+
+
+def test_quant_guardrail_blocks_sec_helper_not_merged_into_summary(tmp_path):
+    sec_path = tmp_path / "NVDA_sec_edgar_company_facts.csv"
+    sec_path.write_text("fiscal_year,revenue\n2025,130000\n", encoding="utf-8")
+    content = f'''
+from agents.quant_macro_stats import sec_company_facts_evidence, save_quant_outputs
+
+DATA_FILES = {{"sec_facts": {str(sec_path)!r}}}
+company_evidence = sec_company_facts_evidence(DATA_FILES, query="NVDA fundamentals")
+charts = {{}}
+execution_summary = {{"methods_used": ["sec_company_facts_evidence"]}}
+handoff = save_quant_outputs(output_dir, charts, execution_summary)
+'''
+
+    response = _blocked_write_response(tmp_path, content)
+
+    assert response.status == "error"
+    assert "`sec_company_facts_evidence(...)` is not merged" in response.content
+    assert "`latest_fundamentals`" in response.content
+    assert "`source_coverage`" in response.content
+
+
+def test_quant_guardrail_ignores_uncalled_sec_evidence_handoff_function(tmp_path):
+    sec_path = tmp_path / "NVDA_sec_edgar_company_facts.csv"
+    sec_path.write_text("fiscal_year,revenue\n2025,130000\n", encoding="utf-8")
+    content = f'''
+from agents.quant_macro_stats import sec_company_facts_evidence, save_quant_outputs
+
+DATA_FILES = {{"sec_facts": {str(sec_path)!r}}}
+charts = {{}}
+
+def unused_sec_handoff():
+    company_evidence = sec_company_facts_evidence(DATA_FILES, query="NVDA fundamentals")
+    execution_summary = {{"methods_used": ["sec_company_facts_evidence"]}}
+    execution_summary.update(company_evidence)
+    return save_quant_outputs(output_dir, charts, execution_summary)
+
+execution_summary = {{"methods_used": ["manual summary"]}}
+handoff = save_quant_outputs(output_dir, charts, execution_summary)
+'''
+
+    response = _blocked_write_response(tmp_path, content)
+
+    assert response.status == "error"
+    assert "`sec_company_facts_evidence(...)` is not merged" in response.content
+
+
+def test_quant_guardrail_blocks_sec_helper_merged_after_save(tmp_path):
+    sec_path = tmp_path / "NVDA_sec_edgar_company_facts.csv"
+    sec_path.write_text("fiscal_year,revenue\n2025,130000\n", encoding="utf-8")
+    content = f'''
+from agents.quant_macro_stats import sec_company_facts_evidence, save_quant_outputs
+
+DATA_FILES = {{"sec_facts": {str(sec_path)!r}}}
+company_evidence = sec_company_facts_evidence(DATA_FILES, query="NVDA fundamentals")
+charts = {{}}
+execution_summary = {{"custom_stress_rows": []}}
+handoff = save_quant_outputs(output_dir, charts, execution_summary)
+execution_summary.update(company_evidence)
+'''
+
+    response = _blocked_write_response(tmp_path, content)
+
+    assert response.status == "error"
+    assert "`sec_company_facts_evidence(...)` is not merged" in response.content
+
+
+def test_quant_guardrail_blocks_sec_helper_overwritten_after_merge(tmp_path):
+    sec_path = tmp_path / "NVDA_sec_edgar_company_facts.csv"
+    sec_path.write_text("fiscal_year,revenue\n2025,130000\n", encoding="utf-8")
+    content = f'''
+from agents.quant_macro_stats import sec_company_facts_evidence, save_quant_outputs
+
+DATA_FILES = {{"sec_facts": {str(sec_path)!r}}}
+company_evidence = sec_company_facts_evidence(DATA_FILES, query="NVDA fundamentals")
+charts = {{}}
+execution_summary = {{"custom_stress_rows": []}}
+execution_summary.update(company_evidence)
+execution_summary = {{"methods_used": ["manual override"]}}
+handoff = save_quant_outputs(output_dir, charts, execution_summary)
+'''
+
+    response = _blocked_write_response(tmp_path, content)
+
+    assert response.status == "error"
+    assert "`sec_company_facts_evidence(...)` is not merged" in response.content
+
+
+def test_quant_guardrail_allows_sec_helper_evidence_with_custom_rows(tmp_path):
+    sec_path = tmp_path / "NVDA_sec_edgar_company_facts.csv"
+    sec_path.write_text("fiscal_year,revenue\n2025,130000\n", encoding="utf-8")
+    content = f'''
+from agents.quant_macro_stats import sec_company_facts_evidence, save_quant_outputs
+
+DATA_FILES = {{"sec_facts": {str(sec_path)!r}}}
+company_evidence = sec_company_facts_evidence(DATA_FILES, query="NVDA fundamentals")
+charts = {{}}
+stress_rows = [{{"scenario": "ai_spending_cools", "revenue_change_pct": -30}}]
+execution_summary = {{"custom_stress_rows": stress_rows}}
+execution_summary.update(company_evidence)
+handoff = save_quant_outputs(output_dir, charts, execution_summary)
+'''
+
+    response = _allowed_write_response(tmp_path, content)
+
+    assert response.content == "write allowed"
+
+
 def test_macro_guardrail_does_not_route_forecast_false_alarm_from_query_text(tmp_path):
     usrec_path = tmp_path / "usrec.csv"
     usrec_path.write_text("date,USREC\n2020-01-01,0\n", encoding="utf-8")
@@ -256,6 +474,42 @@ execution_summary = {{"forecast_table": [], "signal_false_positive_windows": fal
     assert response.status == "error"
     assert "signal framework hit/miss evidence requires `signal_framework_backtest`" in response.content
     assert "already composes reusable forecast evidence rows" in response.content
+
+
+def test_period_alignment_guardrail_blocks_claims_and_jolts_without_helper(tmp_path):
+    claims_path = tmp_path / "icsa.csv"
+    jolts_path = tmp_path / "jtsjol.csv"
+    claims_path.write_text("date,value\n2026-05-09,240000\n", encoding="utf-8")
+    jolts_path.write_text("date,value\n2026-03-01,6900\n", encoding="utf-8")
+    content = f'''
+DATA_FILES = {{"ICSA": {str(claims_path)!r}, "JTSJOL": {str(jolts_path)!r}}}
+panel = {{}}
+'''
+
+    response = _blocked_write_response(tmp_path, content)
+
+    assert response.status == "error"
+    assert "Blocked mixed-frequency FRED analysis script" in response.content
+    assert 'fill_scope="lower_frequency"' in response.content
+    assert "monthly/JOLTS tails missing" in response.content
+
+
+def test_period_alignment_guardrail_blocks_treasury_and_jolts_without_helper(tmp_path):
+    t5yie_path = tmp_path / "t5yie.csv"
+    jolts_path = tmp_path / "jtsjol.csv"
+    t5yie_path.write_text("date,value\n2026-05-15,2.35\n", encoding="utf-8")
+    jolts_path.write_text("date,value\n2026-03-01,6900\n", encoding="utf-8")
+    content = f'''
+DATA_FILES = {{"T5YIE": {str(t5yie_path)!r}, "JTSJOL": {str(jolts_path)!r}}}
+panel = {{}}
+'''
+
+    response = _blocked_write_response(tmp_path, content)
+
+    assert response.status == "error"
+    assert "Blocked mixed-frequency FRED analysis script" in response.content
+    assert 'fill_scope="lower_frequency"' in response.content
+    assert "monthly/JOLTS tails missing" in response.content
 
 
 def test_macro_guardrail_blocks_removed_output_preservation_surfaces(tmp_path):

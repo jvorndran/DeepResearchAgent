@@ -3,6 +3,7 @@
 import ast
 import json
 import re
+import shlex
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -23,13 +24,17 @@ from .constants import (
     _MAX_ANALYSIS_SCRIPT_CHARS,
     _MAX_ANALYSIS_SCRIPT_LINES,
     _TRUNCATED_ARGUMENT_MARKERS,
+    _HANDOFF_FIELDS,
+    PYTHON_EXECUTABLE,
 )
 from .handoff import (
+    _has_execute_after_latest_analysis_script_write,
     _job_id_from_runtime,
     _has_successful_quant_handoff,
     _has_written_analysis_script,
     _is_final_prewrite_opportunity,
     _latest_successful_quant_handoff_content,
+    _latest_written_analysis_script_path,
     _prewrite_failure_handoff,
     _should_stop_prewrite_loop,
 )
@@ -110,6 +115,7 @@ _REMOVED_QUANT_OUTPUT_PRESERVATION_SURFACES = {
     "supplemental_validation_only",
     "merge_quant_validation_summary",
 }
+_SEC_COMPANY_FACTS_EVIDENCE_HELPER = "sec_company_facts_evidence"
 
 
 def _pseudo_parameter_values(content: str) -> dict[str, str]:
@@ -161,6 +167,35 @@ def _pseudo_write_file_tool_call(content: str) -> dict[str, object] | None:
         },
         "id": f"call_quant_pseudo_write_file_{uuid.uuid4().hex[:8]}",
     }
+
+
+def _execute_written_script_tool_call(script_path: str) -> dict[str, object]:
+    return {
+        "name": "execute",
+        "args": {
+            "command": f"{shlex.quote(PYTHON_EXECUTABLE)} {shlex.quote(script_path)}",
+        },
+        "id": f"call_quant_execute_written_script_{uuid.uuid4().hex[:8]}",
+    }
+
+
+def _response_has_tool_calls(response: ModelResponse) -> bool:
+    for message in getattr(response, "result", []) or []:
+        if getattr(message, "tool_calls", None):
+            return True
+    return False
+
+
+def _response_has_compact_handoff(response: ModelResponse) -> bool:
+    for message in getattr(response, "result", []) or []:
+        content = str(getattr(message, "content", "") or "")
+        try:
+            payload = json.loads(content)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict) and all(field in payload for field in _HANDOFF_FIELDS):
+            return True
+    return False
 
 
 def _balanced_brace_block(text: str, start: int) -> str | None:
@@ -315,6 +350,202 @@ def _has_forecast_evidence_script(tree: ast.Module) -> bool:
             if isinstance(key, ast.Constant) and key.value in _FORECAST_EVIDENCE_KEYS:
                 return True
     return False
+
+
+def _is_call_named(node: ast.AST, function_name: str) -> bool:
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    return (
+        isinstance(func, ast.Name) and func.id == function_name
+    ) or (
+        isinstance(func, ast.Attribute) and func.attr == function_name
+    )
+
+
+def _assigned_target_names(target: ast.AST) -> list[str]:
+    if isinstance(target, ast.Name):
+        return [target.id]
+    if isinstance(target, (ast.Tuple, ast.List)):
+        names: list[str] = []
+        for element in target.elts:
+            names.extend(_assigned_target_names(element))
+        return names
+    return []
+
+
+def _expr_merges_sec_evidence(
+    expr: ast.AST,
+    composed_names: set[str],
+) -> bool:
+    if _is_call_named(expr, _SEC_COMPANY_FACTS_EVIDENCE_HELPER):
+        return True
+    if isinstance(expr, ast.Name):
+        return expr.id in composed_names
+    if isinstance(expr, ast.Dict):
+        for key, value in zip(expr.keys, expr.values, strict=False):
+            if key is None and _expr_merges_sec_evidence(
+                value,
+                composed_names,
+            ):
+                return True
+        return False
+    if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.BitOr):
+        return _expr_merges_sec_evidence(
+            expr.left,
+            composed_names,
+        ) or _expr_merges_sec_evidence(expr.right, composed_names)
+    if isinstance(expr, ast.Call):
+        func = expr.func
+        if isinstance(func, ast.Name) and func.id == "dict":
+            if any(_expr_merges_sec_evidence(arg, composed_names) for arg in expr.args):
+                return True
+            for keyword in expr.keywords:
+                if keyword.arg is None and _expr_merges_sec_evidence(
+                    keyword.value,
+                    composed_names,
+                ):
+                    return True
+            return False
+        if isinstance(func, ast.Attribute) and func.attr == "copy":
+            return _expr_merges_sec_evidence(func.value, composed_names)
+    return False
+
+
+def _save_quant_outputs_summary_exprs(node: ast.AST) -> list[ast.AST]:
+    summary_exprs: list[ast.AST] = []
+    for call in ast.walk(node):
+        if not _is_call_named(call, "save_quant_outputs"):
+            continue
+        if len(call.args) >= 3:
+            summary_exprs.append(call.args[2])
+        for keyword in call.keywords:
+            if keyword.arg in {"execution_summary", "summary"}:
+                summary_exprs.append(keyword.value)
+    return summary_exprs
+
+
+def _statement_updates_sec_evidence_state(
+    stmt: ast.stmt,
+    composed_names: set[str],
+) -> set[str]:
+    updated = set(composed_names)
+    if isinstance(stmt, ast.Assign):
+        is_composed = _expr_merges_sec_evidence(stmt.value, updated)
+        for target in stmt.targets:
+            for target_name in _assigned_target_names(target):
+                if is_composed:
+                    updated.add(target_name)
+                else:
+                    updated.discard(target_name)
+        return updated
+    if isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
+        is_composed = _expr_merges_sec_evidence(stmt.value, updated)
+        for target_name in _assigned_target_names(stmt.target):
+            if is_composed:
+                updated.add(target_name)
+            else:
+                updated.discard(target_name)
+        return updated
+    if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
+        call = stmt.value
+        func = call.func
+        if (
+            isinstance(func, ast.Attribute)
+            and isinstance(func.value, ast.Name)
+            and func.attr == "update"
+        ):
+            if any(_expr_merges_sec_evidence(arg, updated) for arg in call.args) or any(
+                keyword.arg is None and _expr_merges_sec_evidence(keyword.value, updated)
+                for keyword in call.keywords
+            ):
+                updated.add(func.value.id)
+    if isinstance(stmt, ast.AugAssign):
+        if (
+            isinstance(stmt.target, ast.Name)
+            and isinstance(stmt.op, ast.BitOr)
+            and _expr_merges_sec_evidence(stmt.value, updated)
+        ):
+            updated.add(stmt.target.id)
+    return updated
+
+
+def _sec_evidence_states_after_conditional(
+    body_after: set[str],
+    orelse_after: set[str],
+) -> set[str]:
+    return body_after & orelse_after
+
+
+def _statement_list_has_sec_evidence_handoff(
+    statements: list[ast.stmt],
+    composed_names: set[str] | None = None,
+) -> tuple[bool, set[str]]:
+    state = set(composed_names or set())
+    for stmt in statements:
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if isinstance(stmt, ast.If):
+            body_found, body_after = _statement_list_has_sec_evidence_handoff(
+                stmt.body,
+                state,
+            )
+            if body_found:
+                return True, state
+            orelse_found, orelse_after = _statement_list_has_sec_evidence_handoff(
+                stmt.orelse,
+                state,
+            )
+            if orelse_found:
+                return True, state
+            state = _sec_evidence_states_after_conditional(
+                body_after,
+                orelse_after,
+            )
+            continue
+        if isinstance(stmt, ast.With):
+            found, state = _statement_list_has_sec_evidence_handoff(stmt.body, state)
+            if found:
+                return True, state
+            continue
+        if isinstance(stmt, (ast.For, ast.AsyncFor, ast.While)):
+            found, _ = _statement_list_has_sec_evidence_handoff(stmt.body, state)
+            if found:
+                return True, state
+            found, _ = _statement_list_has_sec_evidence_handoff(stmt.orelse, state)
+            if found:
+                return True, state
+            continue
+        if isinstance(stmt, ast.Try):
+            branches = [
+                stmt.body,
+                *[handler.body for handler in stmt.handlers],
+                stmt.orelse,
+            ]
+            for branch in branches:
+                found, _ = _statement_list_has_sec_evidence_handoff(branch, state)
+                if found:
+                    return True, state
+            found, state = _statement_list_has_sec_evidence_handoff(stmt.finalbody, state)
+            if found:
+                return True, state
+            continue
+        if any(
+            _expr_merges_sec_evidence(expr, state)
+            for expr in _save_quant_outputs_summary_exprs(stmt)
+        ):
+            return True, state
+        state = _statement_updates_sec_evidence_state(stmt, state)
+    return False, state
+
+
+def _has_sec_company_facts_evidence_handoff(tree: ast.Module) -> bool:
+    if not _calls_named(tree, _SEC_COMPANY_FACTS_EVIDENCE_HELPER):
+        return False
+    if not _calls_named(tree, "save_quant_outputs"):
+        return False
+    found, _ = _statement_list_has_sec_evidence_handoff(tree.body)
+    return found
 
 
 @dataclass(frozen=True)
@@ -500,6 +731,8 @@ class QuantModelCallContext:
     data_files: dict[str, str]
     query: str
     latest_successful_handoff: str | None
+    latest_written_analysis_script_path: str | None
+    has_execute_after_latest_analysis_script_write: bool
     has_successful_handoff: bool
     has_written_analysis_script: bool
     should_stop_prewrite_loop: bool
@@ -532,6 +765,7 @@ class QuantModelCallContext:
             runtime_query,
         )
         latest_handoff = _latest_successful_quant_handoff_content(messages)
+        latest_script_path = _latest_written_analysis_script_path(messages)
         return cls(
             request=request,
             messages=messages,
@@ -544,6 +778,10 @@ class QuantModelCallContext:
             data_files=_data_files_from_text(full_text) or {},
             query=query,
             latest_successful_handoff=latest_handoff,
+            latest_written_analysis_script_path=latest_script_path,
+            has_execute_after_latest_analysis_script_write=(
+                _has_execute_after_latest_analysis_script_write(messages)
+            ),
             has_successful_handoff=latest_handoff is not None,
             has_written_analysis_script=_has_written_analysis_script(messages),
             should_stop_prewrite_loop=_should_stop_prewrite_loop(messages),
@@ -718,6 +956,16 @@ class QuantDeveloperToolBoundaryMiddleware(AgentMiddleware):
                     structured_response=structured_response,
                 ),
             )
+        if self._should_force_execute_written_script(context, response):
+            return QuantModelResponseDecision.respond(
+                context,
+                self._tool_call_model_response(
+                    _execute_written_script_tool_call(
+                        context.latest_written_analysis_script_path or ""
+                    ),
+                    structured_response=structured_response,
+                ),
+            )
         if not context.can_recover_before_write:
             return QuantModelResponseDecision.respond(context, response)
 
@@ -759,6 +1007,25 @@ class QuantDeveloperToolBoundaryMiddleware(AgentMiddleware):
             )
 
         return QuantModelResponseDecision.respond(context, response)
+
+    @staticmethod
+    def _should_force_execute_written_script(
+        context: QuantModelCallContext,
+        response: ModelResponse,
+    ) -> bool:
+        if not context.has_written_analysis_script or context.has_successful_handoff:
+            return False
+        if not context.latest_written_analysis_script_path:
+            return False
+        if context.has_execute_after_latest_analysis_script_write:
+            return False
+        if "execute" not in context.available_tool_names:
+            return False
+        if _response_has_tool_calls(response):
+            return False
+        if _response_has_compact_handoff(response):
+            return False
+        return True
 
     @staticmethod
     def _tool_call_model_response(
@@ -1062,8 +1329,8 @@ class QuantDeveloperToolBoundaryMiddleware(AgentMiddleware):
                             "`align_period_features` accepts only `series_frames` as a "
                             "positional argument. Use keyword arguments for the rest: "
                             'align_period_features(series_frames, frequency="M", '
-                            'how="outer", timestamp_position="start", '
-                            'fill_method="ffill", fill_limit=2).'
+                            'how="outer", fill_method="ffill", fill_limit=2, '
+                            'fill_scope="lower_frequency").'
                         ),
                         name="write_file",
                         tool_call_id=context.tool_call_id,
@@ -1215,11 +1482,14 @@ class QuantDeveloperToolBoundaryMiddleware(AgentMiddleware):
                     "The DATA_FILES manifest combines high-frequency series such as "
                     "Treasury yields or initial claims with monthly/quarterly macro "
                     "series. Import and call `align_period_features(series_frames, "
-                    'frequency="M", how="outer", timestamp_position="start", '
-                    'fill_method="ffill", fill_limit=2)` '
+                    'frequency="M", how="outer", fill_method="ffill", fill_limit=2, '
+                    'fill_scope="lower_frequency")` '
                     "from `agents.quant_macro_stats` before deriving features or "
-                    "calling `direct_ols_forecast`; do not first merge resampled "
-                    "month-end timestamps against month-start FRED observations."
+                    "calling `direct_ols_forecast`. The helper only carries "
+                    "lower-frequency observations such as quarterly GDP within their "
+                    "native period; leave same-frequency monthly/JOLTS tails missing "
+                    "when weekly or daily series extend farther. Do not first merge "
+                    "resampled month-end timestamps against month-start FRED observations."
                 ),
                 name="write_file",
                 tool_call_id=context.tool_call_id,
@@ -1283,13 +1553,11 @@ class QuantDeveloperToolBoundaryMiddleware(AgentMiddleware):
             or "values[-1]" in lowered
             or ".iloc[-1]" in lowered
         )
-        if (
-            computes_order_sensitive_growth
-            and tree is not None
-            and _calls_named(tree, "summarize_sec_company_facts")
+        uses_summary_helper_without_raw_csv = (
+            tree is not None
+            and bool(_calls_named(tree, "summarize_sec_company_facts"))
             and not _calls_named(tree, "read_csv")
-        ):
-            return None
+        )
         fiscal_year_sort_patterns = (
             '.sort_values("fiscal_year"',
             ".sort_values('fiscal_year'",
@@ -1298,6 +1566,7 @@ class QuantDeveloperToolBoundaryMiddleware(AgentMiddleware):
         )
         if (
             computes_order_sensitive_growth
+            and not uses_summary_helper_without_raw_csv
             and "fiscal_year" in lowered
             and not any(pattern in lowered for pattern in fiscal_year_sort_patterns)
         ):
@@ -1316,6 +1585,49 @@ class QuantDeveloperToolBoundaryMiddleware(AgentMiddleware):
                         "before deriving growth, CAGR, latest rows, chart rows, or "
                         "execution_summary values. Prefer `summarize_sec_company_facts` "
                         "for compact named-column issuer summaries."
+                    ),
+                    name="write_file",
+                    tool_call_id=context.tool_call_id,
+                    status="error",
+                ),
+            )
+        if tree is not None and not _calls_named(
+            tree,
+            _SEC_COMPANY_FACTS_EVIDENCE_HELPER,
+        ):
+            return QuantGuardrailDecision.block(
+                context,
+                ToolMessage(
+                    content=(
+                        "Blocked SEC company-facts analysis before writing because it "
+                        "does not call `sec_company_facts_evidence(...)`. Public-company "
+                        "fundamentals reports need reusable `latest_fundamentals`, "
+                        "`numeric_facts`, `source_coverage`, methods, and limitations "
+                        "in `execution_summary`. Import `sec_company_facts_evidence` "
+                        "from `agents.quant_macro_stats`, call it with `DATA_FILES` "
+                        "and the query, then merge the returned evidence into the "
+                        "summary passed to `save_quant_outputs` before adding custom "
+                        "stress rows, diagnostics, or charts."
+                    ),
+                    name="write_file",
+                    tool_call_id=context.tool_call_id,
+                    status="error",
+                ),
+            )
+        if tree is not None and not _has_sec_company_facts_evidence_handoff(tree):
+            return QuantGuardrailDecision.block(
+                context,
+                ToolMessage(
+                    content=(
+                        "Blocked SEC company-facts analysis before writing because "
+                        "`sec_company_facts_evidence(...)` is not merged into the "
+                        "`execution_summary` payload passed to `save_quant_outputs`. "
+                        "Use a durable composition pattern such as "
+                        "`execution_summary = {**company_evidence, ...}` or "
+                        "`execution_summary.update(company_evidence)` so the writer "
+                        "and QA receive helper-produced `latest_fundamentals`, "
+                        "`numeric_facts`, `source_coverage`, methods, and limitations "
+                        "alongside any custom stress rows or chart diagnostics."
                     ),
                     name="write_file",
                     tool_call_id=context.tool_call_id,
