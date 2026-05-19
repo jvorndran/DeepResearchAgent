@@ -16,4 +16,4 @@ FEATURE_FIX_RESULT: patched|no_patch|blocked
 FEATURE_TARGET: <short feature name>
 FEATURE_FILES_CHANGED: <comma-separated files or none>
 FEATURE_TESTS_RUN: <commands or none>
-FEATURE_NEXT_SIGNAL: <one short sentence>
+FEATURE_IMPLEMENTATION_NOTES: <one short sentence explaining what changed in the fix>

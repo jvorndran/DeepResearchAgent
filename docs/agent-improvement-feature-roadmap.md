@@ -434,3 +434,20 @@ the exact data snapshot used, not just current API state.
 8. Regression benchmark suite.
 9. Earlier failure routing.
 10. Reproducible artifact cache.
+
+## Implementation History
+
+This section is updated by `scripts/codex_feature_loop.sh` when a feature pass is
+approved. It is the durable feature-loop memory: each entry records what was
+implemented, where it landed, how it was tested, and which part of the target
+agent flow it advanced.
+
+- [x] Roadmap feature implementation harness
+  - Roadmap section: feature loop infrastructure
+  - Flow stage: cross-cutting
+  - Run/pass: manual / current
+  - Summary: implemented in the current working tree
+  - Files changed: `scripts/codex_feature_loop.sh`, `scripts/feature_loop/prompts/*`
+  - Tests: `bash -n scripts/codex_feature_loop.sh`; `scripts/codex_feature_loop.sh --help`; dry-run pass with logs redirected to `/tmp`
+  - Implementation: reworked the feature loop around roadmap feature selection, plan/build/review/fix phases, approved-pass commits, and roadmap implementation-history updates instead of signal-style memory.
+  - Review: pending user review

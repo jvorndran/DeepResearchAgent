@@ -1,7 +1,8 @@
 Phase: plan
 
 Read `analysis-summary.md`, `feature-request.md`, the roadmap file named in the
-phase context, compact memory, and relevant source/tests. Make no edits.
+phase context, the compact run index if present, and relevant source/tests. Make
+no edits. Treat the roadmap markdown as the durable implementation memory.
 
 ## Planning Checklist
 
@@ -14,8 +15,8 @@ phase context, compact memory, and relevant source/tests. Make no edits.
    tests, and rollback risk.
 5. Prefer typed contracts, validators, source descriptors, explicit artifact
    metadata, and deterministic routing over prompt-only instructions.
-6. Define exact edit scope, tests to run, what must not change, and the next
-   signal to watch.
+6. Define exact edit scope, tests to run, what must not change, and the
+   implementation result that should be recorded in the roadmap.
 
 Return `no_plan` if the selected feature cannot be safely built in one pass.
 
@@ -24,4 +25,4 @@ FEATURE_PLAN_RESULT: planned|no_plan|blocked
 FEATURE_TARGET: <short feature name>
 FEATURE_PLAN_FILES: <comma-separated likely files or unknown>
 FEATURE_PLAN_TESTS: <commands to run or unknown>
-FEATURE_NEXT_SIGNAL: <one short sentence>
+FEATURE_PLAN_SUMMARY: <one short sentence describing the selected implementation slice>

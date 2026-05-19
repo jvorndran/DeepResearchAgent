@@ -1,7 +1,8 @@
 Phase: analyze
 
 Read `feature-request.md`, the roadmap file named in the phase context, and
-`memory.md`. Make no edits.
+the compact run index if present. Make no edits. Treat the roadmap markdown as
+the durable implementation memory.
 
 ## Analysis Workflow
 
@@ -31,4 +32,4 @@ FEATURE_ANALYSIS_RESULT: feature_selected|no_target|blocked
 FEATURE_TARGET: <short feature name>
 FEATURE_ROADMAP_SECTION: <roadmap heading or unknown>
 FEATURE_FLOW_STAGE: <planner|source recipe|typed fetch|validated transforms|evidence bundle|chart/report projection|QA|cross-cutting>
-FEATURE_NEXT_SIGNAL: <one short sentence>
+FEATURE_SELECTION_NOTES: <one short sentence explaining why this feature slice is next>

@@ -20,4 +20,3 @@ Request changes for:
 End exactly with:
 FEATURE_REVIEW_RESULT: approved|changes_requested|blocked
 FEATURE_REVIEW_FINDINGS: <short finding summary>
-FEATURE_NEXT_SIGNAL: <one short sentence>

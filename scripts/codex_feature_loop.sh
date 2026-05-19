@@ -10,6 +10,8 @@ Runs a roadmap feature implementation loop:
 
 Approved feature passes are committed and pushed to the currently checked-out
 branch so each feature builds on the last approved repository state.
+Each approved pass also appends an implementation-history entry to the roadmap
+markdown. The log directory keeps only a compact run index and phase artifacts.
 
 Options:
   --dry-run, --prompt-only   Write stub artifacts and summaries without running Codex.
@@ -66,7 +68,7 @@ LOG_ROOT="${LOG_ROOT:-$REPO_ROOT/logs/feature-loop}"
 RUN_ID="${RUN_ID:-$(date +%Y%m%d-%H%M%S)}"
 RUN_DIR="$LOG_ROOT/runs/$RUN_ID"
 LATEST_SUMMARY="$LOG_ROOT/latest-summary.md"
-MEMORY_FILE="$LOG_ROOT/memory.md"
+RUN_INDEX_FILE="$LOG_ROOT/run-index.md"
 ROADMAP_FILE="${ROADMAP_FILE:-$REPO_ROOT/docs/agent-improvement-feature-roadmap.md}"
 PROMPT_DIR="$REPO_ROOT/scripts/feature_loop/prompts"
 
@@ -157,10 +159,10 @@ summary_value() {
   ' "$file"
 }
 
-memory_lines() {
+index_lines() {
   local prefix="$1"
   local limit="$2"
-  grep -E "^- ${prefix}:" "$MEMORY_FILE" 2>/dev/null | tail -n "$limit" || true
+  grep -E "^- ${prefix}:" "$RUN_INDEX_FILE" 2>/dev/null | tail -n "$limit" || true
 }
 
 emit_or_none() {
@@ -172,11 +174,11 @@ emit_or_none() {
   fi
 }
 
-ensure_memory() {
-  mkdir -p "$(dirname "$MEMORY_FILE")"
-  if [[ ! -f "$MEMORY_FILE" ]]; then
-    cat > "$MEMORY_FILE" <<'MEMORY'
-# Feature Loop Memory
+ensure_run_index() {
+  mkdir -p "$(dirname "$RUN_INDEX_FILE")"
+  if [[ ! -f "$RUN_INDEX_FILE" ]]; then
+    cat > "$RUN_INDEX_FILE" <<'INDEX'
+# Feature Loop Run Index
 
 ## Last 10 Approved Features / Files / Tests
 - none
@@ -186,10 +188,7 @@ ensure_memory() {
 
 ## Known Environment Blockers
 - none
-
-## Next Feature Signal
-- none
-MEMORY
+INDEX
   fi
 }
 
@@ -212,6 +211,7 @@ write_feature_request() {
     fi
     printf '\n## Implementation Rule\n\n'
     printf 'Implement one coherent feature slice. Do not attempt the entire roadmap in one pass.\n'
+    printf 'When the pass is approved, the harness appends how it was implemented to the roadmap markdown.\n'
   } > "$output_file"
 }
 
@@ -226,13 +226,13 @@ write_prompt() {
     printf -- '- Repository root: %s\n' "$REPO_ROOT"
     printf -- '- Pass directory: %s\n' "$pass_dir"
     printf -- '- Roadmap file: %s\n' "$ROADMAP_FILE"
-    printf -- '- Memory path: %s\n' "$MEMORY_FILE"
+    printf -- '- Run index path: %s\n' "$RUN_INDEX_FILE"
     printf -- '- Current branch: %s\n' "$CURRENT_GIT_BRANCH"
     printf '\nUse files from the pass directory. Do not expect artifact contents in this prompt.\n'
     printf '\n## Files To Inspect\n\n'
     printf -- '- `feature-request.md`\n'
     printf -- '- `%s`\n' "$ROADMAP_FILE"
-    printf -- '- `%s`\n' "$MEMORY_FILE"
+    printf -- '- `%s`\n' "$RUN_INDEX_FILE"
     case "$phase" in
       plan)
         printf -- '- `analysis-summary.md`\n'
@@ -287,7 +287,7 @@ FEATURE_ANALYSIS_RESULT: feature_selected
 FEATURE_TARGET: dry-run feature
 FEATURE_ROADMAP_SECTION: dry-run section
 FEATURE_FLOW_STAGE: cross-cutting
-FEATURE_NEXT_SIGNAL: Dry-run plan should select a small implementation slice.
+FEATURE_SELECTION_NOTES: Dry-run selected a small implementation slice.
 SUMMARY
       ;;
     plan)
@@ -296,7 +296,7 @@ FEATURE_PLAN_RESULT: planned
 FEATURE_TARGET: dry-run feature
 FEATURE_PLAN_FILES: none
 FEATURE_PLAN_TESTS: none
-FEATURE_NEXT_SIGNAL: Dry-run build should patch the selected feature.
+FEATURE_PLAN_SUMMARY: Dry-run planned a stub feature implementation.
 SUMMARY
       ;;
     build)
@@ -305,7 +305,7 @@ FEATURE_BUILD_RESULT: patched
 FEATURE_TARGET: dry-run feature
 FEATURE_FILES_CHANGED: none
 FEATURE_TESTS_RUN: none
-FEATURE_NEXT_SIGNAL: Dry-run review should inspect the stub feature diff.
+FEATURE_IMPLEMENTATION_NOTES: Dry-run implemented a stub feature.
 SUMMARY
       ;;
     review)
@@ -314,7 +314,6 @@ SUMMARY
       cat > "$output_file" <<SUMMARY
 FEATURE_REVIEW_RESULT: $result
 FEATURE_REVIEW_FINDINGS: dry-run finding for attempt $attempt
-FEATURE_NEXT_SIGNAL: Dry-run review attempt $attempt returned $result.
 SUMMARY
       ;;
     fix)
@@ -323,7 +322,7 @@ FEATURE_FIX_RESULT: patched
 FEATURE_TARGET: dry-run feature
 FEATURE_FILES_CHANGED: none
 FEATURE_TESTS_RUN: none
-FEATURE_NEXT_SIGNAL: Dry-run fix summary is ready for re-review.
+FEATURE_IMPLEMENTATION_NOTES: Dry-run fix addressed the review finding.
 SUMMARY
       ;;
   esac
@@ -365,7 +364,7 @@ write_skipped_summary() {
         printf 'FEATURE_TARGET: unknown\n'
         printf 'FEATURE_PLAN_FILES: unknown\n'
         printf 'FEATURE_PLAN_TESTS: unknown\n'
-        printf 'FEATURE_NEXT_SIGNAL: %s\n' "$reason"
+        printf 'FEATURE_PLAN_SUMMARY: %s\n' "$reason"
       } > "$output_file"
       ;;
     build)
@@ -374,14 +373,13 @@ write_skipped_summary() {
         printf 'FEATURE_TARGET: unknown\n'
         printf 'FEATURE_FILES_CHANGED: none\n'
         printf 'FEATURE_TESTS_RUN: none\n'
-        printf 'FEATURE_NEXT_SIGNAL: %s\n' "$reason"
+        printf 'FEATURE_IMPLEMENTATION_NOTES: %s\n' "$reason"
       } > "$output_file"
       ;;
     review)
       {
         printf 'FEATURE_REVIEW_RESULT: blocked\n'
         printf 'FEATURE_REVIEW_FINDINGS: %s\n' "$reason"
-        printf 'FEATURE_NEXT_SIGNAL: %s\n' "$reason"
       } > "$output_file"
       ;;
     fix)
@@ -390,7 +388,7 @@ write_skipped_summary() {
         printf 'FEATURE_TARGET: unknown\n'
         printf 'FEATURE_FILES_CHANGED: none\n'
         printf 'FEATURE_TESTS_RUN: none\n'
-        printf 'FEATURE_NEXT_SIGNAL: %s\n' "$reason"
+        printf 'FEATURE_IMPLEMENTATION_NOTES: %s\n' "$reason"
       } > "$output_file"
       ;;
   esac
@@ -510,25 +508,23 @@ finalize_git_for_pass() {
   fi
 }
 
-update_memory() {
+update_run_index() {
   local pass_num="$1"
   local pass_dir="$2"
   local build_summary="$3"
   local final_review_summary="$4"
 
-  local target files tests next_signal review_result build_result
+  local target files tests review_result build_result
   target="$(summary_value "FEATURE_TARGET" "$pass_dir/analysis-summary.md")"
   files="$(summary_value "FEATURE_FILES_CHANGED" "$build_summary")"
   tests="$(summary_value "FEATURE_TESTS_RUN" "$build_summary")"
-  next_signal="$(summary_value "FEATURE_NEXT_SIGNAL" "$final_review_summary")"
-  [[ -n "$next_signal" ]] || next_signal="$(summary_value "FEATURE_NEXT_SIGNAL" "$build_summary")"
   review_result="$(summary_value "FEATURE_REVIEW_RESULT" "$final_review_summary")"
   build_result="$(summary_value "FEATURE_BUILD_RESULT" "$build_summary")"
 
   local old_approved old_blocked old_env
-  old_approved="$(memory_lines "approved" 10)"
-  old_blocked="$(memory_lines "blocked" 10)"
-  old_env="$(memory_lines "env" 5)"
+  old_approved="$(index_lines "approved" 10)"
+  old_blocked="$(index_lines "blocked" 10)"
+  old_env="$(index_lines "env" 5)"
 
   local new_approved=""
   if [[ "$review_result" == "approved" ]]; then
@@ -545,20 +541,69 @@ update_memory() {
   blocked_lines="$(printf '%s\n%s\n' "$old_blocked" "$new_blocked" | sed '/^[[:space:]]*$/d' | tail -n 10)"
 
   {
-    printf '# Feature Loop Memory\n\n'
+    printf '# Feature Loop Run Index\n\n'
     printf '## Last 10 Approved Features / Files / Tests\n'
     emit_or_none "$approved_lines"
     printf '\n## Blocked Features Needing Human Attention\n'
     emit_or_none "$blocked_lines"
     printf '\n## Known Environment Blockers\n'
     emit_or_none "$old_env"
-    printf '\n## Next Feature Signal\n'
-    if [[ -n "$next_signal" ]]; then
-      printf -- '- next: %s\n' "$next_signal"
-    else
-      printf -- '- none\n'
-    fi
-  } > "$MEMORY_FILE"
+  } > "$RUN_INDEX_FILE"
+}
+
+roadmap_escape_line() {
+  local value="$1"
+  value="${value//$'\n'/ }"
+  value="${value//$'\r'/ }"
+  printf '%s' "$value"
+}
+
+append_roadmap_implementation() {
+  local pass_num="$1"
+  local pass_dir="$2"
+  local final_review_result="$3"
+
+  [[ "$final_review_result" == "approved" ]] || return 0
+  [[ "$DRY_RUN" == "1" ]] && return 0
+
+  local target roadmap_section flow_stage files tests implementation_notes review_findings stamp
+  target="$(roadmap_escape_line "$(summary_value "FEATURE_TARGET" "$pass_dir/analysis-summary.md")")"
+  [[ -n "$target" ]] || target="unknown feature"
+  roadmap_section="$(roadmap_escape_line "$(summary_value "FEATURE_ROADMAP_SECTION" "$pass_dir/analysis-summary.md")")"
+  [[ -n "$roadmap_section" ]] || roadmap_section="unknown"
+  flow_stage="$(roadmap_escape_line "$(summary_value "FEATURE_FLOW_STAGE" "$pass_dir/analysis-summary.md")")"
+  [[ -n "$flow_stage" ]] || flow_stage="unknown"
+  files="$(roadmap_escape_line "$(summary_value "FEATURE_FILES_CHANGED" "$pass_dir/build-summary.md")")"
+  [[ -n "$files" ]] || files="none"
+  tests="$(roadmap_escape_line "$(summary_value "FEATURE_TESTS_RUN" "$pass_dir/build-summary.md")")"
+  [[ -n "$tests" ]] || tests="none"
+  implementation_notes="$(roadmap_escape_line "$(summary_value "FEATURE_IMPLEMENTATION_NOTES" "$pass_dir/build-summary.md")")"
+  if [[ -z "$implementation_notes" && -s "$pass_dir/fix-0-summary.md" ]]; then
+    implementation_notes="$(roadmap_escape_line "$(summary_value "FEATURE_IMPLEMENTATION_NOTES" "$pass_dir/fix-0-summary.md")")"
+  fi
+  [[ -n "$implementation_notes" ]] || implementation_notes="See feature pass summary."
+  review_findings="$(roadmap_escape_line "$(summary_value "FEATURE_REVIEW_FINDINGS" "$pass_dir/summary.md")")"
+  [[ -n "$review_findings" ]] || review_findings="approved"
+  stamp="$(date -Is)"
+
+  if ! grep -q '^## Implementation History$' "$ROADMAP_FILE"; then
+    {
+      printf '\n## Implementation History\n\n'
+      printf 'This section is updated by `scripts/codex_feature_loop.sh` when a feature pass is approved.\n'
+    } >> "$ROADMAP_FILE"
+  fi
+
+  {
+    printf '\n- [x] %s - %s\n' "$stamp" "$target"
+    printf '  - Roadmap section: %s\n' "$roadmap_section"
+    printf '  - Flow stage: %s\n' "$flow_stage"
+    printf '  - Run/pass: %s / %s\n' "$RUN_ID" "$pass_num"
+    printf '  - Summary: %s\n' "$pass_dir/summary.md"
+    printf '  - Files changed: %s\n' "$files"
+    printf '  - Tests: %s\n' "$tests"
+    printf '  - Implementation: %s\n' "$implementation_notes"
+    printf '  - Review: %s\n' "$review_findings"
+  } >> "$ROADMAP_FILE"
 }
 
 write_pass_summary() {
@@ -577,7 +622,7 @@ write_pass_summary() {
     printf 'Run: %s\n' "$RUN_ID"
     printf 'Run directory: %s\n' "$RUN_DIR"
     printf 'Roadmap: %s\n' "$ROADMAP_FILE"
-    printf 'Memory: %s\n' "$MEMORY_FILE"
+    printf 'Run index: %s\n' "$RUN_INDEX_FILE"
     printf 'Feature request: %s\n' "$pass_dir/feature-request.md"
     printf 'Final review result: %s\n' "$final_review_result"
     printf 'Fix attempts: %s\n' "$fix_attempts"
@@ -593,7 +638,7 @@ write_pass_summary() {
     else
       printf 'FEATURE_FIX_RESULT: not_run\n'
     fi
-    printf 'FEATURE_NEXT_SIGNAL: %s\n' "$(summary_value "FEATURE_NEXT_SIGNAL" "$final_review_summary")"
+    printf 'FEATURE_IMPLEMENTATION_NOTES: %s\n' "$(summary_value "FEATURE_IMPLEMENTATION_NOTES" "$pass_dir/build-summary.md")"
     printf '\n## Artifact Paths\n\n'
     printf -- '- Analysis prompt: %s\n' "$pass_dir/analysis-prompt.md"
     printf -- '- Analysis summary: %s\n' "$pass_dir/analysis-summary.md"
@@ -629,7 +674,7 @@ update_latest_summary() {
     printf 'Run: %s\n' "$RUN_ID"
     printf 'Run directory: %s\n' "$RUN_DIR"
     printf 'Roadmap: %s\n' "$ROADMAP_FILE"
-    printf 'Memory: %s\n' "$MEMORY_FILE"
+    printf 'Run index: %s\n' "$RUN_INDEX_FILE"
     printf 'Codex reasoning effort: %s\n' "$CODEX_REASONING_EFFORT"
     printf 'Dry run: %s\n' "$DRY_RUN"
     printf 'Updated: %s\n\n' "$(date -Is)"
@@ -642,18 +687,19 @@ update_latest_summary() {
     printf '\n## How To Review\n\n'
     printf -- '- Start with the newest pass summary, then inspect current-diff.patch and test-evidence.md.\n'
     printf -- '- Each approved pass should implement one roadmap feature slice.\n'
-    printf -- '- Memory stores compact pass signals only; it intentionally omits raw prompts and diffs.\n'
+    printf -- '- The roadmap markdown stores approved implementation history.\n'
+    printf -- '- The run index stores only compact approved/blocked pass pointers.\n'
   } > "$LATEST_SUMMARY"
 }
 
 require_loop_files
-ensure_memory
+ensure_run_index
 
 end_feature=$((START_FEATURE + MAX_FEATURES - 1))
 
 printf 'Feature loop run directory: %s\n' "$RUN_DIR"
 printf 'Roadmap: %s\n' "$ROADMAP_FILE"
-printf 'Memory: %s\n' "$MEMORY_FILE"
+printf 'Run index: %s\n' "$RUN_INDEX_FILE"
 printf 'Codex reasoning effort: %s\n' "$CODEX_REASONING_EFFORT"
 printf 'Dry run: %s\n' "$DRY_RUN"
 printf 'Git auto-commit: %s\n' "$FEATURE_LOOP_AUTO_COMMIT"
@@ -765,7 +811,8 @@ for i in $(seq "$START_FEATURE" "$end_feature"); do
 
   ended="$(date -Is)"
   write_pass_summary "$pass_dir" "$i" "$started" "$ended" "$final_review_summary" "$final_review_result" "$fix_attempts"
-  update_memory "$i" "$pass_dir" "$pass_dir/build-summary.md" "$pass_dir/summary.md"
+  append_roadmap_implementation "$i" "$pass_dir" "$final_review_result"
+  update_run_index "$i" "$pass_dir" "$pass_dir/build-summary.md" "$pass_dir/summary.md"
   update_latest_summary
   finalize_git_for_pass "$i" "$pass_dir" "$final_review_result"
 
