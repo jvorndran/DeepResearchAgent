@@ -452,6 +452,16 @@ agent flow it advanced.
   - Implementation: reworked the feature loop around roadmap feature selection, plan/build/review/fix phases, approved-pass commits, and roadmap implementation-history updates instead of signal-style memory.
   - Review: pending user review
 
+- [x] 2026-05-19T13:27:28-04:00 - Feature loop multi-pass default fix
+  - Roadmap section: feature loop infrastructure
+  - Flow stage: cross-cutting
+  - Run/pass: manual / current
+  - Summary: fixed the harness control flow defaults after the first approved feature pass stopped the run.
+  - Files changed: `scripts/codex_feature_loop.sh`, `docs/agent-improvement-feature-roadmap.md`
+  - Tests: `bash -n scripts/codex_feature_loop.sh`; `scripts/codex_feature_loop.sh --help`; `LOG_ROOT=/tmp/dra-feature-loop-check RUN_ID=default-iteration-check FEATURE_LOOP_AUTO_COMMIT=0 FEATURE_LOOP_AUTO_PUSH=0 scripts/codex_feature_loop.sh --dry-run 2`; `DRY_RUN_REVIEW_SEQUENCE=approved LOG_ROOT=/tmp/dra-feature-loop-default10 RUN_ID=default-ten-check FEATURE_LOOP_AUTO_COMMIT=0 FEATURE_LOOP_AUTO_PUSH=0 scripts/codex_feature_loop.sh --dry-run`
+  - Implementation: changed the default feature pass count from 1 to 10, made the per-feature fix/review loop unlimited by default, printed the pass range at startup, and recorded final review findings at the top of pass summaries so roadmap memory uses the approved review instead of the first failed attempt.
+  - Review: local shell validation confirmed the harness reaches feature pass 10 by default.
+
 - [x] 2026-05-19T10:04:03-04:00 - Canonical Evidence Bundle save-boundary slice
   - Roadmap section: Priority 1: Canonical Evidence Bundle
   - Flow stage: evidence bundle

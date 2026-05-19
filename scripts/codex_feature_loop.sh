@@ -20,6 +20,9 @@ Options:
   -h, --help                 Show this help text.
 
 Useful environment variables:
+  MAX_FEATURES               Number of roadmap feature passes to attempt. Default: 10.
+  START_FEATURE              First pass number for this run. Default: 1.
+  MAX_FIX_ATTEMPTS           Fix/review cap per feature, or unlimited. Default: unlimited.
   FEATURE_LOOP_TARGET        Preferred roadmap feature or heading to implement first.
   ROADMAP_FILE               Roadmap markdown file to implement.
   FEATURE_LOOP_AUTO_COMMIT   1 to commit approved passes, 0 to skip. Default: 1.
@@ -59,9 +62,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-MAX_FEATURES="${REQUESTED_ITERS:-1}"
+MAX_FEATURES="${REQUESTED_ITERS:-10}"
 START_FEATURE="${START_FEATURE:-1}"
-MAX_FIX_ATTEMPTS="${MAX_FIX_ATTEMPTS:-3}"
+MAX_FIX_ATTEMPTS="${MAX_FIX_ATTEMPTS:-unlimited}"
 CODEX_SANDBOX_MODE="${CODEX_SANDBOX_MODE:-danger-full-access}"
 CODEX_REASONING_EFFORT="${CODEX_REASONING_EFFORT:-xhigh}"
 LOG_ROOT="${LOG_ROOT:-$REPO_ROOT/logs/feature-loop}"
@@ -85,8 +88,8 @@ for value_name in MAX_FEATURES START_FEATURE; do
   fi
 done
 
-if ! [[ "$MAX_FIX_ATTEMPTS" =~ ^[0-9]+$ ]]; then
-  printf 'MAX_FIX_ATTEMPTS must be a non-negative integer, got %s\n' "$MAX_FIX_ATTEMPTS" >&2
+if [[ "$MAX_FIX_ATTEMPTS" != "unlimited" ]] && ! [[ "$MAX_FIX_ATTEMPTS" =~ ^[0-9]+$ ]]; then
+  printf 'MAX_FIX_ATTEMPTS must be a non-negative integer or unlimited, got %s\n' "$MAX_FIX_ATTEMPTS" >&2
   exit 2
 fi
 
@@ -614,6 +617,8 @@ write_pass_summary() {
   local final_review_summary="$5"
   local final_review_result="$6"
   local fix_attempts="$7"
+  local final_review_findings
+  final_review_findings="$(summary_value "FEATURE_REVIEW_FINDINGS" "$final_review_summary")"
 
   {
     printf '# Feature Loop Pass %s\n\n' "$pass_num"
@@ -633,6 +638,7 @@ write_pass_summary() {
     printf 'FEATURE_PLAN_RESULT: %s\n' "$(summary_value "FEATURE_PLAN_RESULT" "$pass_dir/plan-summary.md")"
     printf 'FEATURE_BUILD_RESULT: %s\n' "$(summary_value "FEATURE_BUILD_RESULT" "$pass_dir/build-summary.md")"
     printf 'FEATURE_REVIEW_RESULT: %s\n' "$final_review_result"
+    printf 'FEATURE_REVIEW_FINDINGS: %s\n' "$final_review_findings"
     if [[ -s "$pass_dir/fix-${fix_attempts}-summary.md" ]]; then
       printf 'FEATURE_FIX_RESULT: %s\n' "$(summary_value "FEATURE_FIX_RESULT" "$pass_dir/fix-${fix_attempts}-summary.md")"
     else
@@ -700,6 +706,9 @@ end_feature=$((START_FEATURE + MAX_FEATURES - 1))
 printf 'Feature loop run directory: %s\n' "$RUN_DIR"
 printf 'Roadmap: %s\n' "$ROADMAP_FILE"
 printf 'Run index: %s\n' "$RUN_INDEX_FILE"
+printf 'Feature passes requested: %s\n' "$MAX_FEATURES"
+printf 'Feature pass range: %s-%s\n' "$START_FEATURE" "$end_feature"
+printf 'Max fix attempts per feature: %s\n' "$MAX_FIX_ATTEMPTS"
 printf 'Codex reasoning effort: %s\n' "$CODEX_REASONING_EFFORT"
 printf 'Dry run: %s\n' "$DRY_RUN"
 printf 'Git auto-commit: %s\n' "$FEATURE_LOOP_AUTO_COMMIT"
@@ -784,7 +793,7 @@ for i in $(seq "$START_FEATURE" "$end_feature"); do
       if [[ "$final_review_result" != "changes_requested" ]]; then
         break
       fi
-      if [[ "$fix_attempts" -ge "$MAX_FIX_ATTEMPTS" ]]; then
+      if [[ "$MAX_FIX_ATTEMPTS" != "unlimited" && "$fix_attempts" -ge "$MAX_FIX_ATTEMPTS" ]]; then
         final_review_result="blocked"
         break
       fi
