@@ -9,6 +9,8 @@ from typing import Any
 
 import requests
 
+from .sec_edgar_contract import SEC_COMPANY_FACT_PROVENANCE_CONTRACT
+
 
 SEC_BASE_URL = "https://data.sec.gov"
 SEC_TICKER_URL = "https://www.sec.gov/files/company_tickers.json"
@@ -135,12 +137,27 @@ class SECEdgarClient:
             observations = self._extract_metric_observations(facts, metric, periods)
             for obs in observations:
                 year = obs["fiscal_year"]
-                row = rows_by_year.setdefault(year, {"fiscal_year": year})
+                row = rows_by_year.setdefault(
+                    year,
+                    {
+                        "fiscal_year": year,
+                        SEC_COMPANY_FACT_PROVENANCE_CONTRACT.schema_version_column: (
+                            SEC_COMPANY_FACT_PROVENANCE_CONTRACT.schema_version
+                        ),
+                    },
+                )
                 row[metric.output_name] = obs["value"]
                 row[f"{metric.output_name}_end"] = obs.get("end")
                 row[f"{metric.output_name}_filed"] = obs.get("filed")
                 row[f"{metric.output_name}_form"] = obs.get("form")
                 row[f"{metric.output_name}_concept"] = obs.get("concept")
+                row[f"{metric.output_name}_taxonomy"] = obs.get("taxonomy")
+                row[f"{metric.output_name}_unit"] = obs.get("unit")
+                row[f"{metric.output_name}_fiscal_period"] = obs.get("fiscal_period")
+                row[f"{metric.output_name}_accession_number"] = obs.get(
+                    "accession_number"
+                )
+                row[f"{metric.output_name}_start"] = obs.get("start")
 
         fundamentals = [
             rows_by_year[year] for year in sorted(rows_by_year.keys(), reverse=True)[:periods]
@@ -159,6 +176,10 @@ class SECEdgarClient:
             "metadata": {
                 "authentication": "none",
                 "requires_api_key": False,
+                "sec_provenance_schema_version": (
+                    SEC_COMPANY_FACT_PROVENANCE_CONTRACT.schema_version
+                ),
+                "provenance_fields": list(SEC_COMPANY_FACT_PROVENANCE_CONTRACT.fields),
                 "endpoints": [
                     f"{SEC_BASE_URL}/api/xbrl/companyfacts/CIK{cik}.json",
                     f"{SEC_BASE_URL}/submissions/CIK{cik}.json",
@@ -252,6 +273,11 @@ class SECEdgarClient:
                     "filed": item.get("filed"),
                     "form": form,
                     "concept": concept,
+                    "taxonomy": "us-gaap",
+                    "unit": metric.unit,
+                    "fiscal_period": fiscal_period,
+                    "accession_number": item.get("accn"),
+                    "start": item.get("start"),
                     "_concept_priority": concept_priority,
                 }
                 current = candidates_by_fy.get(fiscal_year)

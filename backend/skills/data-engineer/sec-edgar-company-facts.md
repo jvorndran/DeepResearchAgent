@@ -11,8 +11,9 @@ Use `sec_fetch_company_facts` for issuer-level SEC facts only: revenue, net inco
 ## SEC COMPANY FACTS
 
 1. **Fetch:** `sec_fetch_company_facts(identifier=<ticker_or_cik>, periods<=5)`.
-2. **Handoff:** The tool saves a parsed fiscal-year fundamentals CSV and returns `data_files`, `row_counts`, `schema_summary`, and SEC metadata. Use that path directly.
+2. **Handoff:** The tool saves a parsed fiscal-year fundamentals CSV and returns `data_files`, `row_counts`, `schema_summary`, `provenance_summary`, and SEC metadata. Use that path directly.
 3. **Citations:** Tell downstream agents to cite SEC `data.sec.gov` companyfacts/submissions endpoints from the tool metadata.
+4. **Provenance:** Preserve the CSV metadata columns such as `<metric>_taxonomy`, `<metric>_concept`, `<metric>_unit`, `<metric>_fiscal_period`, `<metric>_form`, `<metric>_filed`, `<metric>_accession_number`, `<metric>_start`, and `<metric>_end`; quant helpers use them to build auditable numeric facts.
 
 ## Boundaries
 

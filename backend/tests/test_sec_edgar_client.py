@@ -62,16 +62,20 @@ def _companyfacts_payload():
                                 "fy": 2024,
                                 "fp": "FY",
                                 "form": "10-K",
+                                "start": "2023-10-01",
                                 "end": "2024-09-28",
                                 "filed": "2024-11-01",
+                                "accn": "0000320193-24-000123",
                                 "val": 391035000000,
                             },
                             {
                                 "fy": 2023,
                                 "fp": "FY",
                                 "form": "10-K",
+                                "start": "2022-09-25",
                                 "end": "2023-09-30",
                                 "filed": "2023-11-03",
+                                "accn": "0000320193-23-000106",
                                 "val": 383285000000,
                             },
                             {
@@ -81,6 +85,7 @@ def _companyfacts_payload():
                                 "start": "2024-06-30",
                                 "end": "2024-09-28",
                                 "filed": "2024-11-01",
+                                "accn": "0000320193-24-000123",
                                 "val": 94930000000,
                             },
                         ]
@@ -120,6 +125,7 @@ def _companyfacts_payload():
                                 "start": "2023-10-01",
                                 "end": "2024-09-28",
                                 "filed": "2024-11-01",
+                                "accn": "0000320193-24-000123",
                                 "val": 93736000000,
                             },
                         ]
@@ -382,12 +388,25 @@ def test_sec_client_fetches_company_facts_and_sends_user_agent():
     assert result["ticker"] == "AAPL"
     assert result["cik"] == "0000320193"
     assert result["metadata"]["requires_api_key"] is False
+    assert result["metadata"]["sec_provenance_schema_version"] == 1
+    assert "accession_number" in result["metadata"]["provenance_fields"]
     assert result["fundamentals"][0]["fiscal_year"] == 2024
+    assert result["fundamentals"][0]["sec_provenance_schema_version"] == 1
     assert result["fundamentals"][0]["revenue"] == 391035000000
     assert result["fundamentals"][0]["revenue_concept"] == (
         "RevenueFromContractWithCustomerExcludingAssessedTax"
     )
+    assert result["fundamentals"][0]["revenue_taxonomy"] == "us-gaap"
+    assert result["fundamentals"][0]["revenue_unit"] == "USD"
+    assert result["fundamentals"][0]["revenue_fiscal_period"] == "FY"
+    assert result["fundamentals"][0]["revenue_accession_number"] == (
+        "0000320193-24-000123"
+    )
+    assert result["fundamentals"][0]["revenue_start"] == "2023-10-01"
     assert result["fundamentals"][0]["net_income"] == 93736000000
+    assert result["fundamentals"][0]["net_income_accession_number"] == (
+        "0000320193-24-000123"
+    )
     assert result["fundamentals"][0]["net_income_end"] == "2024-09-28"
     assert result["fundamentals"][0]["gross_profit"] == 180683000000
     assert result["fundamentals"][0]["operating_income"] == 123216000000
@@ -472,7 +491,17 @@ def test_sec_tool_saves_company_facts_csv(tmp_path, monkeypatch):
                 "fundamentals": [
                     {
                         "fiscal_year": 2025,
+                        "sec_provenance_schema_version": 1,
                         "revenue": 416161000000,
+                        "revenue_taxonomy": "us-gaap",
+                        "revenue_concept": "RevenueFromContractWithCustomerExcludingAssessedTax",
+                        "revenue_unit": "USD",
+                        "revenue_fiscal_period": "FY",
+                        "revenue_form": "10-K",
+                        "revenue_filed": "2025-10-31",
+                        "revenue_accession_number": "0000320193-25-000079",
+                        "revenue_start": "2024-09-29",
+                        "revenue_end": "2025-09-27",
                         "net_income": 112010000000,
                         "capital_expenditures": 12715000000,
                         "research_and_development": 34550000000,
@@ -503,12 +532,18 @@ def test_sec_tool_saves_company_facts_csv(tmp_path, monkeypatch):
     assert result["data_files"] == {"sec_company_facts": saved_path.resolve().as_posix()}
     assert result["row_counts"] == {"sec_company_facts": 1}
     assert "capital_expenditures" in result["schema_summary"]["sec_company_facts"]
+    assert "sec_provenance_schema_version" in result["schema_summary"]["sec_company_facts"]
+    assert "revenue_accession_number" in result["provenance_summary"]["sec_company_facts"]["columns"]
+    assert result["provenance_summary"]["sec_company_facts"]["schema_version"] == 1
     assert "research_and_development" in result["schema_summary"]["sec_company_facts"]
     assert "selling_general_and_admin" in result["schema_summary"]["sec_company_facts"]
     assert "diluted_eps" in result["schema_summary"]["sec_company_facts"]
     assert result["metadata"]["requires_api_key"] is False
+    assert result["metadata"]["sec_provenance_schema_version"] == 1
     assert "do not call save_data" in result["metadata"]["handoff_guidance"]
     assert saved_path.exists()
+    saved = data_engineer_tools.pd.read_csv(saved_path)
+    assert saved.loc[0, "revenue_accession_number"] == "0000320193-25-000079"
 
 
 def test_sec_tool_returns_disabled_payload(monkeypatch):

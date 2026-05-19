@@ -10,6 +10,8 @@ from typing import Any, Iterable
 import numpy as np
 import pandas as pd
 
+from mcp_clients.sec_edgar_contract import SEC_COMPANY_FACT_PROVENANCE_CONTRACT
+
 from ..artifacts.numeric_fact_contracts import numeric_fact
 from .._utils import (
     METHOD_SEC_COMPANY_FACTS_SUMMARY,
@@ -301,6 +303,275 @@ def _read_company_frame(path: str) -> pd.DataFrame:
     return frame.reset_index(drop=True)
 
 
+def _clean_cell(value: Any) -> str | None:
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    text = str(value).strip()
+    return text or None
+
+
+def _int_cell(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return None
+
+
+def _drop_empty(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in payload.items()
+        if value is not None and value != "" and value != [] and value != {}
+    }
+
+
+def _metric_provenance(row: pd.Series, metric: str) -> dict[str, Any]:
+    provenance = {
+        field: _clean_cell(row.get(f"{metric}_{field}"))
+        for field in SEC_COMPANY_FACT_PROVENANCE_CONTRACT.fields
+        if f"{metric}_{field}" in row.index
+    }
+    provenance = _drop_empty(provenance)
+    if not provenance:
+        return {}
+
+    fiscal_year = _int_cell(row.get("fiscal_year"))
+    schema_version = _int_cell(
+        row.get(SEC_COMPANY_FACT_PROVENANCE_CONTRACT.schema_version_column)
+    )
+    provenance["metric"] = metric
+    if fiscal_year is not None:
+        provenance["fiscal_year"] = fiscal_year
+    if schema_version is not None:
+        provenance["schema_version"] = schema_version
+    return provenance
+
+
+def _row_metric_provenance(row: pd.Series) -> dict[str, dict[str, Any]]:
+    return {
+        metric: provenance
+        for metric in SEC_COMPANY_FACT_PROVENANCE_CONTRACT.raw_metric_columns
+        if (provenance := _metric_provenance(row, metric))
+    }
+
+
+def _sec_schema_version(frame: pd.DataFrame) -> int | None:
+    column = SEC_COMPANY_FACT_PROVENANCE_CONTRACT.schema_version_column
+    if column not in frame.columns:
+        return None
+    versions = [
+        version
+        for value in frame[column].tolist()
+        if (version := _int_cell(value)) is not None
+    ]
+    return max(versions) if versions else None
+
+
+def _sec_fact_provenance_payload(
+    ticker: str,
+    source: dict[str, str],
+    frame: pd.DataFrame,
+) -> dict[str, Any]:
+    latest_row = frame.iloc[-1]
+    history_metrics: dict[str, dict[str, Any]] = {}
+    for _, row in frame.iterrows():
+        fiscal_year = _int_cell(row.get("fiscal_year"))
+        metrics = _row_metric_provenance(row)
+        if fiscal_year is not None and metrics:
+            history_metrics[str(fiscal_year)] = metrics
+
+    latest_metrics = _row_metric_provenance(latest_row)
+    payload = {
+        "ticker": ticker,
+        "schema_version": _sec_schema_version(frame),
+        "source_key": source["source_key"],
+        "source_file": source["path"],
+        "latest_fiscal_year": _int_cell(latest_row.get("fiscal_year")),
+        "latest_metrics": latest_metrics,
+        "derived_metrics": _derived_metric_provenance(frame),
+        "history_metrics": history_metrics,
+    }
+    return _drop_empty(payload)
+
+
+def _component_provenance(
+    row: pd.Series,
+    metric: str,
+    role: str,
+) -> dict[str, Any]:
+    provenance = _metric_provenance(row, metric)
+    if provenance:
+        provenance["period_role"] = role
+    return provenance
+
+
+def _growth_metric_provenance(frame: pd.DataFrame, metric: str) -> dict[str, Any]:
+    rows = [row for _, row in frame.iterrows() if _value(row, metric) is not None]
+    if len(rows) < 2:
+        return {}
+    return {
+        f"{metric}_start": _component_provenance(rows[-2], metric, "start"),
+        f"{metric}_end": _component_provenance(rows[-1], metric, "end"),
+    }
+
+
+def _cagr_metric_provenance(frame: pd.DataFrame, metric: str) -> dict[str, Any]:
+    window = frame.tail(5).reset_index(drop=True)
+    if len(window) < 2:
+        return {}
+    first = window.iloc[0]
+    latest = window.iloc[-1]
+    start_year = _finite_float(first.get("fiscal_year"))
+    end_year = _finite_float(latest.get("fiscal_year"))
+    if (
+        _value(first, metric) in (None, 0)
+        or _value(latest, metric) is None
+        or start_year is None
+        or end_year is None
+        or end_year <= start_year
+    ):
+        return {}
+    return {
+        f"{metric}_start": _component_provenance(first, metric, "start"),
+        f"{metric}_end": _component_provenance(latest, metric, "end"),
+    }
+
+
+def _derived_metric_provenance(frame: pd.DataFrame) -> dict[str, dict[str, Any]]:
+    derived = {
+        "revenue_growth_pct": _growth_metric_provenance(frame, "revenue"),
+        "revenue_cagr_pct": _cagr_metric_provenance(frame, "revenue"),
+    }
+    return {
+        metric: components
+        for metric, components in derived.items()
+        if components and all(components.values())
+    }
+
+
+def _complete_sec_fact_provenance(provenance: dict[str, Any]) -> bool:
+    return all(
+        _clean_cell(provenance.get(field))
+        for field in SEC_COMPANY_FACT_PROVENANCE_CONTRACT.required_fields
+    )
+
+
+def _attach_sec_fact_provenance(
+    fact: dict[str, Any],
+    *,
+    metric: str,
+    latest: dict[str, Any],
+    metric_provenance: dict[str, dict[str, Any]],
+) -> bool:
+    components = SEC_COMPANY_FACT_PROVENANCE_CONTRACT.components_for_metric(metric)
+    if not components:
+        return False
+    metric_specific = metric_provenance.get(metric)
+    if not isinstance(metric_specific, dict):
+        metric_specific = {}
+    component_provenance: dict[str, dict[str, Any]] = {}
+    for component in components:
+        provenance = metric_specific.get(component) or metric_provenance.get(component)
+        if not provenance or not _complete_sec_fact_provenance(provenance):
+            return False
+        component_provenance[component] = provenance
+
+    fact["sec_metric_components"] = list(components)
+    fact["sec_fact_provenance"] = component_provenance
+    if latest.get("fiscal_year") is not None:
+        fact["sec_fiscal_year"] = latest.get("fiscal_year")
+    if latest.get("fiscal_period_end") is not None:
+        fact["sec_fiscal_period_end"] = latest.get("fiscal_period_end")
+    fact["source_provenance_schema"] = SEC_COMPANY_FACT_PROVENANCE_CONTRACT.schema_name
+    fact["sec_provenance_schema_version"] = SEC_COMPANY_FACT_PROVENANCE_CONTRACT.schema_version
+    return True
+
+
+def _source_unit_metadata_record(
+    ticker: str,
+    source: dict[str, str],
+    provenance: dict[str, Any],
+) -> dict[str, Any]:
+    latest_metrics = provenance.get("latest_metrics")
+    if not isinstance(latest_metrics, dict):
+        latest_metrics = {}
+
+    values = [
+        value
+        for item in latest_metrics.values()
+        if isinstance(item, dict)
+        for value in (item,)
+    ]
+    units = sorted({str(item["unit"]) for item in values if _clean_cell(item.get("unit"))})
+    taxonomies = sorted(
+        {str(item["taxonomy"]) for item in values if _clean_cell(item.get("taxonomy"))}
+    )
+    forms = sorted({str(item["form"]) for item in values if _clean_cell(item.get("form"))})
+    fiscal_periods = sorted(
+        {
+            str(item["fiscal_period"])
+            for item in values
+            if _clean_cell(item.get("fiscal_period"))
+        }
+    )
+    concepts = sorted(
+        {
+            f"{item.get('taxonomy')}:{item.get('concept')}"
+            for item in values
+            if _clean_cell(item.get("taxonomy")) and _clean_cell(item.get("concept"))
+        }
+    )
+    accessions = sorted(
+        {
+            str(item["accession_number"])
+            for item in values
+            if _clean_cell(item.get("accession_number"))
+        }
+    )
+
+    return _drop_empty(
+        {
+            "source_key": f"sec_company_facts.{ticker}",
+            "source_file": source["path"],
+            "provider": "SEC EDGAR",
+            "source": "SEC data.sec.gov companyfacts API",
+            "title": f"{ticker} SEC company facts annual fundamentals",
+            "units": "mixed" if len(units) > 1 else (units[0] if units else None),
+            "frequency": "annual",
+            "fiscal_period": ", ".join(fiscal_periods) if fiscal_periods else "FY",
+            "revision_policy": (
+                "Latest annual 10-K FY observations are selected by period end "
+                "and filing date; later amendments can restate company facts."
+            ),
+            "value_column": "named SEC company-facts metric columns",
+            "unit_family": "mixed" if len(units) > 1 else None,
+            "measure": "company_fundamentals",
+            "taxonomy": ", ".join(taxonomies) if taxonomies else None,
+            "form": ", ".join(forms) if forms else None,
+            "accession_number": accessions[0] if len(accessions) == 1 else None,
+            "sec_provenance_schema_version": provenance.get("schema_version"),
+            "source_key_alias": source["source_key"],
+            "concept_ids": concepts,
+            "accession_numbers": accessions,
+        }
+    )
+
+
 def _value(row: pd.Series, column: str) -> float | None:
     return _finite(row.get(column)) if column in row.index else None
 
@@ -512,11 +783,42 @@ def _macro_overlay(
     }
 
 
-def _source_coverage(company_count: int, macro_overlay: dict[str, Any]) -> dict[str, Any]:
+def _source_coverage(
+    company_count: int,
+    macro_overlay: dict[str, Any],
+    *,
+    covered_tickers: Iterable[str],
+    source_keys: Iterable[str],
+    sec_fact_provenance: dict[str, Any],
+) -> dict[str, Any]:
+    schema_versions = sorted(
+        {
+            int(version)
+            for payload in sec_fact_provenance.values()
+            if isinstance(payload, dict)
+            and (version := _int_cell(payload.get("schema_version"))) is not None
+        }
+    )
     return {
         "sec_company_facts": {
             "status": "covered" if company_count else "not_available",
             "evidence_keys": ["history_rows", "latest_fundamentals"] if company_count else [],
+            "provider": "SEC EDGAR",
+            "source": "SEC data.sec.gov companyfacts API",
+            "frequency": "annual",
+            "fiscal_period": "FY",
+            "revision_policy": (
+                "Latest annual 10-K FY observations are selected by period end "
+                "and filing date; later amendments can restate company facts."
+            ),
+            "covered_tickers": sorted(str(ticker) for ticker in covered_tickers),
+            "source_keys": sorted(str(key) for key in source_keys),
+            "sec_provenance_schema_version": schema_versions[-1]
+            if schema_versions
+            else None,
+            "provenance_fields": list(SEC_COMPANY_FACT_PROVENANCE_CONTRACT.fields)
+            if schema_versions
+            else [],
         },
         "macro_rate_recession_overlay": {
             "status": macro_overlay.get("status", "not_available"),
@@ -537,7 +839,10 @@ def _source_coverage(company_count: int, macro_overlay: dict[str, Any]) -> dict[
     }
 
 
-def _numeric_facts(latest_by_ticker: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+def _numeric_facts(
+    latest_by_ticker: dict[str, dict[str, Any]],
+    provenance_by_ticker: dict[str, dict[str, dict[str, Any]]],
+) -> list[dict[str, Any]]:
     facts: list[dict[str, Any]] = []
     fact_specs = [
         ("revenue_b", "revenue", "usd_b", 3, 0.005, None),
@@ -577,6 +882,7 @@ def _numeric_facts(latest_by_ticker: dict[str, dict[str, Any]]) -> list[dict[str
         ),
     ]
     for ticker, latest in latest_by_ticker.items():
+        metric_provenance = provenance_by_ticker.get(ticker, {})
         for metric, label, unit, precision, tolerance, transform_basis in fact_specs:
             fact = numeric_fact(
                 fact_id=f"sec_company_facts.{ticker}.{metric}",
@@ -592,7 +898,14 @@ def _numeric_facts(latest_by_ticker: dict[str, dict[str, Any]]) -> list[dict[str
                 transform_basis=transform_basis,
             )
             if fact:
-                facts.append(fact)
+                has_provenance = _attach_sec_fact_provenance(
+                    fact,
+                    metric=metric,
+                    latest=latest,
+                    metric_provenance=metric_provenance,
+                )
+                if has_provenance:
+                    facts.append(fact)
     return facts
 
 
@@ -679,6 +992,9 @@ def sec_company_facts_evidence(
     source_keys: dict[str, str] = {}
     fiscal_coverage: dict[str, Any] = {}
     trend_rows: list[dict[str, Any]] = []
+    sec_fact_provenance: dict[str, Any] = {}
+    provenance_by_ticker: dict[str, dict[str, dict[str, Any]]] = {}
+    source_unit_metadata: list[dict[str, Any]] = []
     source_errors: list[dict[str, str]] = []
 
     for source in sources:
@@ -698,6 +1014,28 @@ def sec_company_facts_evidence(
             continue
         rows = _company_history_rows(ticker, frame)
         latest = _latest_fundamentals(ticker, summary, rows)
+        provenance = _sec_fact_provenance_payload(ticker, source, frame)
+        latest_metric_provenance = provenance.get("latest_metrics")
+        if isinstance(latest_metric_provenance, dict):
+            provenance_by_ticker[ticker] = {
+                str(metric): payload
+                for metric, payload in latest_metric_provenance.items()
+                if isinstance(payload, dict)
+            }
+        derived_metric_provenance = provenance.get("derived_metrics")
+        if isinstance(derived_metric_provenance, dict):
+            provenance_by_ticker.setdefault(ticker, {}).update(
+                {
+                    str(metric): payload
+                    for metric, payload in derived_metric_provenance.items()
+                    if isinstance(payload, dict)
+                }
+            )
+        if provenance:
+            sec_fact_provenance[ticker] = provenance
+            source_unit_metadata.append(
+                _source_unit_metadata_record(ticker, source, provenance)
+            )
         latest_by_ticker[ticker] = latest
         history_rows.extend(rows)
         source_files[ticker] = source["path"]
@@ -730,8 +1068,14 @@ def sec_company_facts_evidence(
         source_keys=[source["source_key"] for source in sources],
     )
     macro_sensitivity = _macro_sensitivity_rows(latest_by_ticker, macro_overlay)
-    numeric_facts = _numeric_facts(latest_by_ticker)
-    source_coverage = _source_coverage(len(latest_by_ticker), macro_overlay)
+    numeric_facts = _numeric_facts(latest_by_ticker, provenance_by_ticker)
+    source_coverage = _source_coverage(
+        len(latest_by_ticker),
+        macro_overlay,
+        covered_tickers=latest_by_ticker,
+        source_keys=source_keys.values(),
+        sec_fact_provenance=sec_fact_provenance,
+    )
     if source_errors:
         source_coverage["sec_company_facts"]["fetch_errors"] = source_errors
     unavailable_claim_categories = [
@@ -753,6 +1097,7 @@ def sec_company_facts_evidence(
         "source_keys": source_keys,
         "source_errors": source_errors,
         "fiscal_coverage": fiscal_coverage,
+        "sec_fact_provenance": sec_fact_provenance,
         "history_rows": history_rows,
         "latest_fundamentals": latest_by_ticker,
         "trend_diagnostics": trend_rows,
@@ -760,6 +1105,7 @@ def sec_company_facts_evidence(
         "company_macro_sensitivity": macro_sensitivity,
         "company_context_status": company_status,
         "source_coverage": source_coverage,
+        "source_unit_metadata": source_unit_metadata,
         "unavailable_claim_categories": unavailable_claim_categories,
         "numeric_facts": numeric_facts,
         "methods_used": [_METHOD, _SEC_SUMMARY_METHOD],

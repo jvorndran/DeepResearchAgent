@@ -22,25 +22,86 @@ def _write_series(path: Path, values: list[tuple[str, float]]) -> str:
     return str(path)
 
 
+_SEC_TEST_METRIC_CONCEPTS = {
+    "revenue": ("RevenueFromContractWithCustomerExcludingAssessedTax", "USD"),
+    "gross_profit": ("GrossProfit", "USD"),
+    "operating_income": ("OperatingIncomeLoss", "USD"),
+    "net_income": ("NetIncomeLoss", "USD"),
+    "operating_cash_flow": ("NetCashProvidedByUsedInOperatingActivities", "USD"),
+    "capital_expenditures": ("PaymentsToAcquirePropertyPlantAndEquipment", "USD"),
+    "cash_and_equivalents": ("CashAndCashEquivalentsAtCarryingValue", "USD"),
+    "marketable_securities_current": ("MarketableSecuritiesCurrent", "USD"),
+    "long_term_debt": ("LongTermDebtNoncurrent", "USD"),
+    "stockholders_equity": ("StockholdersEquity", "USD"),
+    "assets": ("Assets", "USD"),
+    "liabilities": ("Liabilities", "USD"),
+    "diluted_eps": ("EarningsPerShareDiluted", "USD/shares"),
+    "shares": ("CommonStocksSharesOutstanding", "shares"),
+}
+
+
+def _with_sec_test_provenance(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    enriched: list[dict[str, object]] = []
+    for row in rows:
+        out = dict(row)
+        fiscal_year = int(out["fiscal_year"])
+        out["sec_provenance_schema_version"] = 1
+        for metric, (concept, unit) in _SEC_TEST_METRIC_CONCEPTS.items():
+            if metric not in out:
+                continue
+            out[f"{metric}_taxonomy"] = "us-gaap"
+            out[f"{metric}_concept"] = concept
+            out[f"{metric}_unit"] = unit
+            out[f"{metric}_fiscal_period"] = "FY"
+            out[f"{metric}_form"] = "10-K"
+            out[f"{metric}_filed"] = f"{fiscal_year + 1}-02-01"
+            out[f"{metric}_accession_number"] = f"0000000000-{fiscal_year}-000001"
+            out[f"{metric}_start"] = f"{fiscal_year}-01-01"
+            out[f"{metric}_end"] = f"{fiscal_year}-12-31"
+        enriched.append(out)
+    return enriched
+
+
 def _write_nvda_sec_company_facts(path: Path) -> str:
     pd.DataFrame(
-        {
-            "fiscal_year": [2025, 2026],
-            "revenue": [130_497_000_000, 215_938_000_000],
-            "gross_profit": [97_858_000_000, 153_865_000_000],
-            "operating_income": [81_453_000_000, 136_859_000_000],
-            "net_income": [72_880_000_000, 120_224_000_000],
-            "operating_cash_flow": [64_089_000_000, 118_200_000_000],
-            "capital_expenditures": [3_236_000_000, 21_524_000_000],
-            "cash_and_equivalents": [8_589_000_000, 8_589_000_000],
-            "marketable_securities_current": [1_716_000_000, 2_016_000_000],
-            "long_term_debt": [8_463_000_000, 7_469_000_000],
-            "stockholders_equity": [65_000_000_000, 79_000_000_000],
-            "assets": [111_601_000_000, 124_092_000_000],
-            "liabilities": [32_274_000_000, 45_000_000_000],
-            "diluted_eps": [2.94, 4.90],
-            "shares": [24_700_000_000, 24_514_000_000],
-        }
+        _with_sec_test_provenance(
+            [
+                {
+                    "fiscal_year": 2025,
+                    "revenue": 130_497_000_000,
+                    "gross_profit": 97_858_000_000,
+                    "operating_income": 81_453_000_000,
+                    "net_income": 72_880_000_000,
+                    "operating_cash_flow": 64_089_000_000,
+                    "capital_expenditures": 3_236_000_000,
+                    "cash_and_equivalents": 8_589_000_000,
+                    "marketable_securities_current": 1_716_000_000,
+                    "long_term_debt": 8_463_000_000,
+                    "stockholders_equity": 65_000_000_000,
+                    "assets": 111_601_000_000,
+                    "liabilities": 32_274_000_000,
+                    "diluted_eps": 2.94,
+                    "shares": 24_700_000_000,
+                },
+                {
+                    "fiscal_year": 2026,
+                    "revenue": 215_938_000_000,
+                    "gross_profit": 153_865_000_000,
+                    "operating_income": 136_859_000_000,
+                    "net_income": 120_224_000_000,
+                    "operating_cash_flow": 118_200_000_000,
+                    "capital_expenditures": 21_524_000_000,
+                    "cash_and_equivalents": 8_589_000_000,
+                    "marketable_securities_current": 2_016_000_000,
+                    "long_term_debt": 7_469_000_000,
+                    "stockholders_equity": 79_000_000_000,
+                    "assets": 124_092_000_000,
+                    "liabilities": 45_000_000_000,
+                    "diluted_eps": 4.90,
+                    "shares": 24_514_000_000,
+                },
+            ]
+        )
     ).to_csv(path, index=False)
     return str(path)
 
@@ -704,23 +765,61 @@ def test_forecast_evidence_helpers_return_generic_rows():
 def test_sec_company_facts_helpers_emit_generic_evidence_rows(tmp_path):
     sec_path = tmp_path / "aapl_sec_edgar_company_facts.csv"
     pd.DataFrame(
-        {
-            "fiscal_year": [2022, 2023, 2024],
-            "revenue": [100_000_000_000, 125_000_000_000, 150_000_000_000],
-            "gross_profit": [40_000_000_000, 55_000_000_000, 70_000_000_000],
-            "operating_income": [30_000_000_000, 42_000_000_000, 55_000_000_000],
-            "net_income": [20_000_000_000, 28_000_000_000, 36_000_000_000],
-            "operating_cash_flow": [25_000_000_000, 34_000_000_000, 44_000_000_000],
-            "capital_expenditures": [5_000_000_000, 6_000_000_000, 8_000_000_000],
-            "cash_and_equivalents": [12_000_000_000, 14_000_000_000, 16_000_000_000],
-            "marketable_securities_current": [8_000_000_000, 10_000_000_000, 12_000_000_000],
-            "long_term_debt": [30_000_000_000, 32_000_000_000, 35_000_000_000],
-            "stockholders_equity": [60_000_000_000, 70_000_000_000, 80_000_000_000],
-            "assets": [160_000_000_000, 180_000_000_000, 210_000_000_000],
-            "liabilities": [100_000_000_000, 110_000_000_000, 130_000_000_000],
-            "diluted_eps": [1.25, 1.9, 2.6],
-            "shares": [16_000_000_000, 15_000_000_000, 14_000_000_000],
-        }
+        _with_sec_test_provenance(
+            [
+                {
+                    "fiscal_year": 2022,
+                    "revenue": 100_000_000_000,
+                    "gross_profit": 40_000_000_000,
+                    "operating_income": 30_000_000_000,
+                    "net_income": 20_000_000_000,
+                    "operating_cash_flow": 25_000_000_000,
+                    "capital_expenditures": 5_000_000_000,
+                    "cash_and_equivalents": 12_000_000_000,
+                    "marketable_securities_current": 8_000_000_000,
+                    "long_term_debt": 30_000_000_000,
+                    "stockholders_equity": 60_000_000_000,
+                    "assets": 160_000_000_000,
+                    "liabilities": 100_000_000_000,
+                    "diluted_eps": 1.25,
+                    "shares": 16_000_000_000,
+                },
+                {
+                    "fiscal_year": 2023,
+                    "revenue": 125_000_000_000,
+                    "gross_profit": 55_000_000_000,
+                    "operating_income": 42_000_000_000,
+                    "net_income": 28_000_000_000,
+                    "operating_cash_flow": 34_000_000_000,
+                    "capital_expenditures": 6_000_000_000,
+                    "cash_and_equivalents": 14_000_000_000,
+                    "marketable_securities_current": 10_000_000_000,
+                    "long_term_debt": 32_000_000_000,
+                    "stockholders_equity": 70_000_000_000,
+                    "assets": 180_000_000_000,
+                    "liabilities": 110_000_000_000,
+                    "diluted_eps": 1.9,
+                    "shares": 15_000_000_000,
+                },
+                {
+                    "fiscal_year": 2024,
+                    "revenue": 150_000_000_000,
+                    "gross_profit": 70_000_000_000,
+                    "operating_income": 55_000_000_000,
+                    "net_income": 36_000_000_000,
+                    "operating_cash_flow": 44_000_000_000,
+                    "capital_expenditures": 8_000_000_000,
+                    "cash_and_equivalents": 16_000_000_000,
+                    "marketable_securities_current": 12_000_000_000,
+                    "long_term_debt": 35_000_000_000,
+                    "stockholders_equity": 80_000_000_000,
+                    "assets": 210_000_000_000,
+                    "liabilities": 130_000_000_000,
+                    "diluted_eps": 2.6,
+                    "shares": 14_000_000_000,
+                },
+            ]
+        )
     ).to_csv(sec_path, index=False)
 
     summary = qms.summarize_sec_company_facts(sec_path)
@@ -766,9 +865,89 @@ def test_sec_company_facts_helpers_emit_generic_evidence_rows(tmp_path):
         fact["id"].startswith("sec_company_facts.AAPL.")
         for fact in evidence["numeric_facts"]
     )
+    revenue_fact = next(
+        fact
+        for fact in evidence["numeric_facts"]
+        if fact["id"] == "sec_company_facts.AAPL.revenue_b"
+    )
+    assert revenue_fact["source_provenance_schema"] == "sec_company_facts_v1"
+    assert revenue_fact["sec_fact_provenance"]["revenue"]["concept"] == (
+        "RevenueFromContractWithCustomerExcludingAssessedTax"
+    )
+    assert revenue_fact["sec_fact_provenance"]["revenue"]["accession_number"] == (
+        "0000000000-2024-000001"
+    )
+    growth_fact = next(
+        fact
+        for fact in evidence["numeric_facts"]
+        if fact["id"] == "sec_company_facts.AAPL.revenue_growth_pct"
+    )
+    cagr_fact = next(
+        fact
+        for fact in evidence["numeric_facts"]
+        if fact["id"] == "sec_company_facts.AAPL.revenue_cagr_pct"
+    )
+    assert growth_fact["sec_metric_components"] == ["revenue_start", "revenue_end"]
+    assert growth_fact["sec_fact_provenance"]["revenue_start"]["accession_number"] == (
+        "0000000000-2023-000001"
+    )
+    assert growth_fact["sec_fact_provenance"]["revenue_end"]["accession_number"] == (
+        "0000000000-2024-000001"
+    )
+    assert cagr_fact["sec_metric_components"] == ["revenue_start", "revenue_end"]
+    assert cagr_fact["sec_fact_provenance"]["revenue_start"]["accession_number"] == (
+        "0000000000-2022-000001"
+    )
+    assert cagr_fact["sec_fact_provenance"]["revenue_end"]["accession_number"] == (
+        "0000000000-2024-000001"
+    )
+    assert (
+        evidence["sec_fact_provenance"]["AAPL"]["derived_metrics"]["revenue_cagr_pct"][
+            "revenue_start"
+        ]["accession_number"]
+        == "0000000000-2022-000001"
+    )
+    assert evidence["sec_fact_provenance"]["AAPL"]["latest_metrics"]["revenue"]["unit"] == "USD"
+    assert evidence["source_unit_metadata"][0]["provider"] == "SEC EDGAR"
     assert evidence["source_coverage"]["sec_company_facts"]["status"] == "covered"
+    assert evidence["source_coverage"]["sec_company_facts"]["provenance_fields"]
     assert evidence["limitations"]
     assert "contract_type" not in evidence
+
+
+def test_sec_company_facts_helpers_omit_facts_with_partial_component_provenance(tmp_path):
+    sec_path = tmp_path / "aapl_sec_edgar_company_facts.csv"
+    rows = _with_sec_test_provenance(
+        [
+            {
+                "fiscal_year": 2023,
+                "revenue": 125_000_000_000,
+                "gross_profit": 55_000_000_000,
+                "net_income": 28_000_000_000,
+            },
+            {
+                "fiscal_year": 2024,
+                "revenue": 150_000_000_000,
+                "gross_profit": 70_000_000_000,
+                "net_income": 36_000_000_000,
+            },
+        ]
+    )
+    for key in list(rows[-1]):
+        if key.startswith("gross_profit_"):
+            del rows[-1][key]
+    pd.DataFrame(rows).to_csv(sec_path, index=False)
+
+    evidence = qms.sec_company_facts_evidence(
+        {"AAPL_SEC": str(sec_path)},
+        query="Assess Apple fundamentals.",
+        tickers=["AAPL"],
+        include_macro_overlay=False,
+    )
+
+    fact_ids = {fact["id"] for fact in evidence["numeric_facts"]}
+    assert "sec_company_facts.AAPL.revenue_b" in fact_ids
+    assert "sec_company_facts.AAPL.gross_margin_pct" not in fact_ids
 
 
 def test_event_signal_backtest_returns_reusable_metrics():
@@ -1249,6 +1428,118 @@ def test_evidence_bundle_rejects_cross_kind_table_id_ambiguity():
         )
 
     assert "table_id values must be unique across raw_tables" in str(exc.value)
+
+
+def _valid_sec_component_provenance(concept: str = "Revenues") -> dict[str, str]:
+    return {
+        "taxonomy": "us-gaap",
+        "concept": concept,
+        "unit": "USD",
+        "fiscal_period": "FY",
+        "form": "10-K",
+        "filed": "2025-02-01",
+        "accession_number": "0000000000-2024-000001",
+        "end": "2024-12-31",
+    }
+
+
+def _minimal_sec_bundle_fact(attributes: dict[str, object], metric: str) -> dict[str, object]:
+    fact = {
+        "fact_id": f"sec_company_facts.AAPL.{metric}",
+        "label": f"AAPL latest {metric}",
+        "raw_value": 150.0,
+        "display_value": "150.0",
+        "unit": "usd_b" if metric.endswith("_b") else "percent",
+        "precision": 3,
+        "tolerance": 0.005,
+        "source_key": f"sec_company_facts.latest_fundamentals.AAPL.{metric}",
+        "attributes": attributes,
+    }
+    if "growth" in metric or "cagr" in metric:
+        fact["transform_basis"] = "derived from two SEC revenue observations"
+    return {
+        "sources": [{"source_id": "sec_company_facts"}],
+        "facts": [fact],
+        "validation": {"valid": True},
+        "artifacts": {
+            "charts_json": "charts.json",
+            "execution_summary_json": "execution_summary.json",
+            "evidence_bundle_json": "evidence_bundle.json",
+        },
+    }
+
+
+def test_evidence_bundle_rejects_sec_helper_fact_without_provenance_schema():
+    with pytest.raises(ValueError) as exc:
+        EvidenceBundle.model_validate(_minimal_sec_bundle_fact({}, "revenue_b"))
+
+    assert "SEC helper facts with provenance schemas are invalid" in str(exc.value)
+    assert "source_provenance_schema must be" in str(exc.value)
+
+
+def test_evidence_bundle_rejects_incomplete_sec_helper_provenance():
+    with pytest.raises(ValueError) as exc:
+        EvidenceBundle.model_validate(
+            _minimal_sec_bundle_fact(
+                {
+                    "source_provenance_schema": "sec_company_facts_v1",
+                    "sec_provenance_schema_version": 1,
+                    "sec_metric_components": ["revenue"],
+                    "sec_fact_provenance": {
+                        "revenue": {
+                            "taxonomy": "us-gaap",
+                            "concept": "Revenues",
+                            "unit": "USD",
+                        }
+                    },
+                },
+                "revenue_b",
+            )
+        )
+
+    assert "SEC helper facts with provenance schemas are invalid" in str(exc.value)
+    assert "fiscal_period" in str(exc.value)
+
+
+def test_evidence_bundle_rejects_sec_derived_fact_missing_expected_component():
+    with pytest.raises(ValueError) as exc:
+        EvidenceBundle.model_validate(
+            _minimal_sec_bundle_fact(
+                {
+                    "source_provenance_schema": "sec_company_facts_v1",
+                    "sec_provenance_schema_version": 1,
+                    "sec_metric_components": ["revenue"],
+                    "sec_fact_provenance": {
+                        "revenue": _valid_sec_component_provenance(),
+                    },
+                },
+                "gross_margin_pct",
+            )
+        )
+
+    assert "sec_metric_components must be ['gross_profit', 'revenue']" in str(exc.value)
+    assert "missing SEC provenance for gross_profit" in str(exc.value)
+
+
+def test_evidence_bundle_rejects_sec_growth_fact_missing_period_provenance():
+    with pytest.raises(ValueError) as exc:
+        EvidenceBundle.model_validate(
+            _minimal_sec_bundle_fact(
+                {
+                    "source_provenance_schema": "sec_company_facts_v1",
+                    "sec_provenance_schema_version": 1,
+                    "sec_metric_components": ["revenue"],
+                    "sec_fact_provenance": {
+                        "revenue": _valid_sec_component_provenance(),
+                    },
+                },
+                "revenue_cagr_pct",
+            )
+        )
+
+    assert "sec_metric_components must be ['revenue_start', 'revenue_end']" in str(exc.value)
+    assert "missing SEC provenance for revenue_start" in str(exc.value)
+    assert "missing SEC provenance for revenue_end" in str(exc.value)
 
 
 def test_save_quant_outputs_uses_methods_as_evidence_bundle_chart_transform_ids(tmp_path):
@@ -2150,17 +2441,44 @@ def test_save_quant_outputs_auto_attaches_sec_helper_evidence(tmp_path):
 
     handoff = qms.save_quant_outputs(tmp_path, charts, summary)
     saved_summary = json.loads((tmp_path / "execution_summary.json").read_text())
+    saved_bundle = json.loads((tmp_path / "evidence_bundle.json").read_text())
 
     fact_ids = {fact["id"] for fact in saved_summary["numeric_facts"]}
+    revenue_fact = next(
+        fact
+        for fact in saved_summary["numeric_facts"]
+        if fact["id"] == "sec_company_facts.NVDA.revenue_b"
+    )
     assert saved_summary["latest_fundamentals"]["NVDA"]["revenue_b"] == pytest.approx(215.938)
     assert saved_summary["latest_fundamentals"]["NVDA"]["cash_and_securities_b"] == pytest.approx(10.605)
     assert saved_summary["latest_fundamentals"]["NVDA"]["long_term_debt_b"] == pytest.approx(7.469)
     assert saved_summary["company_history_rows"][-1]["ticker"] == "NVDA"
     assert saved_summary["source_coverage"]["sec_company_facts"]["status"] == "covered"
+    assert saved_summary["source_coverage"]["sec_company_facts"]["covered_tickers"] == ["NVDA"]
+    assert saved_summary["sec_fact_provenance"]["NVDA"]["schema_version"] == 1
+    assert revenue_fact["source_provenance_schema"] == "sec_company_facts_v1"
+    assert revenue_fact["sec_fact_provenance"]["revenue"]["accession_number"] == (
+        "0000000000-2026-000001"
+    )
     assert "sec_company_fundamentals" in saved_summary["methods_used"]
     assert not any(fact_id.startswith("manual_revenue_") for fact_id in fact_ids)
     assert "fred_latest" in fact_ids
     assert "sec_company_facts.NVDA.revenue_b" in fact_ids
+    bundle_revenue_fact = next(
+        fact
+        for fact in saved_bundle["facts"]
+        if fact["fact_id"] == "sec_company_facts.NVDA.revenue_b"
+    )
+    assert bundle_revenue_fact["attributes"]["source_provenance_schema"] == (
+        "sec_company_facts_v1"
+    )
+    sec_sources = {
+        source["source_id"]: source
+        for source in saved_bundle["sources"]
+        if source["source_id"].startswith("sec_company_facts")
+    }
+    assert sec_sources["sec_company_facts"]["provider"] == "SEC EDGAR"
+    assert sec_sources["sec_company_facts.NVDA"]["taxonomy"] == "us-gaap"
     assert handoff["latest_fundamentals"]["NVDA"]["revenue_b"] == pytest.approx(215.938)
 
 

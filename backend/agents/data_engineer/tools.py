@@ -17,6 +17,7 @@ from mcp_clients.bls_client import (
 )
 from mcp_clients.census_client import CensusDataError, CensusPublicDataClient
 from mcp_clients.sec_edgar_client import SECEdgarClient, SECEdgarError
+from mcp_clients.sec_edgar_contract import SEC_COMPANY_FACT_PROVENANCE_CONTRACT
 from mcp_clients.worldbank_client import WorldBankDataError, WorldBankIndicatorsClient
 
 from .provider_retry import (
@@ -746,10 +747,20 @@ def sec_fetch_company_facts(
         file_path = DATA_STORAGE_DIR / job_id / f"{ticker}_sec_edgar_company_facts_{job_id}.csv"
         saved = _run_async(_save_data_to_storage(result.get("fundamentals", []), file_path))
 
+        provenance_columns = [
+            column
+            for column in saved["columns"]
+            if column == SEC_COMPANY_FACT_PROVENANCE_CONTRACT.schema_version_column
+            or any(
+                column.endswith(f"_{field}")
+                for field in SEC_COMPANY_FACT_PROVENANCE_CONTRACT.fields
+            )
+        ]
         schema_columns = [
             column
             for column in (
                 "fiscal_year",
+                SEC_COMPANY_FACT_PROVENANCE_CONTRACT.schema_version_column,
                 "revenue",
                 "net_income",
                 "gross_profit",
@@ -780,10 +791,21 @@ def sec_fetch_company_facts(
                 "data_files": {"sec_company_facts": saved["storage_path"]},
                 "row_counts": {"sec_company_facts": int(saved["row_count"])},
                 "schema_summary": {"sec_company_facts": schema_columns},
+                "provenance_summary": {
+                    "sec_company_facts": {
+                        "schema_version": SEC_COMPANY_FACT_PROVENANCE_CONTRACT.schema_version,
+                        "fields": list(SEC_COMPANY_FACT_PROVENANCE_CONTRACT.fields),
+                        "columns": provenance_columns,
+                    }
+                },
                 "metadata": {
                     "data_type": "sec_edgar_company_facts",
                     "source": "SEC data.sec.gov companyfacts and submissions APIs",
                     "requires_api_key": False,
+                    "sec_provenance_schema_version": (
+                        SEC_COMPANY_FACT_PROVENANCE_CONTRACT.schema_version
+                    ),
+                    "provenance_fields": list(SEC_COMPANY_FACT_PROVENANCE_CONTRACT.fields),
                     "identifier": identifier,
                     "ticker": ticker,
                     "cik": result.get("cik"),

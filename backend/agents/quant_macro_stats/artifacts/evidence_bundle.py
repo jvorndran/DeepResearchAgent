@@ -9,6 +9,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from mcp_clients.sec_edgar_contract import SEC_COMPANY_FACT_PROVENANCE_CONTRACT
+
 from .chart_provenance import normalize_chart_provenance
 from .json_safety import to_json_safe
 from .numeric_fact_contracts import normalize_numeric_facts
@@ -38,10 +40,15 @@ _SOURCE_DESCRIPTOR_KEYS = (
     "frequency",
     "currency",
     "fiscal_period",
+    "taxonomy",
+    "form",
+    "filing_date",
+    "accession_number",
     "transform_basis",
     "vintage",
     "as_of_date",
     "revision_policy",
+    "source_url",
     "source_file",
     "status",
 )
@@ -64,10 +71,15 @@ class SourceDescriptor(_EvidenceModel):
     frequency: str | None = None
     currency: str | None = None
     fiscal_period: str | None = None
+    taxonomy: str | None = None
+    form: str | None = None
+    filing_date: str | None = None
+    accession_number: str | None = None
     transform_basis: str | None = None
     vintage: str | None = None
     as_of_date: str | None = None
     revision_policy: str | None = None
+    source_url: str | None = None
     source_file: str | None = None
     status: str | None = None
     coverage: dict[str, Any] = Field(default_factory=dict)
@@ -382,6 +394,7 @@ class EvidenceBundle(_EvidenceModel):
         )
         _require_transform_source_semantics(self.transforms, self.sources)
         _require_fact_transform_basis(self.facts)
+        _require_sec_company_fact_provenance(self.facts)
         return self
 
 
@@ -1598,6 +1611,83 @@ def _require_fact_sources_resolve(
             "facts.source_key values must resolve to sources.source_id: "
             f"{_unique_texts(unresolved)}"
         )
+
+
+def _require_sec_company_fact_provenance(facts: list[EvidenceFact]) -> None:
+    errors: list[str] = []
+    for fact in facts:
+        if not fact.source_key.startswith(SEC_COMPANY_FACT_PROVENANCE_CONTRACT.source_prefix):
+            continue
+        schema_name = _clean_text(fact.attributes.get("source_provenance_schema"))
+        schema_version = _int_or_none(fact.attributes.get("sec_provenance_schema_version"))
+        label = fact.fact_id
+        if schema_name != SEC_COMPANY_FACT_PROVENANCE_CONTRACT.schema_name:
+            errors.append(
+                f"{label}: source_provenance_schema must be "
+                f"{SEC_COMPANY_FACT_PROVENANCE_CONTRACT.schema_name!r}"
+            )
+        if schema_version != SEC_COMPANY_FACT_PROVENANCE_CONTRACT.schema_version:
+            errors.append(
+                f"{label}: sec_provenance_schema_version must be "
+                f"{SEC_COMPANY_FACT_PROVENANCE_CONTRACT.schema_version}"
+            )
+
+        metric = _sec_company_fact_metric(fact)
+        expected_components = SEC_COMPANY_FACT_PROVENANCE_CONTRACT.components_for_metric(metric)
+        if not expected_components:
+            errors.append(f"{label}: SEC fact metric is required for provenance validation")
+            continue
+
+        components = fact.attributes.get("sec_metric_components")
+        provenance = fact.attributes.get("sec_fact_provenance")
+        if not isinstance(components, list) or not components:
+            errors.append(f"{label}: sec_metric_components must be a non-empty list")
+            component_keys: list[str] = []
+        else:
+            component_keys = [
+                str(component).strip()
+                for component in components
+                if _has_value(component) and str(component).strip()
+            ]
+            if sorted(component_keys) != sorted(expected_components):
+                errors.append(
+                    f"{label}: sec_metric_components must be "
+                    f"{list(expected_components)!r}"
+                )
+        if not isinstance(provenance, Mapping) or not provenance:
+            errors.append(f"{label}: sec_fact_provenance must be a non-empty mapping")
+            continue
+
+        for component_key in expected_components:
+            item = provenance.get(component_key)
+            if not isinstance(item, Mapping):
+                errors.append(f"{label}: missing SEC provenance for {component_key}")
+                continue
+            missing = [
+                field
+                for field in SEC_COMPANY_FACT_PROVENANCE_CONTRACT.required_fields
+                if not _has_value(item.get(field))
+            ]
+            if missing:
+                errors.append(
+                    f"{label}: SEC provenance for {component_key} is missing "
+                    + ", ".join(missing)
+                )
+
+    if errors:
+        raise ValueError("SEC helper facts with provenance schemas are invalid: " + "; ".join(errors))
+
+
+def _sec_company_fact_metric(fact: EvidenceFact) -> str | None:
+    metric = _clean_text(fact.metric)
+    if metric:
+        return metric
+    prefix = SEC_COMPANY_FACT_PROVENANCE_CONTRACT.source_prefix
+    if fact.source_key.startswith(prefix):
+        suffix = fact.source_key[len(prefix) :]
+        if "." in suffix:
+            return _clean_text(suffix.rsplit(".", 1)[-1])
+    return _clean_text(fact.fact_id.rsplit(".", 1)[-1])
 
 
 def _require_table_sources_resolve(

@@ -9,6 +9,7 @@ from ..company.sec_company_facts_evidence import (
     sec_company_facts_evidence,
 )
 from .numeric_fact_contracts import normalize_numeric_facts
+from .source_unit_fidelity import normalize_source_unit_metadata
 
 
 _COMPACT_HANDOFF_KEYS = (
@@ -46,6 +47,7 @@ _COMPACT_HANDOFF_KEYS = (
     "replay_rows",
     "latest_fundamentals",
     "company_history_rows",
+    "sec_fact_provenance",
     "trend_diagnostics",
     "macro_overlay",
     "company_macro_sensitivity",
@@ -76,6 +78,7 @@ _OBSOLETE_PRESERVATION_KEYS = frozenset(
 _SEC_COMPANY_EVIDENCE_FIELD_MAP = {
     "history_rows": "company_history_rows",
     "latest_fundamentals": "latest_fundamentals",
+    "sec_fact_provenance": "sec_fact_provenance",
     "trend_diagnostics": "trend_diagnostics",
     "macro_overlay": "macro_overlay",
     "company_macro_sensitivity": "company_macro_sensitivity",
@@ -179,6 +182,7 @@ def _preserve_sec_company_facts_contract(summary: dict[str, Any]) -> None:
             summary[summary_key] = value
 
     _merge_sec_company_source_coverage(summary, evidence.get("source_coverage"))
+    _merge_sec_company_source_unit_metadata(summary, evidence.get("source_unit_metadata"))
     _merge_sec_company_methods(summary, evidence.get("methods_used"))
     _merge_sec_company_limitations(summary, evidence.get("limitations"))
     _replace_sec_company_numeric_facts(
@@ -283,6 +287,35 @@ def _merge_sec_company_source_coverage(
         source_coverage = dict(source_coverage)
     source_coverage.update(helper_source_coverage)
     summary["source_coverage"] = source_coverage
+
+
+def _merge_sec_company_source_unit_metadata(
+    summary: dict[str, Any],
+    helper_source_unit_metadata: Any,
+) -> None:
+    helper_records = normalize_source_unit_metadata(helper_source_unit_metadata)
+    if not helper_records:
+        return
+
+    records = normalize_source_unit_metadata(summary.get("source_unit_metadata"))
+    by_identity = {
+        _source_unit_metadata_identity(record): record
+        for record in records
+        if _source_unit_metadata_identity(record)
+    }
+    for record in helper_records:
+        identity = _source_unit_metadata_identity(record)
+        if identity:
+            by_identity[identity] = record
+    summary["source_unit_metadata"] = list(by_identity.values())
+
+
+def _source_unit_metadata_identity(record: dict[str, Any]) -> str:
+    for key in ("source_key", "series_id", "concept_id", "source_file", "title"):
+        value = record.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return ""
 
 
 def _merge_sec_company_methods(summary: dict[str, Any], helper_methods: Any) -> None:
