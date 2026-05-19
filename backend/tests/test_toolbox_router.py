@@ -72,6 +72,18 @@ async def test_toolbox_router_selects_sec_and_fred_for_company_macro_sensitivity
 
 
 @pytest.mark.asyncio
+async def test_toolbox_router_selects_sec_and_market_for_company_valuation(monkeypatch):
+    toolbox, _fake = await _route(
+        monkeypatch,
+        ["sec", "market"],
+        rationale="Analyze Microsoft fundamentals, valuation multiples, market cap, and price target.",
+    )
+
+    assert toolbox["providers"] == ["sec", "market"]
+    assert toolbox["fallback"] is False
+
+
+@pytest.mark.asyncio
 async def test_toolbox_router_selects_fred_and_census_for_consumer_stress_by_state(
     monkeypatch,
 ):
@@ -120,6 +132,14 @@ async def test_toolbox_router_low_confidence_empty_output_falls_back_to_broad_to
         rationale="Ambiguous request.",
     )
 
-    assert toolbox["providers"] == ["fred", "bls", "bea", "census", "worldbank", "sec"]
+    assert toolbox["providers"] == [
+        "fred",
+        "bls",
+        "bea",
+        "census",
+        "worldbank",
+        "sec",
+        "market",
+    ]
     assert toolbox["fallback"] is True
     assert "low confidence" in toolbox["rationale"].lower()

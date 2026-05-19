@@ -13,6 +13,7 @@ _PROMPT_LABELS: dict[ProviderName, str] = {
     "census": "CENSUS",
     "worldbank": "WORLD BANK",
     "sec": "SEC",
+    "market": "MARKET",
 }
 
 
@@ -31,10 +32,11 @@ out of scope for this run.
 1. Filesystem and shell tools are blocked even if they appear. Never call
    `execute`, `read_file`, `write_file`, `edit_file`, `ls`, `glob`, `grep`, or
    `write_todos` for data collection, inspection, or cleanup.
-2. FMP remains disabled and unavailable. Do not attempt stock quotes,
-   market-data, analyst estimates, paid/keyed providers, or FMP-backed
-   fallbacks. For issuer fundamentals, use only a selected active public filing
-   provider; otherwise record a compact limitation.
+2. FMP remains disabled and unavailable. Do not fetch live quotes, paid/keyed
+   market data, analyst estimates, or FMP-backed fallbacks. If routed `market`
+   is active, use only its availability check to record limitations. For issuer
+   fundamentals, use only selected filing sources; otherwise record a compact
+   limitation.
 3. Never return raw data arrays. Use provider-returned `status:auto_saved`
    `file_path` values and `data_files` maps directly; the returned auto-save
    path is canonical. Call `save_data` only for successful unsaved results or
@@ -81,6 +83,7 @@ PROVIDER_SKILL_FILES: dict[ProviderName, str] = {
     "census": "census-regional-context.md",
     "worldbank": "worldbank-indicators.md",
     "sec": "sec-edgar-company-facts.md",
+    "market": "market-valuation-data.md",
 }
 
 

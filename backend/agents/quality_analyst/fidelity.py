@@ -44,6 +44,26 @@ _SEC_COMPANY_FACTS_REF_MARKERS = (
     "sec_edgar_company_facts",
     "edgar_company_facts",
 )
+_MARKET_VALUATION_CLAIM_RE = re.compile(
+    r"\b(?:valuation|market\s+cap(?:italization)?|share\s+price|stock\s+price|"
+    r"price\s+target|target\s+price|trading\s+at|trades\s+at|priced\s+at|"
+    r"p/e|pe\s+ratio|ev/ebitda|ev/sales|enterprise\s+value|"
+    r"valuation\s+multiple|multiples?|analyst\s+estimates?|"
+    r"estimate\s+revisions?|forward\s+estimates?|upside|downside)\b",
+    re.IGNORECASE,
+)
+_MARKET_VALUATION_LIMITATION_RE = re.compile(
+    r"\b(?:unavailable|not\s+available|not\s+covered|insufficient|excluded|"
+    r"missing|not\s+included|outside|without|no\s+(?:paid|market|valuation|"
+    r"analyst|price)|cannot|can't|lacks?|limitation|not\s+used)\b",
+    re.IGNORECASE,
+)
+_MARKET_VALUATION_AFFIRMATIVE_RE = re.compile(
+    r"(?:\$\s?\d|\b\d+(?:\.\d+)?\s?(?:x|times|%|billion|bn|million|m)\b|"
+    r"\b(?:premium|discount|undervalued|overvalued|cheap|expensive|"
+    r"attractive|rich|reasonable|upside|downside)\b)",
+    re.IGNORECASE,
+)
 
 
 def _looks_like_sec_company_facts_ref(value: object) -> bool:
@@ -790,6 +810,79 @@ def _numeric_fact_fidelity_blockers(
         f"execution_summary.json for {', '.join(missing[:8])}. Regenerate the "
         "affected prose from display_value fields in the quantitative handoff."
     ]
+
+
+def _valuation_market_data_unavailable(summary: dict[str, object]) -> bool:
+    source_coverage = summary.get("source_coverage")
+    if not isinstance(source_coverage, dict):
+        return False
+    valuation_coverage = source_coverage.get("valuation_market_data")
+    if not isinstance(valuation_coverage, dict):
+        return False
+    return str(valuation_coverage.get("status") or "").strip().lower() in {
+        "not_available",
+        "disabled",
+    }
+
+
+def _has_market_valuation_numeric_facts(summary: dict[str, object]) -> bool:
+    markers = (
+        "valuation_market_data",
+        "market_data",
+        "market_valuation",
+        "market_cap",
+        "valuation_multiple",
+        "pe_ratio",
+        "ev_ebitda",
+        "price_target",
+        "analyst_estimate",
+        "estimate_revision",
+    )
+    for fact in _numeric_facts_from_summary(summary):
+        text = " ".join(
+            str(fact.get(key) or "").lower()
+            for key in ("id", "source_key", "metric", "semantic_role", "label")
+        )
+        if any(marker in text for marker in markers):
+            return True
+    return False
+
+
+def _line_claims_market_valuation(line: str) -> bool:
+    if not _MARKET_VALUATION_CLAIM_RE.search(line):
+        return False
+    if _MARKET_VALUATION_LIMITATION_RE.search(line):
+        return False
+    return bool(_MARKET_VALUATION_AFFIRMATIVE_RE.search(line))
+
+
+def _unsupported_market_valuation_claim_blocker(
+    summary: dict[str, object],
+    report_data: dict[str, object],
+) -> str | None:
+    if not _valuation_market_data_unavailable(summary):
+        return None
+    if _has_market_valuation_numeric_facts(summary):
+        return None
+
+    text = "\n".join(
+        str(report_data.get(key) or "")
+        for key in ("title", "executive_summary", "markdown")
+    )
+    claimed_lines = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip() and _line_claims_market_valuation(line)
+    ]
+    if not claimed_lines:
+        return None
+    return (
+        "Report makes equity valuation or market-data claims while "
+        "execution_summary.source_coverage.valuation_market_data.status="
+        "not_available and no market valuation numeric_facts exist. State the "
+        "market-data limitation or remove price, market cap, multiple, analyst "
+        "estimate, estimate-revision, price-target, and upside/downside claims."
+    )
 
 
 def _report_claim_text(report_data: dict[str, object]) -> str:
@@ -1657,6 +1750,9 @@ def _execution_summary_fidelity_blockers(
     )
     if missing_helper_evidence:
         blockers.append(missing_helper_evidence)
+    unsupported_valuation = _unsupported_market_valuation_claim_blocker(summary, report_data)
+    if unsupported_valuation:
+        blockers.append(unsupported_valuation)
     blockers.extend(_source_unit_fidelity_blockers(summary, markdown, report_data))
     blockers.extend(_state_comparison_fidelity_blockers(summary, markdown))
     blockers.extend(_numeric_fact_fidelity_blockers(summary, markdown))
@@ -2034,6 +2130,11 @@ def _approval_failure_metadata(report_path: str) -> dict[str, str]:
         return {
             "failure_category": "missing_helper_evidence",
             "required_upstream": "quantitative-developer",
+        }
+    if _unsupported_market_valuation_claim_blocker(summary, data):
+        return {
+            "failure_category": "unsupported_valuation_claim",
+            "required_upstream": "technical-writer",
         }
     if _numeric_fact_fidelity_blockers(summary, markdown):
         return {

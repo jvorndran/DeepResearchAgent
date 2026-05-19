@@ -10,6 +10,7 @@ from typing import Any, Iterable
 import numpy as np
 import pandas as pd
 
+from mcp_clients.market_data_provider import DisabledMarketDataProvider
 from mcp_clients.sec_edgar_contract import SEC_COMPANY_FACT_PROVENANCE_CONTRACT
 
 from ..artifacts.numeric_fact_contracts import numeric_fact
@@ -799,6 +800,7 @@ def _source_coverage(
             and (version := _int_cell(payload.get("schema_version"))) is not None
         }
     )
+    market_availability = DisabledMarketDataProvider().get_valuation_availability()
     return {
         "sec_company_facts": {
             "status": "covered" if company_count else "not_available",
@@ -828,10 +830,7 @@ def _source_coverage(
             "status": "not_available",
             "limitation": "SEC company-facts CSVs do not provide segment/product/customer detail.",
         },
-        "valuation_market_data": {
-            "status": "not_available",
-            "limitation": "No paid/keyed market data, analyst estimates, or valuation multiples were used.",
-        },
+        **market_availability.source_coverage,
         "management_guidance": {
             "status": "not_available",
             "limitation": "Management guidance and forward backlog commentary are outside SEC company-facts evidence.",

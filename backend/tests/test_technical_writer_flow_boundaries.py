@@ -229,19 +229,119 @@ def test_plan_report_structure_surfaces_source_unit_comparison_status(tmp_path):
 
 def test_plan_report_structure_uses_sec_helper_scaled_numeric_facts(tmp_path):
     sec_path = tmp_path / "NVDA_sec_edgar_company_facts.csv"
+    base_columns = [
+        "fiscal_year",
+        "revenue",
+        "gross_profit",
+        "operating_income",
+        "net_income",
+        "operating_cash_flow",
+        "capital_expenditures",
+        "cash_and_equivalents",
+        "marketable_securities_current",
+        "long_term_debt",
+        "stockholders_equity",
+        "assets",
+        "liabilities",
+        "diluted_eps",
+        "shares",
+    ]
+    provenance_fields = [
+        "taxonomy",
+        "concept",
+        "unit",
+        "fiscal_period",
+        "form",
+        "filed",
+        "accession_number",
+        "start",
+        "end",
+    ]
+    provenance_metrics = {
+        "revenue": "RevenueFromContractWithCustomerExcludingAssessedTax",
+        "cash_and_equivalents": "CashAndCashEquivalentsAtCarryingValue",
+        "marketable_securities_current": "MarketableSecuritiesCurrent",
+        "long_term_debt": "LongTermDebtNoncurrent",
+    }
+    provenance_columns = [
+        "sec_provenance_schema_version",
+        *[
+            f"{metric}_{field}"
+            for metric in provenance_metrics
+            for field in provenance_fields
+        ],
+    ]
+
+    def row(values, *, year: int) -> list[str]:
+        filed = f"{year}-03-01"
+        accession = f"0000000000-{year}-000001"
+        start = f"{year - 1}-01-01"
+        end = f"{year - 1}-12-31"
+        provenance = ["1"]
+        for concept in provenance_metrics.values():
+            provenance.extend(
+                [
+                    "us-gaap",
+                    concept,
+                    "USD",
+                    "FY",
+                    "10-K",
+                    filed,
+                    accession,
+                    start,
+                    end,
+                ]
+            )
+        return [str(value) for value in values] + provenance
+
     sec_path.write_text(
         "\n".join(
             [
-                "fiscal_year,revenue,gross_profit,operating_income,net_income,"
-                "operating_cash_flow,capital_expenditures,cash_and_equivalents,"
-                "marketable_securities_current,long_term_debt,stockholders_equity,"
-                "assets,liabilities,diluted_eps,shares",
-                "2025,130497000000,97858000000,81453000000,72880000000,"
-                "64089000000,3236000000,8589000000,1716000000,8463000000,"
-                "65000000000,111601000000,32274000000,2.94,24700000000",
-                "2026,215938000000,153865000000,136859000000,120224000000,"
-                "118200000000,21524000000,8589000000,2016000000,7469000000,"
-                "79000000000,124092000000,45000000000,4.90,24514000000",
+                ",".join([*base_columns, *provenance_columns]),
+                ",".join(
+                    row(
+                        [
+                            2025,
+                            130497000000,
+                            97858000000,
+                            81453000000,
+                            72880000000,
+                            64089000000,
+                            3236000000,
+                            8589000000,
+                            1716000000,
+                            8463000000,
+                            65000000000,
+                            111601000000,
+                            32274000000,
+                            2.94,
+                            24700000000,
+                        ],
+                        year=2025,
+                    )
+                ),
+                ",".join(
+                    row(
+                        [
+                            2026,
+                            215938000000,
+                            153865000000,
+                            136859000000,
+                            120224000000,
+                            118200000000,
+                            21524000000,
+                            8589000000,
+                            2016000000,
+                            7469000000,
+                            79000000000,
+                            124092000000,
+                            45000000000,
+                            4.90,
+                            24514000000,
+                        ],
+                        year=2026,
+                    )
+                ),
             ]
         ),
         encoding="utf-8",

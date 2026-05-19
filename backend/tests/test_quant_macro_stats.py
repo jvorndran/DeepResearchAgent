@@ -911,6 +911,12 @@ def test_sec_company_facts_helpers_emit_generic_evidence_rows(tmp_path):
     assert evidence["source_unit_metadata"][0]["provider"] == "SEC EDGAR"
     assert evidence["source_coverage"]["sec_company_facts"]["status"] == "covered"
     assert evidence["source_coverage"]["sec_company_facts"]["provenance_fields"]
+    valuation_coverage = evidence["source_coverage"]["valuation_market_data"]
+    assert valuation_coverage["status"] == "not_available"
+    assert valuation_coverage["limitation"]
+    assert valuation_coverage["reason"]
+    assert "price" in valuation_coverage["capability_list"]
+    assert valuation_coverage["capabilities"]
     assert evidence["limitations"]
     assert "contract_type" not in evidence
 
@@ -1475,6 +1481,32 @@ def test_evidence_bundle_rejects_sec_helper_fact_without_provenance_schema():
 
     assert "SEC helper facts with provenance schemas are invalid" in str(exc.value)
     assert "source_provenance_schema must be" in str(exc.value)
+
+
+def test_evidence_bundle_rejects_untyped_unavailable_market_valuation_coverage():
+    with pytest.raises(ValueError) as exc:
+        EvidenceBundle.model_validate(
+            {
+                "sources": [
+                    {
+                        "source_id": "valuation_market_data",
+                        "status": "not_available",
+                        "coverage": {"status": "not_available"},
+                    }
+                ],
+                "validation": {"valid": True},
+                "artifacts": {
+                    "charts_json": "charts.json",
+                    "execution_summary_json": "execution_summary.json",
+                    "evidence_bundle_json": "evidence_bundle.json",
+                },
+            }
+        )
+
+    message = str(exc.value)
+    assert "market valuation source coverage is invalid" in message
+    assert "requires limitation or reason" in message
+    assert "requires a non-empty capability list" in message
 
 
 def test_evidence_bundle_rejects_incomplete_sec_helper_provenance():
@@ -2479,6 +2511,12 @@ def test_save_quant_outputs_auto_attaches_sec_helper_evidence(tmp_path):
     }
     assert sec_sources["sec_company_facts"]["provider"] == "SEC EDGAR"
     assert sec_sources["sec_company_facts.NVDA"]["taxonomy"] == "us-gaap"
+    market_source = next(
+        source for source in saved_bundle["sources"] if source["source_id"] == "valuation_market_data"
+    )
+    assert market_source["status"] == "not_available"
+    assert market_source["coverage"]["capability_list"]
+    assert market_source["coverage"]["limitation"]
     assert handoff["latest_fundamentals"]["NVDA"]["revenue_b"] == pytest.approx(215.938)
 
 

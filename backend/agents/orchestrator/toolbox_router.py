@@ -27,7 +27,10 @@ class ToolboxRoute(BaseModel):
 
     providers: list[ProviderName] = Field(
         default_factory=list,
-        description="Relevant data providers from: fred, bls, bea, census, worldbank, sec.",
+        description=(
+            "Relevant data providers from: fred, bls, bea, census, "
+            "worldbank, sec, market."
+        ),
     )
     confidence: float = Field(
         ge=0.0,
@@ -60,10 +63,17 @@ Valid providers:
   growth outside the US.
 - `sec`: public-company fundamentals and filing facts: revenue, net income,
   margins, cash flow, balance sheet, shares, R&D, SG&A, EPS, 10-K/10-Q metadata.
+- `market`: availability-only market valuation coverage check for stock price,
+  market cap, valuation multiples, analyst estimates, and estimate revisions.
+  This provider does not fetch live quotes yet; it records explicit unavailable
+  diagnostics and limitations.
 
 Routing examples:
 - Microsoft/company fundamentals, revenue, margins, cash flow, earnings risk,
   or balance-sheet questions -> `sec`, not `fred`.
+- Microsoft fundamentals plus valuation, stock price, market cap, multiples,
+  analyst estimates, estimate revisions, price target, or upside/downside
+  requests -> `sec` and `market`.
 - Microsoft fundamentals plus inflation/rates sensitivity -> `sec` and `fred`.
 - Macro rates, inflation, labor, credit, recession, NBER windows -> `fred`.
 - GDP, GDI, income, consumption/PCE, or corporate-profits national-account

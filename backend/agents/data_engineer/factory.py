@@ -34,6 +34,7 @@ from .tools import (
     bls_search_known_series,
     census_get_table,
     extract_schema,
+    market_get_valuation_availability,
     save_data,
     sec_fetch_company_facts,
     worldbank_get_indicator,
@@ -70,6 +71,7 @@ _PROVIDER_TOOL_NAMES = {
     "census": {"census_get_table"},
     "worldbank": {"worldbank_get_indicator"},
     "sec": {"sec_fetch_company_facts"},
+    "market": {"market_get_valuation_availability"},
 }
 _ALL_PROVIDER_TOOL_NAMES = {
     tool_name for provider_tools in _PROVIDER_TOOL_NAMES.values() for tool_name in provider_tools
@@ -153,7 +155,8 @@ class DataEngineerToolBoundaryMiddleware(AgentMiddleware):
                 f"Blocked tool `{tool_name}` for data-engineer. "
                 "Use only FRED MCP tools, BLS public data, BEA NIPA data, "
                 "Census public data, World Bank annual indicators, SEC EDGAR "
-                "company facts, save_data, and extract_schema. "
+                "company facts, market valuation availability checks, "
+                "save_data, and extract_schema. "
                 "FRED auto-saved file_path values are already persisted; return those "
                 "paths directly instead of copying, reading, or rewriting CSV files."
             ),
@@ -228,6 +231,7 @@ def _build_data_engineer_runnable(fred_tools: list[Any]) -> RunnableLambda:
             census_get_table,
             worldbank_get_indicator,
             sec_fetch_company_facts,
+            market_get_valuation_availability,
         ]
         + fred_tools,
         middleware=[_DATA_ENGINEER_TOOL_BOUNDARY_MIDDLEWARE],
@@ -328,7 +332,7 @@ async def get_data_engineer_subagent(fred_session: ClientSession | None = None):
 
     fred_tools = [_with_timeout(t, _FRED_TIMEOUT, "FRED") for t in fred_tools]
 
-    description = """Use this subagent to fetch macroeconomic data from FRED/BLS/BEA, World Bank annual indicators, Census regional context, SEC company fundamentals, or extract schemas from saved data files.
+    description = """Use this subagent to fetch macroeconomic data from FRED/BLS/BEA, World Bank annual indicators, Census regional context, SEC company fundamentals, market valuation availability metadata, or extract schemas from saved data files.
 
     Delegate when you need to:
     - Fetch macroeconomic series from FRED (GDP, CPI, interest rates, employment, etc.)
@@ -337,6 +341,7 @@ async def get_data_engineer_subagent(fred_session: ClientSession | None = None):
     - Fetch World Bank annual inflation or GDP-growth indicators for USA/CAN/DEU/JPN/MEX cross-country context
     - Fetch Census state/county population, income, or housing context
     - Fetch public-company SEC EDGAR facts (revenue, net income, margin, cash-flow, balance-sheet, shares, filing metadata) for a ticker or CIK
+    - Check whether market valuation data such as price, market cap, multiples, analyst estimates, or revisions is available, and preserve explicit unavailable diagnostics when it is not
     - Save fetched data to storage
     - Extract exact schemas (column names, dtypes, sample rows) from data files
 

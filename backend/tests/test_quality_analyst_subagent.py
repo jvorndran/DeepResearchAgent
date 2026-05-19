@@ -2284,6 +2284,75 @@ def test_submit_quality_decision_rejects_missing_helper_evidence_after_sec_fetch
     assert "source_coverage" in payload["reason"]
 
 
+def test_submit_quality_decision_rejects_unsupported_valuation_claim(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "chart_ids": [],
+                "latest_fundamentals": {"NVDA": {"revenue_b": 215.938}},
+                "source_coverage": {
+                    "sec_company_facts": {"status": "covered"},
+                    "valuation_market_data": {
+                        "status": "not_available",
+                        "limitation": "Market valuation data is unavailable.",
+                        "capability_list": ["price", "market_cap", "valuation_multiples"],
+                    },
+                },
+                "numeric_facts": [
+                    {
+                        "id": "sec_company_facts.NVDA.revenue_b",
+                        "display_value": "$215.938B",
+                        "raw_value": 215.938,
+                        "tolerance": 0.005,
+                        "source_key": "sec_company_facts.latest_fundamentals.NVDA.revenue_b",
+                        "subject": "NVDA",
+                        "metric": "revenue_b",
+                        "literal_required": False,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "job_id": "qa-unsupported-valuation",
+                "created_at": "2026-05-14T12:00:00Z",
+                "query": "Prepare a stock-specific NVIDIA fundamentals and valuation report.",
+                "title": "NVIDIA Valuation",
+                "executive_summary": "NVIDIA has attractive valuation upside.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "NVDA has a $2.5T market cap and trades at an attractive multiple."
+                ),
+                "charts": {},
+                "data_sources": [],
+                "metadata": {"analysis_type": "earnings", "chart_count": 0, "word_count": 15},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "unsupported_valuation_claim"
+    assert payload["required_upstream"] == "technical-writer"
+    assert "valuation_market_data.status=not_available" in payload["reason"]
+
+
 def test_submit_quality_decision_rejects_manual_sec_facts_from_source_files(tmp_path):
     report_path = tmp_path / "report.json"
     (tmp_path / "execution_summary.json").write_text(

@@ -16,6 +16,7 @@ def test_data_engineer_build_system_prompt_selects_only_fred_section():
     assert "CENSUS PROVIDER RULES" not in prompt
     assert "WORLD BANK PROVIDER RULES" not in prompt
     assert "SEC PROVIDER RULES" not in prompt
+    assert "MARKET PROVIDER RULES" not in prompt
 
 
 def test_data_engineer_build_system_prompt_selects_only_sec_section():
@@ -26,6 +27,7 @@ def test_data_engineer_build_system_prompt_selects_only_sec_section():
     assert "FRED PROVIDER RULES" not in prompt
     assert "Current/latest macro freshness" not in prompt
     assert "Common consumer-stress IDs" not in prompt
+    assert "MARKET PROVIDER RULES" not in prompt
 
 
 def test_data_engineer_build_system_prompt_avoids_inactive_provider_names():
@@ -36,12 +38,14 @@ def test_data_engineer_build_system_prompt_avoids_inactive_provider_names():
     assert "BLS DIRECT SOURCE CHECKS" not in fred_prompt
     assert "BEA NATIONAL ACCOUNTS" not in fred_prompt
     assert "WORLD BANK CROSS-COUNTRY MACRO" not in fred_prompt
+    assert "MARKET VALUATION DATA" not in fred_prompt
 
     assert "FRED" not in sec_prompt
     assert "BLS" not in sec_prompt
     assert "BEA" not in sec_prompt
     assert "World Bank" not in sec_prompt
     assert "Census" not in sec_prompt
+    assert "MARKET VALUATION DATA" not in sec_prompt
 
 
 def test_data_engineer_build_system_prompt_broad_fallback_includes_all_provider_sections():
@@ -53,6 +57,7 @@ def test_data_engineer_build_system_prompt_broad_fallback_includes_all_provider_
     assert "CENSUS PROVIDER RULES" in prompt
     assert "WORLD BANK PROVIDER RULES" in prompt
     assert "SEC PROVIDER RULES" in prompt
+    assert "MARKET PROVIDER RULES" in prompt
 
 
 def test_data_engineer_provider_details_are_not_in_core_prompt():
@@ -62,6 +67,7 @@ def test_data_engineer_provider_details_are_not_in_core_prompt():
     assert "CENSUS REGIONAL CONTEXT" not in DATA_ENGINEER_CORE_PROMPT
     assert "WORLD BANK CROSS-COUNTRY MACRO" not in DATA_ENGINEER_CORE_PROMPT
     assert "SEC COMPANY FACTS" not in DATA_ENGINEER_CORE_PROMPT
+    assert "MARKET VALUATION DATA" not in DATA_ENGINEER_CORE_PROMPT
 
     assert "Common consumer-stress IDs" in PROVIDER_PROMPT_SECTIONS["fred"]
     assert "BLS DIRECT SOURCE CHECKS" in PROVIDER_PROMPT_SECTIONS["bls"]
@@ -69,6 +75,7 @@ def test_data_engineer_provider_details_are_not_in_core_prompt():
     assert "CENSUS REGIONAL CONTEXT" in PROVIDER_PROMPT_SECTIONS["census"]
     assert "WORLD BANK CROSS-COUNTRY MACRO" in PROVIDER_PROMPT_SECTIONS["worldbank"]
     assert "SEC COMPANY FACTS" in PROVIDER_PROMPT_SECTIONS["sec"]
+    assert "MARKET VALUATION DATA" in PROVIDER_PROMPT_SECTIONS["market"]
 
 
 def test_data_engineer_core_prompt_stays_compact_and_routes_provider_details():
@@ -84,6 +91,7 @@ def test_data_engineer_core_prompt_stays_compact_and_routes_provider_details():
         "census_get_table",
         "worldbank_get_indicator",
         "sec_fetch_company_facts",
+        "market_get_valuation_availability",
     ):
         assert provider_tool not in DATA_ENGINEER_CORE_PROMPT
 
@@ -96,6 +104,7 @@ def test_data_engineer_provider_sections_are_loaded_from_skill_files():
         "census": "census-regional-context.md",
         "worldbank": "worldbank-indicators.md",
         "sec": "sec-edgar-company-facts.md",
+        "market": "market-valuation-data.md",
     }
     for provider, skill_file in PROVIDER_SKILL_FILES.items():
         assert skill_file.endswith(".md")
@@ -154,6 +163,9 @@ def test_data_engineer_prompt_blocks_chatter_and_manual_csv_cleanup():
     assert "Census CSVs" in prompt
     assert "World Bank annual indicators" in prompt
     assert "`worldbank_get_indicator` saves World Bank CSVs" in prompt
+    assert "Market Valuation Data Workflow" in prompt
+    assert "`market_get_valuation_availability`" in prompt
+    assert "availability-only" in prompt
     assert "long enough to include every required" in prompt
     assert "try to compress `data_files` into prose" in prompt
     assert "JSON handoff immediately after the final useful fetch/schema call" in prompt

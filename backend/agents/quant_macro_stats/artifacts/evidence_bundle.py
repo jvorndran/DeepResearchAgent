@@ -9,6 +9,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from mcp_clients.market_data_provider import MARKET_VALUATION_SOURCE_ID
 from mcp_clients.sec_edgar_contract import SEC_COMPANY_FACT_PROVENANCE_CONTRACT
 
 from .chart_provenance import normalize_chart_provenance
@@ -395,6 +396,7 @@ class EvidenceBundle(_EvidenceModel):
         _require_transform_source_semantics(self.transforms, self.sources)
         _require_fact_transform_basis(self.facts)
         _require_sec_company_fact_provenance(self.facts)
+        _require_market_valuation_unavailable_contract(self.sources)
         return self
 
 
@@ -1676,6 +1678,40 @@ def _require_sec_company_fact_provenance(facts: list[EvidenceFact]) -> None:
 
     if errors:
         raise ValueError("SEC helper facts with provenance schemas are invalid: " + "; ".join(errors))
+
+
+def _require_market_valuation_unavailable_contract(
+    sources: list[EvidenceSource],
+) -> None:
+    errors: list[str] = []
+    for source in sources:
+        if source.source_id != MARKET_VALUATION_SOURCE_ID:
+            continue
+        status = str(source.status or source.coverage.get("status") or "").strip().lower()
+        if status not in {"not_available", "disabled"}:
+            continue
+        reason = _first_text(
+            source.coverage.get("limitation"),
+            source.coverage.get("reason"),
+            source.metadata.get("limitation"),
+            source.metadata.get("reason"),
+        )
+        capabilities = source.coverage.get("capabilities") or source.coverage.get(
+            "capability_list"
+        )
+        if not reason:
+            errors.append(
+                "valuation_market_data status=not_available requires limitation or reason"
+            )
+        if not isinstance(capabilities, list) or not capabilities:
+            errors.append(
+                "valuation_market_data status=not_available requires a non-empty capability list"
+            )
+    if errors:
+        raise ValueError(
+            "market valuation source coverage is invalid: "
+            + "; ".join(_unique_texts(errors))
+        )
 
 
 def _sec_company_fact_metric(fact: EvidenceFact) -> str | None:

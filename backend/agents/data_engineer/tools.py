@@ -16,6 +16,10 @@ from mcp_clients.bls_client import (
     search_known_bls_series,
 )
 from mcp_clients.census_client import CensusDataError, CensusPublicDataClient
+from mcp_clients.market_data_provider import (
+    DisabledMarketDataProvider,
+    normalize_market_data_capabilities,
+)
 from mcp_clients.sec_edgar_client import SECEdgarClient, SECEdgarError
 from mcp_clients.sec_edgar_contract import SEC_COMPANY_FACT_PROVENANCE_CONTRACT
 from mcp_clients.worldbank_client import WorldBankDataError, WorldBankIndicatorsClient
@@ -277,10 +281,74 @@ def _parse_bea_line_numbers(line_numbers: str | list[int] | None) -> str | list[
     return list(line_numbers)
 
 
+def _parse_market_capabilities(value: str | list[str] | None) -> list[str] | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        if stripped.startswith("["):
+            try:
+                parsed = json.loads(stripped)
+                if isinstance(parsed, list):
+                    return [str(item) for item in parsed]
+            except Exception:
+                pass
+        return [part.strip() for part in stripped.replace(";", ",").split(",") if part.strip()]
+    return [str(item) for item in value]
+
+
 def _slug_for_filename(value: Any) -> str:
     text = str(value or "").strip().lower()
     slug = "".join(char if char.isalnum() else "_" for char in text)
     return "_".join(part for part in slug.split("_") if part) or "all"
+
+
+@tool
+def market_get_valuation_availability(
+    identifier: Optional[str] = None,
+    requested_capabilities: Optional[str | list[str]] = None,
+) -> str:
+    """
+    Return typed availability metadata for market valuation data.
+
+    This is an availability-only provider check. It does not fetch live quotes,
+    market cap, valuation multiples, analyst estimates, or estimate revisions.
+    Use it when a valuation or price request needs an explicit source-coverage
+    limitation instead of an attempted FMP/OpenBB/paid-provider fallback.
+
+    Args:
+        identifier: Optional stock ticker or issuer identifier for diagnostics.
+        requested_capabilities: Optional capability names as a comma-separated
+            string, JSON list string, or list. Supported names are price,
+            market_cap, valuation_multiples, analyst_estimates, and
+            estimate_revisions.
+
+    Returns:
+        JSON string with status, source_coverage.valuation_market_data,
+        diagnostics, and handoff guidance.
+    """
+    capabilities = normalize_market_data_capabilities(
+        _parse_market_capabilities(requested_capabilities)
+    )
+    result = DisabledMarketDataProvider().get_valuation_availability(
+        identifier=identifier,
+        requested_capabilities=capabilities,
+    )
+    payload = result.model_dump(mode="json", exclude_none=True)
+    payload["source_coverage"] = result.source_coverage
+    payload["metadata"] = {
+        "data_type": "market_valuation_availability",
+        "source": "availability-only market data provider contract",
+        "requires_api_key": False,
+        "provider_configured": False,
+        "handoff_guidance": (
+            "Preserve source_coverage.valuation_market_data in execution_summary.json. "
+            "Do not call save_data; no market valuation facts were fetched."
+        ),
+    }
+    return json.dumps(payload)
 
 
 @tool

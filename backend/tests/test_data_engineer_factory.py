@@ -103,6 +103,7 @@ def test_data_engineer_tool_boundary_uses_selection_for_tools_and_prompt_section
             {"name": "census_get_table"},
             {"name": "worldbank_get_indicator"},
             {"name": "sec_fetch_company_facts"},
+            {"name": "market_get_valuation_availability"},
         ],
         runtime=_runtime_with_toolbox(["sec"]),
     )
@@ -144,6 +145,7 @@ def test_data_engineer_tool_boundary_pairs_selected_tools_with_selected_sections
             {"name": "census_get_table"},
             {"name": "worldbank_get_indicator"},
             {"name": "sec_fetch_company_facts"},
+            {"name": "market_get_valuation_availability"},
         ],
         runtime=_runtime_with_toolbox(["fred", "census"]),
     )
@@ -172,6 +174,39 @@ def test_data_engineer_tool_boundary_pairs_selected_tools_with_selected_sections
     assert "BEA PROVIDER RULES" not in seen_prompt
     assert "WORLD BANK PROVIDER RULES" not in seen_prompt
     assert "SEC PROVIDER RULES" not in seen_prompt
+    assert "MARKET PROVIDER RULES" not in seen_prompt
+
+
+def test_data_engineer_tool_boundary_exposes_market_availability_provider():
+    middleware = DataEngineerToolBoundaryMiddleware()
+    request = FakeRequest(
+        [
+            {"name": "save_data"},
+            {"name": "extract_schema"},
+            {"name": "sec_fetch_company_facts"},
+            {"name": "market_get_valuation_availability"},
+        ],
+        runtime=_runtime_with_toolbox(["market"]),
+    )
+
+    seen_tool_names = []
+    seen_prompt = ""
+
+    def handler(filtered_request):
+        nonlocal seen_prompt
+        seen_tool_names.extend(tool.get("name") for tool in filtered_request.tools)
+        seen_prompt = filtered_request.system_message.content
+        return ModelResponse(result=[AIMessage(content="ok")])
+
+    middleware.wrap_model_call(request=request, handler=handler)
+
+    assert seen_tool_names == [
+        "save_data",
+        "extract_schema",
+        "market_get_valuation_availability",
+    ]
+    assert "MARKET VALUATION DATA" in seen_prompt
+    assert "SEC COMPANY FACTS" not in seen_prompt
 
 
 def test_data_engineer_tool_boundary_exposes_fred_for_macro_context():
@@ -217,6 +252,7 @@ def test_data_engineer_tool_boundary_broad_fallback_includes_all_provider_tools_
             {"name": "census_get_table"},
             {"name": "worldbank_get_indicator"},
             {"name": "sec_fetch_company_facts"},
+            {"name": "market_get_valuation_availability"},
         ]
     )
 
@@ -240,6 +276,7 @@ def test_data_engineer_tool_boundary_broad_fallback_includes_all_provider_tools_
         "census_get_table",
         "worldbank_get_indicator",
         "sec_fetch_company_facts",
+        "market_get_valuation_availability",
     ]
     assert "FRED PROVIDER RULES" in seen_prompt
     assert "BLS DIRECT SOURCE CHECKS" in seen_prompt
@@ -247,6 +284,7 @@ def test_data_engineer_tool_boundary_broad_fallback_includes_all_provider_tools_
     assert "CENSUS REGIONAL CONTEXT" in seen_prompt
     assert "WORLD BANK CROSS-COUNTRY MACRO" in seen_prompt
     assert "SEC COMPANY FACTS" in seen_prompt
+    assert "MARKET VALUATION DATA" in seen_prompt
 
 
 def test_data_engineer_tool_boundary_blocks_inherited_filesystem_tool_calls():
@@ -334,6 +372,7 @@ def test_data_engineer_runnable_uses_only_data_tools(monkeypatch):
         "census_get_table",
         "worldbank_get_indicator",
         "sec_fetch_company_facts",
+        "market_get_valuation_availability",
         "fred_get_series",
     ]
     assert "Filesystem and shell tools are blocked" in captured["system_prompt"]

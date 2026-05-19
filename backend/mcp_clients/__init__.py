@@ -8,6 +8,7 @@ from .fred_mcp_client import (
     list_fred_tools,
     load_fred_tools_with_session,
 )
+from .market_data_provider import DisabledMarketDataProvider, MarketDataProvider
 from .sec_edgar_client import SECEdgarClient, SECEdgarError
 
 __all__ = [
@@ -27,4 +28,6 @@ __all__ = [
     "search_known_bls_series",
     "CensusPublicDataClient",
     "CensusDataError",
+    "DisabledMarketDataProvider",
+    "MarketDataProvider",
 ]

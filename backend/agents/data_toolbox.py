@@ -5,7 +5,7 @@ from typing import Any, Literal
 
 DATA_TOOLBOX_PREFERENCE_KEY = "data_toolbox"
 
-ProviderName = Literal["fred", "bls", "bea", "census", "worldbank", "sec"]
+ProviderName = Literal["fred", "bls", "bea", "census", "worldbank", "sec", "market"]
 
 PROVIDER_ORDER: tuple[ProviderName, ...] = (
     "fred",
@@ -14,6 +14,7 @@ PROVIDER_ORDER: tuple[ProviderName, ...] = (
     "census",
     "worldbank",
     "sec",
+    "market",
 )
 
 PROVIDER_LABELS: dict[str, str] = {
@@ -23,6 +24,7 @@ PROVIDER_LABELS: dict[str, str] = {
     "census": "Census",
     "worldbank": "World Bank",
     "sec": "SEC EDGAR",
+    "market": "Market valuation availability",
 }
 
 TOOLBOX_CONFIDENCE_FALLBACK_THRESHOLD = 0.55
