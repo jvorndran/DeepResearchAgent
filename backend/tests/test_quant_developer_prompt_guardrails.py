@@ -352,6 +352,31 @@ handoff = save_quant_outputs(output_dir, charts, execution_summary)
     assert "`source_coverage`" in response.content
 
 
+def test_quant_guardrail_ignores_uncalled_sec_evidence_handoff_function(tmp_path):
+    sec_path = tmp_path / "NVDA_sec_edgar_company_facts.csv"
+    sec_path.write_text("fiscal_year,revenue\n2025,130000\n", encoding="utf-8")
+    content = f'''
+from agents.quant_macro_stats import sec_company_facts_evidence, save_quant_outputs
+
+DATA_FILES = {{"sec_facts": {str(sec_path)!r}}}
+charts = {{}}
+
+def unused_sec_handoff():
+    company_evidence = sec_company_facts_evidence(DATA_FILES, query="NVDA fundamentals")
+    execution_summary = {{"methods_used": ["sec_company_facts_evidence"]}}
+    execution_summary.update(company_evidence)
+    return save_quant_outputs(output_dir, charts, execution_summary)
+
+execution_summary = {{"methods_used": ["manual summary"]}}
+handoff = save_quant_outputs(output_dir, charts, execution_summary)
+'''
+
+    response = _blocked_write_response(tmp_path, content)
+
+    assert response.status == "error"
+    assert "`sec_company_facts_evidence(...)` is not merged" in response.content
+
+
 def test_quant_guardrail_blocks_sec_helper_merged_after_save(tmp_path):
     sec_path = tmp_path / "NVDA_sec_edgar_company_facts.csv"
     sec_path.write_text("fiscal_year,revenue\n2025,130000\n", encoding="utf-8")

@@ -3331,6 +3331,56 @@ def test_validate_research_report_file_rejects_artifact_fact_mismatch(tmp_path):
     assert "artifact_fact_mismatch" in gate["blockers"][0]
 
 
+def test_validate_research_report_file_rejects_malformed_sibling_execution_summary(
+    tmp_path,
+):
+    report_path = tmp_path / "report.json"
+    chart = _line_chart("consumer_stress_dashboard")
+    (tmp_path / "execution_summary.json").write_text("{not-json", encoding="utf-8")
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "job_id": "job-1",
+                "created_at": "2026-04-29T00:00:00+00:00",
+                "query": "Build a compact dashboard with charts showing consumer stress.",
+                "title": "Consumer Stress Dashboard",
+                "executive_summary": "Consumer stress was charted.",
+                "markdown": (
+                    "## Executive Summary\nConsumer stress was charted.\n\n"
+                    "<!-- CHART:consumer_stress_dashboard -->"
+                ),
+                "charts": {"consumer_stress_dashboard": chart},
+                "data_sources": [],
+                "metadata": {
+                    "analysis_type": "macro_indicator",
+                    "chart_count": 1,
+                    "word_count": 8,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    runtime = SimpleNamespace(context=SimpleNamespace(job_id="job-1", output_dir=str(tmp_path)))
+
+    gate = json.loads(
+        validate_research_report_file.func(
+            runtime=runtime,
+            report_json_path=str(report_path),
+            auto_patch=False,
+        )
+    )
+
+    assert gate["passes_gate"] is False
+    assert gate["chart_handoff"] == {}
+    assert gate["artifact_fact_consistency"] == {}
+    assert gate["load_error"].startswith(
+        f"failed to load sibling execution_summary.json for {report_path}: "
+        "Invalid execution_summary.json"
+    )
+    assert gate["blockers"] == [gate["load_error"]]
+
+
 def test_validate_research_report_file_allows_explicitly_dropped_handoff_chart_ids(
     tmp_path,
 ):
@@ -4248,6 +4298,82 @@ def test_technical_writer_middleware_returns_quant_failure_for_artifact_fact_mis
     assert handoff["failure_category"] == "artifact_fact_mismatch"
     assert "UNRATE/CPIAUCSL" in handoff["reason"]
     assert "numeric_facts" in handoff["required_fixes"][0]
+
+
+def test_technical_writer_middleware_prefers_latest_success_over_stale_mismatches():
+    middleware = next(
+        item
+        for item in TECHNICAL_WRITER_SUBAGENT["middleware"]
+        if isinstance(item, TechnicalWriterToolBoundaryMiddleware)
+    )
+    request = _Request(
+        [
+            SimpleNamespace(name="write_research_report"),
+            SimpleNamespace(name="validate_research_report_file"),
+        ],
+        messages=[
+            ToolMessage(
+                content=json.dumps(
+                    {
+                        "passes_gate": False,
+                        "chart_handoff": {
+                            "expected_chart_ids": ["consumer_stress"],
+                            "missing_report_chart_ids": ["consumer_stress"],
+                            "dropped_chart_ids": [],
+                        },
+                        "blockers": ["chart_handoff_mismatch: stale failure"],
+                    }
+                ),
+                name="validate_research_report_file",
+                tool_call_id="call-stale-chart",
+            ),
+            ToolMessage(
+                content=json.dumps(
+                    {
+                        "status": "error",
+                        "failure_category": "artifact_fact_mismatch",
+                        "report_path": "/tmp/outputs/job-1/report.json",
+                        "message": "artifact_fact_mismatch: stale failure",
+                    }
+                ),
+                name="write_research_report",
+                tool_call_id="call-stale-fact",
+            ),
+            ToolMessage(
+                content=json.dumps(
+                    {
+                        "report_path": "/tmp/outputs/job-1/report.json",
+                        "chart_count": 1,
+                        "validation_issues": [],
+                    }
+                ),
+                name="write_research_report",
+                tool_call_id="call-write",
+            ),
+            ToolMessage(
+                content=json.dumps(
+                    {
+                        "passes_gate": True,
+                        "report_path": "/tmp/outputs/job-1/report.json",
+                        "charts": {"defined_charts": ["consumer_stress"]},
+                        "blockers": [],
+                    }
+                ),
+                name="validate_research_report_file",
+                tool_call_id="call-validate",
+            ),
+        ],
+    )
+
+    response = middleware.wrap_model_call(
+        request,
+        lambda req: ModelResponse(result=[AIMessage(content="should not run")]),
+    )
+
+    handoff = json.loads(response.result[0].content)
+    assert handoff["status"] == "success"
+    assert handoff["report_json"] == "/tmp/outputs/job-1/report.json"
+    assert handoff["chart_ids"] == ["consumer_stress"]
 
 
 def test_technical_writer_middleware_blocks_inherited_filesystem_tool_calls():

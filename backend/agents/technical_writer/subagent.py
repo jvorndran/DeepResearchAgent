@@ -168,6 +168,7 @@ def _latest_chart_handoff_mismatch(messages: list[Any]) -> dict[str, Any] | None
             return parsed
         if parsed.get("failure_category") == "chart_handoff_mismatch":
             return parsed
+        return None
     return None
 
 
@@ -184,14 +185,13 @@ def _latest_artifact_fact_mismatch(messages: list[Any]) -> dict[str, Any] | None
         if parsed.get("failure_category") == "artifact_fact_mismatch":
             return parsed
         blockers = parsed.get("blockers")
-        if not isinstance(blockers, list):
-            continue
-        if any(
+        if isinstance(blockers, list) and any(
             isinstance(blocker, str)
             and blocker.startswith("artifact_fact_mismatch:")
             for blocker in blockers
         ):
             return parsed
+        return None
     return None
 
 

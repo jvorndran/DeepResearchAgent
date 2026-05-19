@@ -35,6 +35,15 @@ class ReferenceArea(BaseModel):
 
 
 class ChartProvenance(BaseModel):
+    """Flexible chart lineage metadata.
+
+    List fields are used for simple single-source or same-shape series
+    inventories. Mapping fields are used when chart data keys or labels need to
+    be tied back to distinct source series, files, or raw latest observations.
+    Extra keys remain allowed so generated analysis scripts can attach
+    provider-specific lineage without forcing a schema migration.
+    """
+
     model_config = ConfigDict(extra="allow")
 
     source_series: list[str] | dict[str, Any] | None = None

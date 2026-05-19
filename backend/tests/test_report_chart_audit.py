@@ -206,6 +206,31 @@ def test_report_chart_audit_rejects_missing_handoff_chart_ids(tmp_path):
     assert "chart_handoff_mismatch" in audit["blockers"][0]
 
 
+def test_report_chart_audit_rejects_malformed_sibling_execution_summary(tmp_path):
+    report_path = _write_report(
+        tmp_path,
+        {
+            "id": "consumer_stress_dashboard",
+            "type": "line",
+            "title": "Consumer Stress",
+            "description": "Consumer stress over time.",
+            "xAxisKey": "date",
+            "series": [{"dataKey": "value", "label": "Value", "color": "#2563eb"}],
+            "data": [{"date": "2026-01", "value": 1.0}],
+        },
+    )
+    (tmp_path / "execution_summary.json").write_text("{not-json", encoding="utf-8")
+
+    audit = json.loads(run_report_chart_audit(str(report_path)))
+
+    assert audit["passes_audit"] is False
+    assert audit["chart_handoff"] == {}
+    assert audit["artifact_fact_consistency"] == {}
+    assert audit["blockers"][0].startswith(
+        "failed to load sibling execution_summary.json: Invalid execution_summary.json"
+    )
+
+
 def test_report_chart_audit_rejects_raw_latest_provenance_outpaced_by_display_label(
     tmp_path,
 ):
@@ -284,6 +309,54 @@ def test_report_chart_audit_accepts_per_series_latest_labels_with_staggered_endp
 
     assert audit["passes_audit"] is True
     assert "sentiment_labor" not in audit["chart_semantics"]["blockers"]
+
+
+def test_report_chart_audit_matches_raw_latest_through_source_series_aliases(
+    tmp_path,
+):
+    report_path = _write_report(
+        tmp_path,
+        {
+            "id": "sentiment_labor",
+            "type": "line",
+            "title": "Sentiment And Labor",
+            "description": "Sentiment and payrolls with staggered latest dates.",
+            "xAxisKey": "date",
+            "series": [
+                {"dataKey": "payrolls", "label": "Payrolls", "color": "#2563eb"},
+                {"dataKey": "sentiment", "label": "Sentiment", "color": "#f59e0b"},
+            ],
+            "data": [
+                {"date": "2026-01", "payrolls": 151.1, "sentiment": 72.0},
+                {"date": "2026-02", "payrolls": 151.3, "sentiment": 74.0},
+                {"date": "2026-03", "payrolls": 151.5, "sentiment": 76.0},
+            ],
+            "provenance": {
+                "source_series": {
+                    "payrolls": "PAYEMS",
+                    "sentiment": "UMCSENT",
+                },
+                "raw_latest_observation": {
+                    "PAYEMS": "2026-02-06",
+                    "UMCSENT": "2026-03-15",
+                },
+                "displayed_window": {"start": "2026-01", "end": "2026-03"},
+                "displayed_latest_label": {
+                    "payrolls": "2026-03",
+                    "sentiment": "2026-03",
+                },
+                "resampling": "monthly labels preserve each source series endpoint",
+            },
+        },
+    )
+
+    audit = json.loads(run_report_chart_audit(str(report_path)))
+
+    assert audit["passes_audit"] is False
+    assert audit["chart_semantics"]["blockers"]["sentiment_labor"] == [
+        "displayed_latest_label.payrolls=2026-03 outpaces "
+        "raw_latest_observation.PAYEMS=2026-02-06"
+    ]
 
 
 def test_report_chart_audit_rejects_artifact_fact_mismatch(tmp_path):

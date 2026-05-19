@@ -34,7 +34,6 @@ unit_checks = [
         "real_hourly_wage_gap",
         [all_hourly, prod_hourly],
         operation="difference",
-        metric="CPI-deflated hourly earnings gap",
     )
 ]
 execution_summary["source_unit_metadata"] = [all_hourly, prod_hourly]

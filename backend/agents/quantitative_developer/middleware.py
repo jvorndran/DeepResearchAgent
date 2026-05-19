@@ -484,9 +484,6 @@ def _statement_list_has_sec_evidence_handoff(
     state = set(composed_names or set())
     for stmt in statements:
         if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            found, _ = _statement_list_has_sec_evidence_handoff(stmt.body, set())
-            if found:
-                return True, state
             continue
         if isinstance(stmt, ast.If):
             body_found, body_after = _statement_list_has_sec_evidence_handoff(
@@ -1332,8 +1329,7 @@ class QuantDeveloperToolBoundaryMiddleware(AgentMiddleware):
                             "`align_period_features` accepts only `series_frames` as a "
                             "positional argument. Use keyword arguments for the rest: "
                             'align_period_features(series_frames, frequency="M", '
-                            'how="outer", timestamp_position="start", '
-                            'fill_method="ffill", fill_limit=2, '
+                            'how="outer", fill_method="ffill", fill_limit=2, '
                             'fill_scope="lower_frequency").'
                         ),
                         name="write_file",
@@ -1486,8 +1482,7 @@ class QuantDeveloperToolBoundaryMiddleware(AgentMiddleware):
                     "The DATA_FILES manifest combines high-frequency series such as "
                     "Treasury yields or initial claims with monthly/quarterly macro "
                     "series. Import and call `align_period_features(series_frames, "
-                    'frequency="M", how="outer", timestamp_position="start", '
-                    'fill_method="ffill", fill_limit=2, '
+                    'frequency="M", how="outer", fill_method="ffill", fill_limit=2, '
                     'fill_scope="lower_frequency")` '
                     "from `agents.quant_macro_stats` before deriving features or "
                     "calling `direct_ols_forecast`. The helper only carries "

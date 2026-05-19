@@ -38,6 +38,7 @@ _CORRELATION_ID_RE = re.compile(
     r"(?:^|[.:/])(?:corr|correlation)[._:/-]([A-Za-z0-9]+)[._:/-]([A-Za-z0-9]+)$",
     re.IGNORECASE,
 )
+_PAIR_LABEL_SPLIT_RE = re.compile(r"\s*(?:/|\||,|\bvs\.?\b|\band\b)\s*", re.IGNORECASE)
 _DEFAULT_CORRELATION_TOLERANCE = 0.005
 
 
@@ -357,7 +358,23 @@ def _pair_from_mapping(value: dict[str, Any]) -> tuple[str, str] | None:
         right = _non_empty_string(value.get(right_key))
         if left and right:
             return left, right
+    for key in ("pair", "metric_pair"):
+        pair = _pair_from_pair_label(value.get(key))
+        if pair is not None:
+            return pair
     return None
+
+
+def _pair_from_pair_label(value: Any) -> tuple[str, str] | None:
+    text = _non_empty_string(value)
+    if text is None:
+        return None
+    text = text.strip("()[]{} ")
+    parts = [part.strip("()[]{} ") for part in _PAIR_LABEL_SPLIT_RE.split(text)]
+    parts = [part for part in parts if part]
+    if len(parts) != 2:
+        return None
+    return parts[0], parts[1]
 
 
 def _pair_from_correlation_label(value: Any) -> tuple[str, str] | None:

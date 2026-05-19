@@ -1428,6 +1428,38 @@ def test_artifact_fact_consistency_uses_numeric_fact_id_only_correlation_pair():
     assert "artifact_fact_mismatch" in artifact_fact_consistency_blocker(consistency)
 
 
+def test_artifact_fact_consistency_parses_chart_pair_label_correlation_pair():
+    consistency = artifact_fact_consistency_dict(
+        execution_summary={
+            "numeric_facts": [
+                {
+                    "id": "corr_UNRATE_CPIAUCSL",
+                    "value": 0.024,
+                    "display_value": "0.024",
+                }
+            ]
+        },
+        charts={
+            "macro_correlation_heatmap": {
+                "type": "bar",
+                "data": [
+                    {
+                        "pair": "UNRATE/CPIAUCSL",
+                        "correlation": 0.908,
+                    }
+                ],
+            }
+        },
+    )
+
+    assert consistency["valid"] is False
+    assert consistency["mismatches"][0]["pair"] == ["UNRATE", "CPIAUCSL"]
+    assert any(
+        "macro_correlation_heatmap.data[0]" in observation["source"]
+        for observation in consistency["mismatches"][0]["observations"]
+    )
+
+
 def test_save_quant_outputs_does_not_shape_scenario_score_rows(tmp_path):
     charts = {
         "scenario_scores": {
@@ -1695,3 +1727,36 @@ def test_normalize_quant_report_charts_pivots_grouped_axis_long_form():
             "converted unsupported groupBy=ticker long-form cagr chart into wide series columns"
         ]
     }
+
+
+def test_normalize_quant_report_charts_labels_single_metric_grouped_series_by_group():
+    result = normalize_quant_report_charts(
+        {
+            "cagr_summary": {
+                "type": "bar",
+                "title": "5-Year CAGR Comparison",
+                "xAxisKey": "metric",
+                "data": [
+                    {"metric": "Revenue", "ticker": "AAPL", "cagr": 6.2},
+                    {"metric": "Revenue", "ticker": "MSFT", "cagr": 12.1},
+                    {"metric": "FCF", "ticker": "AAPL", "cagr": 8.4},
+                    {"metric": "FCF", "ticker": "MSFT", "cagr": 9.7},
+                ],
+                "series": [
+                    {"dataKey": "cagr", "label": "CAGR", "color": "#3b82f6"},
+                ],
+                "config": {"groupBy": "ticker"},
+            }
+        }
+    )
+
+    chart = result["charts"]["cagr_summary"]
+
+    assert chart["series"] == [
+        {"dataKey": "AAPL", "label": "AAPL", "color": "#3b82f6"},
+        {"dataKey": "MSFT", "label": "MSFT", "color": "#2563eb"},
+    ]
+    assert chart["data"] == [
+        {"metric": "Revenue", "AAPL": 6.2, "MSFT": 12.1},
+        {"metric": "FCF", "AAPL": 8.4, "MSFT": 9.7},
+    ]

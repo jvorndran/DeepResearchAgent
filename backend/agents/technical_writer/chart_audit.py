@@ -183,18 +183,40 @@ def _raw_latest_items(raw_latest: Any) -> list[tuple[str | None, Any]]:
     return []
 
 
+def _raw_target_aliases(
+    provenance: dict[str, Any],
+    target_key: str,
+) -> set[str]:
+    aliases = {target_key.strip().lower()}
+    source_series = provenance.get("source_series")
+    if not isinstance(source_series, dict):
+        return aliases
+
+    normalized_target = target_key.strip().lower()
+    for source_key, source_value in source_series.items():
+        key = str(source_key).strip()
+        value = str(source_value).strip()
+        if not key or not value:
+            continue
+        normalized_pair = {key.lower(), value.lower()}
+        if normalized_target in normalized_pair:
+            aliases.update(normalized_pair)
+    return aliases
+
+
 def _raw_items_for_target(
     raw_items: list[tuple[str | None, Any]],
     target_key: str | None,
+    provenance: dict[str, Any],
 ) -> list[tuple[str | None, Any]]:
     if target_key is None:
         return raw_items if len(raw_items) == 1 else []
 
-    normalized_target = target_key.lower()
+    target_aliases = _raw_target_aliases(provenance, target_key)
     matched = [
         (series, value)
         for series, value in raw_items
-        if series is not None and series.lower() == normalized_target
+        if series is not None and series.strip().lower() in target_aliases
     ]
     if matched:
         return matched
@@ -355,7 +377,11 @@ def _raw_latest_blockers(
         last_x,
         latest_by_alias,
     ):
-        for series, raw_latest in _raw_items_for_target(raw_items, target_key):
+        for series, raw_latest in _raw_items_for_target(
+            raw_items,
+            target_key,
+            provenance,
+        ):
             if _display_outpaces_raw(displayed, raw_latest):
                 blockers.append(
                     f"{target_name}={displayed} outpaces "
@@ -1033,7 +1059,22 @@ def run_report_chart_audit(report_json_path: str) -> str:
     markers = chart_marker_dict(report)
     render = chart_render_dict(report)
     semantics = chart_semantics_dict(report)
-    execution_summary, _ = load_sibling_execution_summary_json(path)
+    execution_summary, summary_load_error = load_sibling_execution_summary_json(path)
+    if summary_load_error is not None:
+        return _audit_payload(
+            passes_audit=False,
+            report_path=str(path),
+            chart_markers=markers,
+            chart_render=render,
+            chart_semantics=semantics,
+            chart_handoff={},
+            artifact_fact_consistency={},
+            warnings=[],
+            blockers=[
+                f"failed to load sibling execution_summary.json: {summary_load_error}"
+            ],
+            load_error=summary_load_error,
+        )
     chart_handoff = chart_handoff_dict(report.model_dump(), execution_summary)
     artifact_fact_consistency = artifact_fact_consistency_dict(
         execution_summary=execution_summary,

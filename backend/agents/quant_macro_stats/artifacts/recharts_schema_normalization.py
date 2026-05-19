@@ -572,9 +572,11 @@ def _normalize_grouped_axis_chart(
             if index < len(series) and isinstance(series[index], dict)
             else {}
         )
+        source_label = str(source.get("label") or source.get("name") or "").strip()
+        label = source_label if source_label == group_label else group_label
         item: dict[str, Any] = {
             "dataKey": group_label,
-            "label": source.get("label") or source.get("name") or group_label,
+            "label": label,
             "color": source.get("color") or "#2563eb",
         }
         for field in ("type", "yAxisId", "stackId", "shape", "strokeDasharray"):
