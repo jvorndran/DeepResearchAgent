@@ -52,12 +52,15 @@ def save_quant_outputs(
     evidence_bundle_path = output_path / "evidence_bundle.json"
 
     input_chart_map = _chart_map_from_payload(charts)
-    validate_chart_source_tables(input_chart_map)
-    chart_map, dropped_chart_ids, chart_normalization_issues = (
-        _drop_empty_chart_definitions(input_chart_map)
-    )
+    chart_source_validation = validate_chart_source_tables(input_chart_map)
+    (
+        chart_map,
+        dropped_chart_ids,
+        chart_normalization_issues,
+        chart_projection_transforms,
+    ) = _drop_empty_chart_definitions(input_chart_map)
     chart_ids = list(chart_map.keys())
-    chart_source_validation = validate_chart_source_tables(chart_map)
+    chart_render_validation = validate_chart_source_tables(chart_map)
 
     summary = normalize_quant_execution_summary(execution_summary)
     _normalize_declared_since_lists(summary)
@@ -70,8 +73,16 @@ def save_quant_outputs(
     summary["evidence_bundle_json"] = str(evidence_bundle_path)
     summary["chart_ids"] = chart_ids
     chart_source_metadata = chart_source_validation.metadata_for_chart_ids(chart_ids)
+    chart_render_metadata = chart_render_validation.metadata_for_chart_ids(chart_ids)
     if chart_source_metadata:
         summary["chart_source_table_validation"] = chart_source_metadata
+    if chart_render_metadata:
+        summary["chart_render_table_validation"] = chart_render_metadata
+    if chart_projection_transforms:
+        summary["chart_projection_transforms"] = _merge_chart_projection_transforms(
+            summary.get("chart_projection_transforms"),
+            chart_projection_transforms,
+        )
     if dropped_chart_ids:
         summary["dropped_chart_ids"] = dropped_chart_ids
     if chart_normalization_issues:
@@ -163,6 +174,22 @@ def _preserve_chart_provenance(
         summary["chart_provenance"] = preserved
     else:
         summary.pop("chart_provenance", None)
+
+
+def _merge_chart_projection_transforms(
+    existing_value: Any,
+    generated: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    if isinstance(existing_value, dict):
+        for chart_id, value in existing_value.items():
+            merged[str(chart_id)] = value
+    elif isinstance(existing_value, list):
+        for item in existing_value:
+            if isinstance(item, dict) and isinstance(item.get("chart_id"), str):
+                merged[item["chart_id"]] = item
+    merged.update(generated)
+    return merged
 
 
 def _preserve_source_unit_contract(summary: dict[str, Any]) -> None:

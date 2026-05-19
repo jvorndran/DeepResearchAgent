@@ -2999,6 +2999,10 @@ def test_save_quant_outputs_rejects_ambiguous_grouped_axis_chart_before_writes(
     assert (
         "chart 'margin_comparison' table 'chart_data:margin_comparison' "
         "column 'ticker'"
+    ) not in message
+    assert (
+        "chart 'margin_comparison' table 'chart_source:margin_comparison' "
+        "column 'ticker'"
     ) in message
     assert (
         "duplicate groupBy pair fiscal_year='2024' ticker='AAPL' at rows 0 and 1"
@@ -3046,12 +3050,41 @@ def test_save_quant_outputs_rejects_multi_datakey_grouped_axis_chart_before_writ
     message = str(exc.value)
     assert (
         "chart 'multi_metric_peer_chart' table "
-        "'chart_data:multi_metric_peer_chart' column 'series.dataKey'"
+        "'chart_source:multi_metric_peer_chart' column 'series.dataKey'"
     ) in message
     assert (
         "groupBy axis charts must declare one shared plotted dataKey; "
         "got revenue_growth, operating_margin"
     ) in message
+    _assert_no_quant_artifacts(tmp_path)
+
+
+def test_save_quant_outputs_rejects_grouped_axis_chart_without_provenance(
+    tmp_path,
+):
+    charts = {
+        "cagr_summary": {
+            "type": "bar",
+            "title": "5-Year CAGR Comparison",
+            "xAxisKey": "metric",
+            "data": [
+                {"metric": "Revenue", "ticker": "AAPL", "cagr": 6.2},
+                {"metric": "Revenue", "ticker": "MSFT", "cagr": 12.1},
+                {"metric": "FCF", "ticker": "AAPL", "cagr": 8.4},
+                {"metric": "FCF", "ticker": "MSFT", "cagr": 9.7},
+            ],
+            "series": [
+                {"dataKey": "cagr", "label": "AAPL", "color": "#3b82f6"},
+                {"dataKey": "cagr", "label": "MSFT", "color": "#f59e0b"},
+            ],
+            "config": {"groupBy": "ticker"},
+        }
+    }
+
+    with pytest.raises(ValueError) as exc:
+        qms.save_quant_outputs(tmp_path, charts, {})
+
+    assert "source_table_ids" in str(exc.value)
     _assert_no_quant_artifacts(tmp_path)
 
 
@@ -3087,8 +3120,13 @@ def test_save_quant_outputs_saves_valid_grouped_axis_chart_with_validation_metad
     saved_charts = json.loads((tmp_path / "charts.json").read_text())
     saved_bundle = json.loads((tmp_path / "evidence_bundle.json").read_text())
 
-    validation = saved_summary["chart_source_table_validation"]["cagr_summary"]
+    source_validation = saved_summary["chart_source_table_validation"]["cagr_summary"]
+    render_validation = saved_summary["chart_render_table_validation"]["cagr_summary"]
+    projection = saved_summary["chart_projection_transforms"]["cagr_summary"]
     assert handoff["chart_ids"] == ["cagr_summary"]
+    assert handoff["chart_projection_transforms"] == {
+        "cagr_summary": projection,
+    }
     assert saved_charts["cagr_summary"]["series"] == [
         {"dataKey": "AAPL", "label": "AAPL", "color": "#3b82f6"},
         {"dataKey": "MSFT", "label": "MSFT", "color": "#f59e0b"},
@@ -3097,7 +3135,21 @@ def test_save_quant_outputs_saves_valid_grouped_axis_chart_with_validation_metad
         {"metric": "Revenue", "AAPL": 6.2, "MSFT": 12.1},
         {"metric": "FCF", "AAPL": 8.4, "MSFT": 9.7},
     ]
-    assert validation == {
+    assert source_validation == {
+        "status": "valid",
+        "validation_version": 1,
+        "chart_id": "cagr_summary",
+        "table_id": "chart_source:cagr_summary",
+        "chart_type": "bar",
+        "axis_key": "metric",
+        "series_keys": ["cagr"],
+        "row_count": 4,
+        "columns": ["metric", "ticker", "cagr"],
+        "group_by_key": "ticker",
+        "unique_axis_values": 2,
+        "unique_group_pairs": 4,
+    }
+    assert render_validation == {
         "status": "valid",
         "validation_version": 1,
         "chart_id": "cagr_summary",
@@ -3109,14 +3161,68 @@ def test_save_quant_outputs_saves_valid_grouped_axis_chart_with_validation_metad
         "columns": ["metric", "AAPL", "MSFT"],
         "unique_axis_values": 2,
     }
-    assert saved_bundle["normalized_tables"][0]["row_count"] == validation["row_count"]
-    assert saved_bundle["normalized_tables"][0]["columns"] == validation["columns"]
+    assert projection == {
+        "projection_version": 1,
+        "transform_id": "chart_projection:cagr_summary:long_to_wide",
+        "chart_id": "cagr_summary",
+        "operation": "long_to_wide_grouped_axis",
+        "source_table_id": "chart_source:cagr_summary",
+        "render_table_id": "chart_data:cagr_summary",
+        "axis_key": "metric",
+        "group_by_key": "ticker",
+        "value_key": "cagr",
+        "group_values": ["AAPL", "MSFT"],
+        "source_columns": ["metric", "ticker", "cagr"],
+        "render_columns": ["metric", "AAPL", "MSFT"],
+        "source_row_count": 4,
+        "render_row_count": 2,
+        "metadata": {},
+    }
+    tables = {table["table_id"]: table for table in saved_bundle["normalized_tables"]}
+    assert tables["chart_source:cagr_summary"]["role"] == "chart_source_data"
+    assert tables["chart_source:cagr_summary"]["row_count"] == 4
+    assert tables["chart_source:cagr_summary"]["columns"] == [
+        "metric",
+        "ticker",
+        "cagr",
+    ]
     assert (
-        saved_bundle["normalized_tables"][0]["metadata"][
+        tables["chart_source:cagr_summary"]["metadata"][
             "chart_source_table_validation"
         ]
-        == validation
+        == source_validation
     )
+    assert tables["chart_data:cagr_summary"]["role"] == "chart_data"
+    assert tables["chart_data:cagr_summary"]["row_count"] == 2
+    assert tables["chart_data:cagr_summary"]["columns"] == [
+        "metric",
+        "AAPL",
+        "MSFT",
+    ]
+    assert (
+        tables["chart_data:cagr_summary"]["metadata"][
+            "chart_render_table_validation"
+        ]
+        == render_validation
+    )
+    bundle_chart = saved_bundle["charts"][0]
+    assert bundle_chart["source_table_ids"] == [
+        "chart_source:cagr_summary",
+        "chart_data:cagr_summary",
+    ]
+    assert bundle_chart["transform_ids"] == [
+        "unit_test_projection",
+        "chart_projection:cagr_summary:long_to_wide",
+    ]
+    transforms = {
+        transform["transform_id"]: transform for transform in saved_bundle["transforms"]
+    }
+    assert transforms["chart_projection:cagr_summary:long_to_wide"]["operation"] == (
+        "long_to_wide_grouped_axis"
+    )
+    assert transforms["chart_projection:cagr_summary:long_to_wide"][
+        "source_table_ids"
+    ] == ["chart_source:cagr_summary", "chart_data:cagr_summary"]
 
 
 def test_normalize_quant_report_charts_returns_dropped_ids():
@@ -3171,9 +3277,59 @@ def test_normalize_quant_report_charts_pivots_grouped_axis_long_form():
         {"metric": "FCF", "AAPL": 8.4, "MSFT": 9.7},
     ]
     assert "config" not in chart
+    assert result["chart_projection_transforms"] == {
+        "cagr_summary": {
+            "projection_version": 1,
+            "transform_id": "chart_projection:cagr_summary:long_to_wide",
+            "chart_id": "cagr_summary",
+            "operation": "long_to_wide_grouped_axis",
+            "source_table_id": "chart_source:cagr_summary",
+            "render_table_id": "chart_data:cagr_summary",
+            "axis_key": "metric",
+            "group_by_key": "ticker",
+            "value_key": "cagr",
+            "group_values": ["AAPL", "MSFT"],
+            "source_columns": ["metric", "ticker", "cagr"],
+            "render_columns": ["metric", "AAPL", "MSFT"],
+            "source_row_count": 4,
+            "render_row_count": 2,
+            "metadata": {},
+        }
+    }
     assert result["chart_normalization_issues"] == {
         "cagr_summary": [
             "converted unsupported groupBy=ticker long-form cagr chart into wide series columns"
+        ]
+    }
+
+
+def test_normalize_quant_report_charts_drops_lossy_grouped_axis_projection():
+    result = normalize_quant_report_charts(
+        {
+            "cagr_summary": {
+                "type": "bar",
+                "title": "5-Year CAGR Comparison",
+                "xAxisKey": "metric",
+                "data": [
+                    {"metric": "Revenue", "ticker": "AAPL", "cagr": 6.2},
+                    {"metric": "Revenue", "ticker": "MSFT", "cagr": None},
+                ],
+                "series": [
+                    {"dataKey": "cagr", "label": "AAPL", "color": "#3b82f6"},
+                    {"dataKey": "cagr", "label": "MSFT", "color": "#f59e0b"},
+                ],
+                "config": {"groupBy": "ticker"},
+            }
+        }
+    )
+
+    assert result["charts"] == {}
+    assert result["chart_ids"] == []
+    assert result["dropped_chart_ids"] == ["cagr_summary"]
+    assert result["chart_projection_transforms"] == {}
+    assert result["chart_normalization_issues"] == {
+        "cagr_summary": [
+            "dropped unsupported groupBy=ticker chart: row has non-finite cagr value"
         ]
     }
 

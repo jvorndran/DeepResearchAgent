@@ -12,6 +12,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from mcp_clients.market_data_provider import MARKET_VALUATION_SOURCE_ID
 from mcp_clients.sec_edgar_contract import SEC_COMPANY_FACT_PROVENANCE_CONTRACT
 
+from .chart_projection_contract import (
+    ChartProjectionTransform,
+    chart_projection_transforms_by_chart,
+    chart_render_table_id,
+    normalize_chart_projection_transforms,
+)
 from .chart_provenance import normalize_chart_provenance
 from .json_safety import to_json_safe
 from .numeric_fact_contracts import normalize_numeric_facts
@@ -21,7 +27,6 @@ from .source_unit_fidelity import (
 )
 
 
-_CHART_DATA_TABLE_PREFIX = "chart_data:"
 _TRANSFORM_BASIS_KEYS = (
     "transform_basis",
     "correlation_basis",
@@ -550,6 +555,22 @@ def _chart_from_payload(
 ) -> EvidenceChart:
     payload = chart if isinstance(chart, Mapping) else {}
     provenance = _chart_provenance(chart_id, payload, summary)
+    projection = _chart_projection_by_chart(summary).get(chart_id)
+    source_table_ids = _source_table_ids_for_chart(
+        chart_id,
+        payload,
+        provenance,
+        table_ids=table_ids,
+    )
+    source_ids = _source_ids_from_chart_provenance(provenance)
+    if projection is not None and source_ids:
+        source_table_ids = _unique_texts(
+            [
+                projection.source_table_id,
+                projection.render_table_id,
+                *source_table_ids,
+            ]
+        )
 
     data = payload.get("data")
     return EvidenceChart(
@@ -560,13 +581,8 @@ def _chart_from_payload(
         x_axis_key=_chart_axis_key(payload),
         series_keys=_chart_series_keys(payload),
         source_series=_source_series_from_provenance(provenance),
-        source_table_ids=_source_table_ids_for_chart(
-            chart_id,
-            payload,
-            provenance,
-            table_ids=table_ids,
-        ),
-        transform_ids=_chart_transform_ids(payload, provenance, summary),
+        source_table_ids=source_table_ids,
+        transform_ids=_chart_transform_ids(chart_id, payload, provenance, summary),
         data_row_count=len(data) if isinstance(data, list) else None,
         provenance=provenance,
     )
@@ -754,10 +770,25 @@ def _chart_data_table_refs(
     summary: Mapping[str, Any],
 ) -> list[EvidenceTableRef]:
     refs: list[EvidenceTableRef] = []
+    projection_by_chart = _chart_projection_by_chart(summary)
     for chart_id, chart in charts.items():
         payload = chart if isinstance(chart, Mapping) else {}
         provenance = _chart_provenance(chart_id, payload, summary)
         source_ids = _source_ids_from_chart_provenance(provenance)
+        projection = projection_by_chart.get(str(chart_id))
+        if projection is not None:
+            if not source_ids:
+                continue
+            refs.extend(
+                _projected_chart_table_refs(
+                    str(chart_id),
+                    projection,
+                    source_ids=source_ids,
+                    summary=summary,
+                )
+            )
+            continue
+
         data = payload.get("data")
         if not source_ids or not isinstance(data, list) or not data:
             continue
@@ -782,11 +813,75 @@ def _chart_data_table_refs(
     return refs
 
 
+def _projected_chart_table_refs(
+    chart_id: str,
+    projection: ChartProjectionTransform,
+    *,
+    source_ids: list[str],
+    summary: Mapping[str, Any],
+) -> list[EvidenceTableRef]:
+    source_metadata = {
+        "chart_id": chart_id,
+        "source_ids": source_ids,
+        "chart_projection_transform_id": projection.transform_id,
+        "chart_projection_role": "source",
+    }
+    source_validation = _chart_source_validation_metadata(summary, chart_id)
+    if source_validation:
+        source_metadata["chart_source_table_validation"] = source_validation
+
+    render_metadata = {
+        "chart_id": chart_id,
+        "source_ids": source_ids,
+        "chart_projection_transform_id": projection.transform_id,
+        "chart_projection_role": "render",
+    }
+    render_validation = _chart_render_validation_metadata(summary, chart_id)
+    if render_validation:
+        render_metadata["chart_render_table_validation"] = render_validation
+
+    return [
+        EvidenceTableRef(
+            table_id=projection.source_table_id,
+            kind="normalized",
+            source_id=source_ids[0] if len(source_ids) == 1 else None,
+            role="chart_source_data",
+            row_count=projection.source_row_count,
+            columns=projection.source_columns,
+            metadata=source_metadata,
+        ),
+        EvidenceTableRef(
+            table_id=projection.render_table_id,
+            kind="normalized",
+            source_id=source_ids[0] if len(source_ids) == 1 else None,
+            role="chart_data",
+            row_count=projection.render_row_count,
+            columns=projection.render_columns,
+            metadata=render_metadata,
+        ),
+    ]
+
+
 def _chart_source_validation_metadata(
     summary: Mapping[str, Any],
     chart_id: str,
 ) -> dict[str, Any]:
-    validation = summary.get("chart_source_table_validation")
+    return _chart_validation_metadata(summary, chart_id, "chart_source_table_validation")
+
+
+def _chart_render_validation_metadata(
+    summary: Mapping[str, Any],
+    chart_id: str,
+) -> dict[str, Any]:
+    return _chart_validation_metadata(summary, chart_id, "chart_render_table_validation")
+
+
+def _chart_validation_metadata(
+    summary: Mapping[str, Any],
+    chart_id: str,
+    key: str,
+) -> dict[str, Any]:
+    validation = summary.get(key)
     if not isinstance(validation, Mapping):
         return {}
     metadata = validation.get(chart_id)
@@ -985,6 +1080,14 @@ def _chart_provenance_items(
     return items
 
 
+def _chart_projection_by_chart(
+    summary: Mapping[str, Any],
+) -> dict[str, ChartProjectionTransform]:
+    return chart_projection_transforms_by_chart(
+        summary.get("chart_projection_transforms")
+    )
+
+
 def _source_series_from_provenance(provenance: Mapping[str, Any]) -> list[str]:
     value = provenance.get("source_series")
     if isinstance(value, Mapping):
@@ -1047,10 +1150,11 @@ def _source_file_items(value: Any) -> list[tuple[str, str]]:
 
 
 def _chart_data_table_id(chart_id: str) -> str:
-    return f"{_CHART_DATA_TABLE_PREFIX}{chart_id}"
+    return chart_render_table_id(chart_id)
 
 
 def _chart_transform_ids(
+    chart_id: str,
     payload: Mapping[str, Any],
     provenance: Mapping[str, Any],
     summary: Mapping[str, Any],
@@ -1076,6 +1180,9 @@ def _chart_transform_ids(
         transforms.append("normalization")
     if not transforms:
         transforms.extend(_methods(summary.get("methods_used")))
+    projection = _chart_projection_by_chart(summary).get(chart_id)
+    if projection is not None:
+        transforms.append(projection.transform_id)
     return _unique_texts(transforms)
 
 
@@ -1143,6 +1250,21 @@ def _transform_descriptors(
             metadata=payload.get("metadata")
             if isinstance(payload.get("metadata"), Mapping)
             else payload,
+        )
+
+    for projection in normalize_chart_projection_transforms(
+        summary.get("chart_projection_transforms")
+    ):
+        merge(
+            projection.transform_id,
+            operation=projection.operation,
+            source_table_ids=[
+                projection.source_table_id,
+                projection.render_table_id,
+            ],
+            chart_ids=[projection.chart_id],
+            period_key=projection.axis_key,
+            metadata={"chart_projection": projection.model_dump(mode="json")},
         )
 
     chart_by_id = {chart.chart_id: chart for chart in chart_refs}
@@ -1403,6 +1525,8 @@ def _operation_from_text(*values: Any) -> str | None:
 
 
 def _transform_requires_basis(transform: TransformDescriptor) -> bool:
+    if transform.operation == "long_to_wide_grouped_axis":
+        return False
     return _operation_requires_basis(
         transform.operation,
         transform.transform_id,

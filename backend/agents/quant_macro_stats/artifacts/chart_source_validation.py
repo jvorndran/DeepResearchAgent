@@ -9,6 +9,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from .._utils import _finite_float
+from .chart_projection_contract import chart_render_table_id, chart_source_table_id
 from .recharts_schema_normalization import (
     _canonical_chart_type,
     _canonicalize_axis_chart_schema,
@@ -92,7 +93,12 @@ def _validate_chart_source_tables(
         if not _is_axis_chart(validation_chart):
             continue
 
-        table_id = _chart_data_table_id(chart_id_text)
+        group_by_key = _chart_group_by_key(dict(chart))
+        table_id = (
+            _chart_source_table_id(chart_id_text)
+            if group_by_key
+            else _chart_data_table_id(chart_id_text)
+        )
         data = chart.get("data")
         if isinstance(data, list) and not data:
             continue
@@ -116,7 +122,7 @@ def _validate_chart_source_tables(
             table_id,
             validation_chart,
             data,
-            group_by_key=_chart_group_by_key(dict(chart)),
+            group_by_key=group_by_key,
         )
         issues.extend(chart_issues)
         if metadata_for_chart is not None and not chart_issues:
@@ -558,7 +564,11 @@ def _has_value(value: Any) -> bool:
 
 
 def _chart_data_table_id(chart_id: str) -> str:
-    return f"chart_data:{chart_id}"
+    return chart_render_table_id(chart_id)
+
+
+def _chart_source_table_id(chart_id: str) -> str:
+    return chart_source_table_id(chart_id)
 
 
 def _issue(
