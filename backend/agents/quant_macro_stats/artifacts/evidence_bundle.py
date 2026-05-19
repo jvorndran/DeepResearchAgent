@@ -18,6 +18,7 @@ from .chart_projection_contract import (
     chart_render_table_id,
     normalize_chart_projection_transforms,
 )
+from .artifact_fingerprints import ArtifactFingerprint
 from .chart_provenance import normalize_chart_provenance
 from .json_safety import to_json_safe
 from .numeric_fact_contracts import normalize_numeric_facts
@@ -338,11 +339,20 @@ class EvidenceArtifacts(_EvidenceModel):
     generated_by: dict[str, Any] = Field(default_factory=dict)
     source_files: dict[str, str] = Field(default_factory=dict)
     data_files: dict[str, str] = Field(default_factory=dict)
+    fingerprints: list[ArtifactFingerprint] = Field(default_factory=list)
 
     @field_validator("charts_json", "execution_summary_json", "evidence_bundle_json")
     @classmethod
     def _artifact_path_required(cls, value: str, info: Any) -> str:
         return _require_text(value, info.field_name)
+
+    @model_validator(mode="after")
+    def _fingerprint_ids_unique(self):
+        _require_unique(
+            "artifacts.fingerprints.artifact_id",
+            (fingerprint.artifact_id for fingerprint in self.fingerprints),
+        )
+        return self
 
 
 class EvidenceBundle(_EvidenceModel):
@@ -2123,6 +2133,7 @@ def _source_key_resolves(source_key: str, source_ids: set[str]) -> bool:
 
 
 __all__ = [
+    "ArtifactFingerprint",
     "ConversionDescriptor",
     "EvidenceArtifacts",
     "EvidenceBundle",

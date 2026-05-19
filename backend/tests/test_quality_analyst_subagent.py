@@ -9,6 +9,12 @@ from agents.quality_analyst import (
     load_report_for_review,
     submit_quality_decision,
 )
+from agents.quant_macro_stats.artifacts.artifact_fingerprints import (
+    build_artifact_fingerprints,
+    finalize_evidence_bundle_fingerprint_bytes,
+    json_artifact_bytes,
+)
+from agents.quant_macro_stats.artifacts.evidence_bundle import EvidenceBundle
 
 
 def _compact_text(text: str) -> str:
@@ -64,6 +70,93 @@ def _write_valid_evidence_bundle(tmp_path, chart_ids, *, artifacts=None, facts=N
         json.dumps(payload),
         encoding="utf-8",
     )
+
+
+def _write_fingerprinted_evidence_artifacts(
+    tmp_path,
+    chart_ids,
+    *,
+    source_files=None,
+):
+    charts = {
+        chart_id: {"id": chart_id, "data": [{"x": 1}]}
+        for chart_id in chart_ids
+    }
+    summary = {
+        "status": "success",
+        "chart_ids": chart_ids,
+        "evidence_bundle_json": str(tmp_path / "evidence_bundle.json"),
+    }
+    charts_bytes = json_artifact_bytes(charts)
+    summary_bytes = json_artifact_bytes(summary)
+    (tmp_path / "charts.json").write_bytes(charts_bytes)
+    (tmp_path / "execution_summary.json").write_bytes(summary_bytes)
+
+    table_ids = [f"chart_data:{chart_id}" for chart_id in chart_ids]
+    bundle = EvidenceBundle.model_validate(
+        {
+            "schema_version": 1,
+            "bundle_type": "quant_evidence_bundle",
+            "charts": [
+                {
+                    "chart_id": chart_id,
+                    "source_table_ids": [table_id],
+                    "transform_ids": [f"{chart_id}_projection"],
+                }
+                for chart_id, table_id in zip(chart_ids, table_ids)
+            ],
+            "normalized_tables": [
+                {"table_id": table_id, "kind": "normalized"}
+                for table_id in table_ids
+            ],
+            "transforms": [
+                {
+                    "transform_id": f"{chart_id}_projection",
+                    "operation": "projection",
+                    "source_table_ids": [table_id],
+                    "chart_ids": [chart_id],
+                }
+                for chart_id, table_id in zip(chart_ids, table_ids)
+            ],
+            "validation": {"valid": True, "diagnostics": []},
+            "artifacts": {
+                "charts_json": str(tmp_path / "charts.json"),
+                "execution_summary_json": str(tmp_path / "execution_summary.json"),
+                "evidence_bundle_json": str(tmp_path / "evidence_bundle.json"),
+                "source_files": source_files or {},
+            },
+        }
+    )
+    bundle.artifacts.fingerprints = build_artifact_fingerprints(
+        charts_path=tmp_path / "charts.json",
+        execution_summary_path=tmp_path / "execution_summary.json",
+        evidence_bundle_path=tmp_path / "evidence_bundle.json",
+        charts_bytes=charts_bytes,
+        execution_summary_bytes=summary_bytes,
+        source_files=bundle.artifacts.source_files,
+        data_files=bundle.artifacts.data_files,
+        base_dir=tmp_path,
+    )
+    (tmp_path / "evidence_bundle.json").write_bytes(
+        finalize_evidence_bundle_fingerprint_bytes(bundle)
+    )
+
+
+def _write_simple_report(tmp_path, chart_id="chart_unrate"):
+    report_path = tmp_path / "report.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Is labor weakening?",
+                "title": "Labor Market Review",
+                "executive_summary": "Mixed but not collapsing.",
+                "markdown": f"Summary\n\n<!-- CHART:{chart_id} -->",
+                "charts": [{"id": chart_id}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return report_path
 
 
 def test_quality_analyst_is_compiled_without_deepagents_filesystem_tools():
@@ -408,6 +501,59 @@ def test_submit_quality_decision_rejects_stale_evidence_bundle_artifact_paths(tm
 
     assert payload["status"] == "rejected"
     assert "artifact paths do not match sibling quant artifacts" in payload["reason"]
+    assert payload["failure_category"] == "evidence_bundle_invalid"
+    assert payload["required_upstream"] == "quant-developer"
+
+
+def test_submit_quality_decision_rejects_mutated_artifact_fingerprint(tmp_path):
+    _write_fingerprinted_evidence_artifacts(tmp_path, ["chart_unrate"])
+    (tmp_path / "charts.json").write_text(
+        json.dumps({"chart_unrate": {"id": "chart_unrate", "data": [{"x": 2}]}}),
+        encoding="utf-8",
+    )
+    report_path = _write_simple_report(tmp_path)
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert "artifact fingerprints do not match current files" in payload["reason"]
+    assert "charts_json sha256 changed" in payload["reason"]
+    assert payload["failure_category"] == "evidence_bundle_invalid"
+    assert payload["required_upstream"] == "quant-developer"
+
+
+def test_submit_quality_decision_rejects_missing_artifact_fingerprint_file(tmp_path):
+    source_path = tmp_path / "source.csv"
+    source_path.write_text("date,value\n2024-01,1.0\n", encoding="utf-8")
+    _write_fingerprinted_evidence_artifacts(
+        tmp_path,
+        ["chart_unrate"],
+        source_files={"FRED": str(source_path)},
+    )
+    source_path.unlink()
+    report_path = _write_simple_report(tmp_path)
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert "artifact fingerprints do not match current files" in payload["reason"]
+    assert "source_files:FRED missing or unreadable" in payload["reason"]
     assert payload["failure_category"] == "evidence_bundle_invalid"
     assert payload["required_upstream"] == "quant-developer"
 

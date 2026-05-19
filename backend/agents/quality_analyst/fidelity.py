@@ -21,6 +21,9 @@ from agents.quant_macro_stats.artifacts.numeric_fact_contracts import (
 from agents.quant_macro_stats.artifacts.execution_summary_normalization import (
     normalize_quant_execution_summary,
 )
+from agents.quant_macro_stats.artifacts.artifact_fingerprints import (
+    artifact_fingerprint_mismatches,
+)
 from ..report_artifacts import (
     chart_handoff_blocker,
     chart_handoff_dict,
@@ -522,6 +525,18 @@ def _evidence_bundle_consistency_blocker(
             "evidence_bundle.json artifact paths do not match sibling quant "
             f"artifacts: {', '.join(mismatches)}. Rerun quant-developer so the "
             "canonical evidence bundle is regenerated from the current artifacts."
+        )
+    fingerprint_mismatches = artifact_fingerprint_mismatches(
+        bundle,
+        base_dir=report_path.parent,
+        evidence_bundle_path=report_path.with_name("evidence_bundle.json"),
+    )
+    if fingerprint_mismatches:
+        return (
+            "evidence_bundle.json artifact fingerprints do not match current "
+            f"files: {', '.join(fingerprint_mismatches[:8])}. Rerun "
+            "quant-developer so the canonical evidence bundle is regenerated "
+            "from the current artifacts and source files."
         )
 
     bundle_chart_ids = _bundle_item_ids(bundle.get("charts"), "chart_id")

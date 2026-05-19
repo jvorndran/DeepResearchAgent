@@ -11,6 +11,10 @@ from agents.artifact_fact_consistency import (
     artifact_fact_consistency_dict,
 )
 from agents.quant_macro_stats.artifacts.evidence_bundle import EvidenceBundle
+from agents.quant_macro_stats.artifacts.artifact_fingerprints import (
+    evidence_bundle_self_excluded_bytes,
+    sha256_bytes,
+)
 from agents.quant_macro_stats.artifacts.recharts_schema_normalization import (
     normalize_quant_report_charts,
 )
@@ -1362,6 +1366,71 @@ def test_save_quant_outputs_writes_generic_evidence_payload(tmp_path):
     )
     assert "preserved_prior_charts" not in handoff
     assert "preserved_report_aligned_charts" not in handoff
+
+
+def test_save_quant_outputs_writes_artifact_fingerprint_manifest(tmp_path):
+    source_path = tmp_path / "fred_unrate.csv"
+    source_path.write_text("date,value\n2024-01,1.0\n", encoding="utf-8")
+    charts = {
+        "trend": {
+            "type": "line",
+            "title": "Trend",
+            "data": [{"date": "2024-01", "value": 1.0}],
+            "series": [{"dataKey": "value", "name": "Value"}],
+            "xAxis": {"dataKey": "date"},
+            **_chart_traceability("FRED", "unit_test_projection"),
+        },
+    }
+    summary = {
+        "methods_used": ["unit_test_method"],
+        "source_files": {"FRED": str(source_path)},
+        "numeric_facts": [
+            qms.numeric_fact(
+                fact_id="latest_value",
+                label="Latest value",
+                raw_value=1.0,
+                unit="index",
+                precision=1,
+                tolerance=0.1,
+                source_key="FRED",
+            )
+        ],
+    }
+
+    qms.save_quant_outputs(tmp_path, charts, summary)
+    saved_bundle = json.loads((tmp_path / "evidence_bundle.json").read_text())
+
+    fingerprints = {
+        fingerprint["artifact_id"]: fingerprint
+        for fingerprint in saved_bundle["artifacts"]["fingerprints"]
+    }
+    assert set(fingerprints) == {
+        "charts_json",
+        "execution_summary_json",
+        "source_files:FRED",
+        "evidence_bundle_json",
+    }
+    assert fingerprints["charts_json"]["sha256"] == sha256_bytes(
+        (tmp_path / "charts.json").read_bytes()
+    )
+    assert fingerprints["charts_json"]["byte_count"] == (
+        tmp_path / "charts.json"
+    ).stat().st_size
+    assert fingerprints["execution_summary_json"]["sha256"] == sha256_bytes(
+        (tmp_path / "execution_summary.json").read_bytes()
+    )
+    assert fingerprints["source_files:FRED"]["sha256"] == sha256_bytes(
+        source_path.read_bytes()
+    )
+    assert fingerprints["source_files:FRED"]["content_type"] == "text/csv"
+    assert fingerprints["evidence_bundle_json"]["self_excluded"] is True
+    assert fingerprints["evidence_bundle_json"]["sha256"] == sha256_bytes(
+        evidence_bundle_self_excluded_bytes(saved_bundle)
+    )
+    assert fingerprints["evidence_bundle_json"]["byte_count"] == (
+        tmp_path / "evidence_bundle.json"
+    ).stat().st_size
+    EvidenceBundle.model_validate(saved_bundle)
 
 
 def test_save_quant_outputs_rejects_chart_without_evidence_bundle_traceability(tmp_path):

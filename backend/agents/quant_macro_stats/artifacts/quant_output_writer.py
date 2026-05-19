@@ -1,6 +1,5 @@
 """Artifact serialization for generated quant scripts."""
 
-import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -12,7 +11,11 @@ from ...artifact_fact_consistency import (
 from .chart_provenance import normalize_chart_provenance
 from .chart_source_validation import validate_chart_source_tables
 from .evidence_bundle import build_evidence_bundle
-from .json_safety import to_json_safe
+from .artifact_fingerprints import (
+    build_artifact_fingerprints,
+    finalize_evidence_bundle_fingerprint_bytes,
+    json_artifact_bytes,
+)
 from .recharts_schema_normalization import (
     _chart_map_from_payload,
     _drop_empty_chart_definitions,
@@ -115,23 +118,25 @@ def save_quant_outputs(
         evidence_bundle_json=str(evidence_bundle_path),
         artifact_fact_consistency=fact_consistency,
     )
+    charts_bytes = json_artifact_bytes(chart_map)
+    summary_bytes = json_artifact_bytes(summary)
+    evidence_bundle.artifacts.fingerprints = build_artifact_fingerprints(
+        charts_path=charts_path,
+        execution_summary_path=summary_path,
+        evidence_bundle_path=evidence_bundle_path,
+        charts_bytes=charts_bytes,
+        execution_summary_bytes=summary_bytes,
+        source_files=evidence_bundle.artifacts.source_files,
+        data_files=evidence_bundle.artifacts.data_files,
+        base_dir=output_path,
+    )
+    evidence_bundle_bytes = finalize_evidence_bundle_fingerprint_bytes(
+        evidence_bundle
+    )
 
-    charts_path.write_text(
-        json.dumps(to_json_safe(chart_map), indent=2, allow_nan=False),
-        encoding="utf-8",
-    )
-    evidence_bundle_path.write_text(
-        json.dumps(
-            to_json_safe(evidence_bundle.model_dump(mode="json", exclude_none=True)),
-            indent=2,
-            allow_nan=False,
-        ),
-        encoding="utf-8",
-    )
-    summary_path.write_text(
-        json.dumps(to_json_safe(summary), indent=2, allow_nan=False),
-        encoding="utf-8",
-    )
+    charts_path.write_bytes(charts_bytes)
+    evidence_bundle_path.write_bytes(evidence_bundle_bytes)
+    summary_path.write_bytes(summary_bytes)
 
     return build_quant_output_handoff(
         summary,

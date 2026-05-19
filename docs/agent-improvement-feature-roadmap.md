@@ -551,3 +551,13 @@ agent flow it advanced.
   - Tests: uv run pytest tests/test_orchestrator_middleware.py -k "quant_handoff or writer_after or qa_requested_quant_fix or required_upstream"; uv run pytest tests/test_orchestrator_middleware.py; uv run pytest tests/test_orchestrator_skill_guardrails.py (fails on unrelated unchanged quant skill assertions); uv run pytest tests/test_orchestrator_skill_guardrails.py -k "orchestrator_skills_do_not_advance_empty_chart_heavy_handoffs"; uv run ruff check agents/orchestrator/middleware.py tests/test_orchestrator_middleware.py tests/test_orchestrator_skill_guardrails.py; git diff --check
   - Implementation: Added deterministic latest-quant-handoff routing that stops writer delegation on failed or invalid quant artifacts and routes repair to quant-developer.
   - Review: No blocking findings; pre-writer quant failure routing is implemented and focused tests/ruff/diff-check passed.
+
+- [x] 2026-05-19T19:13:39-04:00 - Reproducible artifact fingerprint manifest
+  - Roadmap section: Priority 10: Reproducible Data And Artifact Cache
+  - Flow stage: evidence bundle
+  - Run/pass: 20260519-132826 / 9
+  - Summary: /home/vorndranj/projects/DeepResearchAgent/logs/feature-loop/runs/20260519-132826/feature-9/summary.md
+  - Files changed: backend/agents/quant_macro_stats/artifacts/artifact_fingerprints.py, backend/agents/quant_macro_stats/artifacts/evidence_bundle.py, backend/agents/quant_macro_stats/artifacts/quant_output_writer.py, backend/agents/quality_analyst/fidelity.py, backend/tests/test_quant_macro_stats.py, backend/tests/test_quality_analyst_subagent.py
+  - Tests: cd backend && uv run pytest tests/test_quant_macro_stats.py -k "evidence_bundle or artifact_fingerprint or save_quant_outputs_writes_generic_evidence_payload"; cd backend && uv run pytest tests/test_quality_analyst_subagent.py -k "evidence_bundle or artifact_fingerprint"; cd backend && uv run ruff check agents/quant_macro_stats/artifacts/artifact_fingerprints.py agents/quant_macro_stats/artifacts/evidence_bundle.py agents/quant_macro_stats/artifacts/quant_output_writer.py agents/quality_analyst/fidelity.py tests/test_quant_macro_stats.py tests/test_quality_analyst_subagent.py; git diff --check
+  - Implementation: Added a typed artifact fingerprint manifest to evidence bundles and QA validation for mutated or missing fingerprinted files.
+  - Review: no blocking findings; focused verification passed
