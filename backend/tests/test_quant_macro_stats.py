@@ -154,6 +154,7 @@ def test_quant_macro_stats_public_exports_are_helper_only():
         "source_unit_metadata_from_csv",
         "unit_comparison",
         "latest_numeric_fact",
+        "sahm_rule_signal",
     }
     removed_report_generators = {
         "build_company_fundamental_outputs",
@@ -200,6 +201,8 @@ def test_quant_helper_catalog_is_compact_agent_context():
     assert "data: Resolve local handoff files" in catalog
     assert "direct_ols_forecast(data, target_col, feature_cols" in catalog
     assert "signal_framework_backtest(data, *, component_cols" in catalog
+    assert "sahm_rule_signal(data, *, unemployment_col='UNRATE'" in catalog
+    assert "current_signal_facts" in catalog
     assert "sec_company_facts_evidence(data_files" in catalog
     assert "chart_provenance(source_series=..." in catalog
     assert "attach_methods_used(charts, methods)" in catalog
@@ -210,9 +213,12 @@ def test_quant_helper_catalog_is_compact_agent_context():
     assert "raw_value" in catalog
     assert "display_value" in catalog
     assert "save_quant_outputs(output_dir, charts, execution_summary)" in catalog
-    assert {"load_monthly_panel", "direct_ols_forecast", "save_quant_outputs"}.issubset(
-        helper_names
-    )
+    assert {
+        "load_monthly_panel",
+        "direct_ols_forecast",
+        "sahm_rule_signal",
+        "save_quant_outputs",
+    }.issubset(helper_names)
     for name in helper_names:
         assert hasattr(qms, name)
     assert "build_recession_dashboard" not in catalog
@@ -558,6 +564,115 @@ def test_direct_ols_forecast_and_signal_backtest_are_reusable_helpers():
     assert "backtest_design" not in backtest
     assert "historical_simulations" not in backtest
     assert "backtest_summary" not in backtest
+
+
+def test_sahm_rule_signal_emits_current_signal_contract(tmp_path):
+    frame = pd.DataFrame(
+        {
+            "date": pd.date_range("2024-01-01", periods=15, freq="MS"),
+            "UNRATE": [4.0] * 12 + [4.1, 4.2, 4.3],
+        }
+    )
+
+    signal = qms.sahm_rule_signal(frame, chart_id="sahm_chart")
+    current_signal = signal["current_signal_facts"][0]
+
+    assert signal["methods_used"] == [qms.METHOD_SAHM_RULE_SIGNAL]
+    assert current_signal["signal_id"] == "sahm_rule"
+    assert current_signal["value"] == pytest.approx(0.2)
+    assert current_signal["threshold"] == 0.5
+    assert current_signal["triggered"] is False
+    assert current_signal["threshold_distance"] == pytest.approx(-0.3)
+    assert current_signal["chart_id"] == "sahm_chart"
+    assert current_signal["data_key"] == "sahm_gap"
+    assert signal["numeric_facts"][0]["raw_value"] == pytest.approx(0.2)
+
+    charts = {
+        "sahm_chart": {
+            "id": "sahm_chart",
+            "type": "line",
+            "title": "Sahm Rule Signal",
+            "xAxisKey": "date",
+            "series": [{"dataKey": "sahm_gap", "label": "Sahm gap"}],
+            "data": signal["signal_score_rows"],
+            **_chart_traceability("UNRATE", qms.METHOD_SAHM_RULE_SIGNAL),
+        }
+    }
+    summary = {
+        "signal_score_rows": signal["signal_score_rows"],
+        "current_signal_facts": signal["current_signal_facts"],
+        "numeric_facts": signal["numeric_facts"],
+        "methods_used": signal["methods_used"],
+    }
+
+    handoff = qms.save_quant_outputs(tmp_path, charts, summary)
+    saved_summary = json.loads((tmp_path / "execution_summary.json").read_text())
+
+    assert saved_summary["current_signal_facts"] == signal["current_signal_facts"]
+    assert handoff["current_signal_facts"] == signal["current_signal_facts"]
+
+
+def test_artifact_fact_consistency_rejects_current_signal_mismatches():
+    signal_fact = {
+        "signal_id": "sahm_rule",
+        "value": 0.575,
+        "threshold": 0.5,
+        "direction": "high",
+        "triggered": False,
+        "threshold_distance": 0.075,
+        "as_of_date": "2026-03-01",
+        "source_key": "UNRATE",
+        "chart_id": "sahm_chart",
+        "data_key": "sahm_gap",
+    }
+
+    consistency = artifact_fact_consistency_dict(
+        execution_summary={"current_signal_facts": [signal_fact]},
+        charts={
+            "sahm_chart": {
+                "type": "line",
+                "data": [{"date": "2026-03-01", "sahm_gap": 0.575}],
+            }
+        },
+    )
+
+    assert consistency["valid"] is False
+    assert consistency["signal_mismatches"][0]["reason"] == "trigger_state_mismatch"
+    assert "current signal fact for sahm_rule" in artifact_fact_consistency_blocker(
+        consistency
+    )
+
+
+def test_save_quant_outputs_rejects_current_signal_chart_latest_mismatch(tmp_path):
+    frame = pd.DataFrame(
+        {
+            "date": pd.date_range("2024-01-01", periods=15, freq="MS"),
+            "UNRATE": [4.0] * 12 + [4.1, 4.2, 4.3],
+        }
+    )
+    signal = qms.sahm_rule_signal(frame, chart_id="sahm_chart")
+    bad_rows = list(signal["signal_score_rows"])
+    bad_rows[-1] = {**bad_rows[-1], "sahm_gap": 0.575, "score": 0.575}
+    charts = {
+        "sahm_chart": {
+            "type": "line",
+            "title": "Sahm Rule Signal",
+            "xAxisKey": "date",
+            "series": [{"dataKey": "sahm_gap", "label": "Sahm gap"}],
+            "data": bad_rows,
+            **_chart_traceability("UNRATE", qms.METHOD_SAHM_RULE_SIGNAL),
+        }
+    }
+
+    with pytest.raises(ValueError, match="current signal fact for sahm_rule"):
+        qms.save_quant_outputs(
+            tmp_path,
+            charts,
+            {
+                "current_signal_facts": signal["current_signal_facts"],
+                "numeric_facts": signal["numeric_facts"],
+            },
+        )
 
 
 def test_historical_scenario_replay_requires_explicit_windows_and_returns_rows():

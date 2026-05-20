@@ -19,6 +19,7 @@ from .ols_forecasting import (
     ols_regression,
 )
 from .recession_regime_classification import classify_recession_regime
+from .recession_signal_facts import sahm_rule_signal
 from .recession_window_analysis import recession_window_summary
 from ..artifacts.method_metadata import attach_methods_used, attach_summary_methods
 from ..evidence.scenario_evidence_rows import normalize_scenario_evidence_rows
@@ -39,6 +40,7 @@ __all__ = [
     "ols_regression",
     "recession_window_summary",
     "rolling_correlation",
+    "sahm_rule_signal",
     "signal_framework_backtest",
     "normalize_scenario_evidence_rows",
     "walk_forward_ols_backtest",

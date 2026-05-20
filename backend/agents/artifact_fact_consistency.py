@@ -40,6 +40,8 @@ _CORRELATION_ID_RE = re.compile(
 )
 _PAIR_LABEL_SPLIT_RE = re.compile(r"\s*(?:/|\||,|\bvs\.?\b|\band\b)\s*", re.IGNORECASE)
 _DEFAULT_CORRELATION_TOLERANCE = 0.005
+_DEFAULT_SIGNAL_TOLERANCE = 0.005
+_CHART_SIGNAL_DATE_KEYS = ("date", "period", "month", "timestamp", "time")
 
 
 @dataclass(frozen=True)
@@ -84,6 +86,15 @@ def artifact_fact_consistency_dict(
         chart_source = "report.charts"
     if chart_payload is not None:
         observations.extend(_extract_chart_correlations(chart_payload, chart_source))
+
+    signal_mismatches: list[dict[str, Any]] = []
+    signal_checked_facts: list[str] = []
+    if isinstance(execution_summary, dict):
+        signal_checked_facts, signal_mismatches = _current_signal_fact_mismatches(
+            execution_summary.get("current_signal_facts"),
+            chart_payload,
+            chart_source,
+        )
 
     pair_observations: dict[tuple[str, str], list[_CorrelationObservation]] = defaultdict(list)
     for observation in observations:
@@ -139,13 +150,16 @@ def artifact_fact_consistency_dict(
         if comparable_pair_seen:
             checked_pairs.append("/".join(pair_items[0].pair_display))
 
+    all_mismatches = [*mismatches, *signal_mismatches]
     return {
-        "valid": not mismatches,
+        "valid": not all_mismatches,
         "fact_type": "correlation",
         "checked_observation_count": len(observations),
         "checked_pairs": checked_pairs,
-        "mismatches": mismatches,
+        "mismatches": all_mismatches,
         "skipped_comparisons": skipped_comparisons,
+        "checked_signal_facts": signal_checked_facts,
+        "signal_mismatches": signal_mismatches,
     }
 
 
@@ -158,6 +172,8 @@ def artifact_fact_consistency_blocker(consistency: dict[str, Any] | None) -> str
     if not isinstance(mismatches, list) or not mismatches:
         return None
     mismatch = mismatches[0]
+    if isinstance(mismatch, dict) and mismatch.get("fact_type") == "current_signal":
+        return _current_signal_blocker(mismatch)
     pair = mismatch.get("pair") if isinstance(mismatch, dict) else None
     pair_label = "/".join(str(item) for item in pair) if isinstance(pair, list) else "unknown"
     observations = mismatch.get("observations") if isinstance(mismatch, dict) else None
@@ -176,6 +192,34 @@ def artifact_fact_consistency_blocker(consistency: dict[str, Any] | None) -> str
         f"{pair_label} ({detail_text}; tolerance={tolerance}). Regenerate "
         "quant artifacts so execution_summary.json, numeric_facts, and chart data "
         "share one basis or declare explicit transform_basis metadata."
+    )
+
+
+def _current_signal_blocker(mismatch: dict[str, Any]) -> str:
+    signal_id = str(mismatch.get("signal_id") or "unknown")
+    reason = str(mismatch.get("reason") or "mismatch")
+    observations = mismatch.get("observations")
+    details: list[str] = []
+    if isinstance(observations, list):
+        for observation in observations[:4]:
+            if not isinstance(observation, dict):
+                continue
+            source = observation.get("source")
+            value = observation.get("value")
+            triggered = observation.get("triggered")
+            threshold = observation.get("threshold")
+            pieces = [f"{source}={value}"]
+            if threshold is not None:
+                pieces.append(f"threshold={threshold}")
+            if triggered is not None:
+                pieces.append(f"triggered={triggered}")
+            details.append(", ".join(str(piece) for piece in pieces if piece))
+    detail_text = "; ".join(details) if details else "conflicting observations"
+    return (
+        "artifact_fact_mismatch: conflicting current signal fact for "
+        f"{signal_id} ({reason}: {detail_text}). Regenerate quant artifacts so "
+        "execution_summary.json current_signal_facts and chart data share one "
+        "threshold basis."
     )
 
 
@@ -309,6 +353,261 @@ def _extract_chart_correlations(
                 )
             )
     return observations
+
+
+def _current_signal_fact_mismatches(
+    value: Any,
+    charts: dict[str, Any] | list[Any] | None,
+    chart_source: str,
+) -> tuple[list[str], list[dict[str, Any]]]:
+    if not isinstance(value, list):
+        return [], []
+
+    checked: list[str] = []
+    mismatches: list[dict[str, Any]] = []
+    for index, fact in enumerate(value):
+        source = f"execution_summary.current_signal_facts[{index}]"
+        if not isinstance(fact, dict):
+            mismatches.append(
+                _signal_mismatch(
+                    signal_id=f"current_signal_facts[{index}]",
+                    reason="malformed_current_signal_fact",
+                    observations=[{"source": source, "value": None}],
+                )
+            )
+            continue
+        signal_id = str(fact.get("signal_id") or f"current_signal_facts[{index}]")
+        checked.append(signal_id)
+        row_observation = _signal_fact_observation(fact, source)
+        direction = str(fact.get("direction") or "").strip().lower()
+        value_number = _finite_float(fact.get("value"))
+        threshold = _finite_float(fact.get("threshold"))
+        distance = _finite_float(fact.get("threshold_distance"))
+        tolerance = _finite_float(fact.get("tolerance"))
+        if tolerance is None:
+            tolerance = _DEFAULT_SIGNAL_TOLERANCE
+        triggered = fact.get("triggered")
+        if (
+            direction not in {"high", "low"}
+            or value_number is None
+            or threshold is None
+            or distance is None
+            or not isinstance(triggered, bool)
+        ):
+            mismatches.append(
+                _signal_mismatch(
+                    signal_id=signal_id,
+                    reason="malformed_current_signal_fact",
+                    observations=[row_observation],
+                    tolerance=tolerance,
+                )
+            )
+            continue
+
+        expected_triggered = (
+            value_number >= threshold
+            if direction == "high"
+            else value_number <= threshold
+        )
+        if triggered is not expected_triggered:
+            mismatches.append(
+                _signal_mismatch(
+                    signal_id=signal_id,
+                    reason="trigger_state_mismatch",
+                    observations=[
+                        row_observation,
+                        {
+                            "source": "threshold_math",
+                            "value": value_number,
+                            "threshold": threshold,
+                            "direction": direction,
+                            "triggered": expected_triggered,
+                        },
+                    ],
+                    tolerance=tolerance,
+                )
+            )
+        expected_distance = (
+            value_number - threshold
+            if direction == "high"
+            else threshold - value_number
+        )
+        if abs(distance - expected_distance) > max(tolerance, 1e-9):
+            mismatches.append(
+                _signal_mismatch(
+                    signal_id=signal_id,
+                    reason="threshold_distance_mismatch",
+                    observations=[
+                        row_observation,
+                        {
+                            "source": "threshold_math",
+                            "value": expected_distance,
+                            "threshold": threshold,
+                            "direction": direction,
+                            "triggered": expected_triggered,
+                        },
+                    ],
+                    tolerance=tolerance,
+                )
+            )
+
+        if charts is None:
+            continue
+        chart_id = _non_empty_string(fact.get("chart_id"))
+        data_key = _non_empty_string(fact.get("data_key"))
+        if not chart_id or not data_key:
+            mismatches.append(
+                _signal_mismatch(
+                    signal_id=signal_id,
+                    reason="missing_chart_reference",
+                    observations=[row_observation],
+                    tolerance=tolerance,
+                )
+            )
+            continue
+        chart_observation = _latest_chart_signal_observation(
+            charts,
+            chart_id=chart_id,
+            data_key=data_key,
+            as_of_date=_non_empty_string(fact.get("as_of_date")),
+            source_prefix=chart_source,
+        )
+        if chart_observation is None:
+            mismatches.append(
+                _signal_mismatch(
+                    signal_id=signal_id,
+                    reason="chart_reference_missing",
+                    observations=[row_observation],
+                    tolerance=tolerance,
+                )
+            )
+            continue
+        chart_value = _finite_float(chart_observation.get("value"))
+        if chart_value is None or abs(chart_value - value_number) > max(tolerance, 1e-9):
+            mismatches.append(
+                _signal_mismatch(
+                    signal_id=signal_id,
+                    reason="chart_latest_value_mismatch",
+                    observations=[row_observation, chart_observation],
+                    tolerance=tolerance,
+                )
+            )
+    return checked, mismatches
+
+
+def _signal_fact_observation(fact: dict[str, Any], source: str) -> dict[str, Any]:
+    observation = {
+        "source": source,
+        "value": _finite_float(fact.get("value")),
+        "threshold": _finite_float(fact.get("threshold")),
+        "direction": fact.get("direction"),
+        "triggered": fact.get("triggered"),
+        "threshold_distance": _finite_float(fact.get("threshold_distance")),
+    }
+    for key in ("as_of_date", "chart_id", "data_key", "source_key"):
+        if fact.get(key) is not None:
+            observation[key] = fact.get(key)
+    return observation
+
+
+def _signal_mismatch(
+    *,
+    signal_id: str,
+    reason: str,
+    observations: list[dict[str, Any]],
+    tolerance: float | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "fact_type": "current_signal",
+        "signal_id": signal_id,
+        "reason": reason,
+        "observations": observations,
+    }
+    if tolerance is not None:
+        payload["tolerance"] = tolerance
+    return payload
+
+
+def _latest_chart_signal_observation(
+    charts: dict[str, Any] | list[Any],
+    *,
+    chart_id: str,
+    data_key: str,
+    as_of_date: str | None,
+    source_prefix: str,
+) -> dict[str, Any] | None:
+    for candidate_id, chart in _iter_chart_items(charts):
+        if candidate_id != chart_id:
+            continue
+        chart_data = _as_mapping(chart)
+        if not chart_data:
+            return None
+        data = chart_data.get("data")
+        if not isinstance(data, list):
+            return None
+        matched = _latest_chart_signal_row(
+            data,
+            data_key=data_key,
+            as_of_date=as_of_date,
+        )
+        if matched is None:
+            return None
+        index, row, value = matched
+        observation = {
+            "source": f"{source_prefix}.{chart_id}.data[{index}].{data_key}",
+            "value": value,
+        }
+        row_date = _chart_row_date(row)
+        if row_date is not None:
+            observation["as_of_date"] = row_date
+        return observation
+    return None
+
+
+def _latest_chart_signal_row(
+    rows: list[Any],
+    *,
+    data_key: str,
+    as_of_date: str | None,
+) -> tuple[int, dict[str, Any], float] | None:
+    if as_of_date:
+        for index in range(len(rows) - 1, -1, -1):
+            row = rows[index]
+            if not isinstance(row, dict) or not _chart_row_matches_date(row, as_of_date):
+                continue
+            value = _finite_float(row.get(data_key))
+            if value is not None:
+                return index, row, value
+    for index in range(len(rows) - 1, -1, -1):
+        row = rows[index]
+        if not isinstance(row, dict):
+            continue
+        value = _finite_float(row.get(data_key))
+        if value is not None:
+            return index, row, value
+    return None
+
+
+def _chart_row_matches_date(row: dict[str, Any], as_of_date: str) -> bool:
+    expected = str(as_of_date).strip()
+    if not expected:
+        return False
+    for key in _CHART_SIGNAL_DATE_KEYS:
+        value = row.get(key)
+        if value is None:
+            continue
+        actual = str(value).strip()
+        if actual == expected or actual[:10] == expected[:10]:
+            return True
+    return False
+
+
+def _chart_row_date(row: dict[str, Any]) -> str | None:
+    for key in _CHART_SIGNAL_DATE_KEYS:
+        value = row.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return None
 
 
 def _iter_chart_items(charts: dict[str, Any] | list[Any]) -> Iterable[tuple[str, Any]]:

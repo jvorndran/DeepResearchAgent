@@ -1766,6 +1766,7 @@ _HELPER_TABLE_KEYS = (
     "macro_overlay",
     "company_macro_sensitivity",
     "scenario_score_rows",
+    "current_signal_facts",
     "signal_score_rows",
     "signal_event_rows",
     "signal_false_positive_windows",
@@ -1835,6 +1836,7 @@ def _helper_evidence_for_draft(parsed: dict[str, Any]) -> dict[str, Any]:
         "source_unit_metadata",
         "unit_comparisons",
         "source_unit_errors",
+        "current_signal_facts",
     ):
         value = parsed.get(key)
         if _is_non_empty_payload(value):
@@ -2022,6 +2024,7 @@ def _compact_helper_evidence_payload(parsed: dict[str, Any]) -> str | None:
             "trend_diagnostics",
             "company_macro_sensitivity",
             "scenario_score_rows",
+            "current_signal_facts",
             "signal_score_rows",
             "signal_event_rows",
             "signal_false_positive_windows",
@@ -2040,6 +2043,7 @@ def _compact_helper_evidence_payload(parsed: dict[str, Any]) -> str | None:
                 label = (
                     row.get("ticker")
                     or row.get("scenario")
+                    or row.get("signal_id")
                     or row.get("regime")
                     or row.get("indicator")
                     or row.get("category")
@@ -2058,10 +2062,16 @@ def _compact_helper_evidence_payload(parsed: dict[str, Any]) -> str | None:
                         "end",
                         "date",
                         "status",
+                        "signal_id",
                         "score",
+                        "value",
                         "met_threshold",
+                        "triggered",
                         "above_threshold",
                         "threshold_distance",
+                        "as_of_date",
+                        "chart_id",
+                        "data_key",
                         "max_score_date",
                         "components_triggered",
                         "max_score",
@@ -3067,6 +3077,7 @@ def write_research_report(
                 "source_unit_metadata",
                 "unit_comparisons",
                 "source_unit_errors",
+                "current_signal_facts",
             ):
                 if helper_evidence.get(key):
                     execution_payload.setdefault(key, helper_evidence[key])

@@ -411,6 +411,56 @@ def test_report_chart_audit_rejects_artifact_fact_mismatch(tmp_path):
     assert "artifact_fact_mismatch" in audit["blockers"][0]
 
 
+def test_report_chart_audit_rejects_current_signal_chart_mismatch(tmp_path):
+    report_path = _write_report(
+        tmp_path,
+        {
+            "id": "sahm_chart",
+            "type": "line",
+            "title": "Sahm Rule Signal",
+            "description": "Sahm rule gap over time.",
+            "xAxisKey": "date",
+            "series": [
+                {"dataKey": "sahm_gap", "label": "Sahm gap", "color": "#2563eb"}
+            ],
+            "data": [{"date": "2026-03-01", "sahm_gap": 0.575}],
+        },
+    )
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "chart_ids": ["sahm_chart"],
+                "current_signal_facts": [
+                    {
+                        "signal_id": "sahm_rule",
+                        "value": 0.133,
+                        "threshold": 0.5,
+                        "direction": "high",
+                        "triggered": False,
+                        "threshold_distance": -0.367,
+                        "as_of_date": "2026-03-01",
+                        "source_key": "UNRATE",
+                        "chart_id": "sahm_chart",
+                        "data_key": "sahm_gap",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    audit = json.loads(run_report_chart_audit(str(report_path)))
+
+    assert audit["passes_audit"] is False
+    assert audit["artifact_fact_consistency"]["valid"] is False
+    assert (
+        audit["artifact_fact_consistency"]["signal_mismatches"][0]["reason"]
+        == "chart_latest_value_mismatch"
+    )
+    assert "current signal fact for sahm_rule" in audit["blockers"][0]
+
+
 def test_report_chart_audit_accepts_broad_governed_chart_families(tmp_path):
     charts = {
         "radar_profile": {

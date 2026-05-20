@@ -34,6 +34,7 @@ statistics inside `analysis.py`.
   `lead_lag_correlations`, `recession_window_summary`, `ols_regression`,
   `direct_ols_forecast`, `walk_forward_ols_backtest`,
   `event_signal_backtest`, `signal_framework_backtest`,
+  `sahm_rule_signal`,
   `historical_scenario_replay`, `build_analog_evidence`,
   `build_composite_predictive_indicator`, `normalize_scenario_evidence_rows`,
   `classify_recession_regime`,
@@ -46,7 +47,7 @@ statistics inside `analysis.py`.
 - Use helper outputs instead of hand-rolling mixed-frequency alignment, lag
   selection, recession-window loops, OLS regressions, direct forecast tables,
   walk-forward validation, signal hit/miss tests, historical replay rows,
-  false-alarm episodes, analog distances, composite indicator scoring,
+  Sahm rule current-signal facts, false-alarm episodes, analog distances, composite indicator scoring,
   scenario evidence row normalization, regime labels, SEC metric extraction, JSON
   serialization, or chart-ID handoff construction.
 - For company projection or sensitivity prompts, call the SEC company helper for
@@ -122,6 +123,14 @@ statistics inside `analysis.py`.
   preserve `exact_lookbacks`; do not compute pre-recession values with
   `.tail(...)` because helper lookbacks exclude the start month to avoid
   lookahead.
+- For Sahm rule or unemployment-trigger prompts, call
+  `sahm_rule_signal(panel, unemployment_col="UNRATE", date_col="date", threshold=0.5)`.
+  Preserve `signal_score_rows`, `current_signal_facts`, `numeric_facts`,
+  `signal_design`, `methods_used`, and limitations at the top level of
+  `execution_summary.json`. Use the returned `signal_score_rows` as chart data
+  so chart latest values and trigger state are checked against
+  `current_signal_facts`; do not hand-roll a 12-month unemployment average and
+  label it Sahm.
 - For composite predictive indicator prompts, call
   `build_composite_predictive_indicator(...)`. For composite recession-risk
   indicator prompts, use `target_col="USREC"` and `prediction_horizon=1`.

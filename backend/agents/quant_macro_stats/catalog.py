@@ -139,6 +139,26 @@ QUANT_HELPER_CATALOG: tuple[QuantHelperCategory, ...] = (
         purpose="Validate recession signals, classify macro regimes, and normalize scenarios.",
         helpers=(
             QuantHelperSpec(
+                name="sahm_rule_signal",
+                import_path="agents.quant_macro_stats",
+                signature=(
+                    "sahm_rule_signal(data, *, unemployment_col='UNRATE', "
+                    "date_col='date', threshold=0.5)"
+                ),
+                use_when=(
+                    "Compute the canonical Sahm rule current signal from local "
+                    "unemployment data and emit chart-ready rows plus typed "
+                    "current_signal_facts."
+                ),
+                preserves=(
+                    "signal_score_rows",
+                    "current_signal_facts",
+                    "numeric_facts",
+                    "signal_design",
+                    "methods_used",
+                ),
+            ),
+            QuantHelperSpec(
                 name="event_signal_backtest",
                 import_path="agents.quant_macro_stats",
                 signature=(

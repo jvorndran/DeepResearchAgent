@@ -42,6 +42,7 @@ METHOD_ANALOG_WINDOW_COMPARISON = "analog_window_comparison"
 METHOD_PERIOD_KEY_ALIGNMENT = "period_key_alignment"
 METHOD_RECESSION_REGIME_CLASSIFIER = "recession_regime_classifier"
 METHOD_SEC_COMPANY_FACTS_SUMMARY = "sec_company_facts_summary"
+METHOD_SAHM_RULE_SIGNAL = "sahm_rule_signal"
 DEFAULT_REGIME_CATEGORIES = ("rates", "labor", "inflation", "credit", "output")
 DEFAULT_REGIME_WEIGHTS = {
     "rates": 0.20,

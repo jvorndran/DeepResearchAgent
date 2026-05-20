@@ -840,6 +840,20 @@ def test_load_report_for_review_preserves_conditional_fidelity_fields(tmp_path):
                 "diagnostics": {"validation_metrics": {"precision": 0.058}},
                 "model_comparison_by_horizon": [{"horizon": 1, "naive_rmse": 1.2}],
                 "replay_rows": [{"label": "2008", "status": "ok"}],
+                "current_signal_facts": [
+                    {
+                        "signal_id": "sahm_rule",
+                        "value": 0.133,
+                        "threshold": 0.5,
+                        "direction": "high",
+                        "triggered": False,
+                        "threshold_distance": -0.367,
+                        "as_of_date": "2026-03-01",
+                        "source_key": "UNRATE",
+                        "chart_id": "sahm_chart",
+                        "data_key": "sahm_gap",
+                    }
+                ],
                 "numeric_facts": [
                     {
                         "id": "sec_company_facts.AAPL.revenue_b",
@@ -876,6 +890,8 @@ def test_load_report_for_review_preserves_conditional_fidelity_fields(tmp_path):
     assert "precision" in summary["diagnostics"]
     assert "naive_rmse" in summary["model_comparison_by_horizon"]
     assert "2008" in summary["replay_rows"]
+    assert "sahm_rule" in summary["current_signal_facts"]
+    assert "triggered" in summary["current_signal_facts"]
     assert "$365.82B" in summary["numeric_facts"]
 
 
@@ -3814,6 +3830,78 @@ def test_submit_quality_decision_rejects_artifact_fact_mismatch(tmp_path):
     assert payload["failure_category"] == "artifact_fact_mismatch"
     assert payload["required_upstream"] == "quant-developer"
     assert "UNRATE/CPIAUCSL" in payload["reason"]
+
+
+def test_submit_quality_decision_rejects_current_signal_fact_mismatch(tmp_path):
+    report_path = tmp_path / "report.json"
+    chart = {
+        "id": "sahm_chart",
+        "type": "line",
+        "title": "Sahm Rule Signal",
+        "description": "Sahm rule gap over time.",
+        "xAxisKey": "date",
+        "series": [{"dataKey": "sahm_gap", "label": "Sahm gap", "color": "#2563eb"}],
+        "data": [{"date": "2026-03-01", "sahm_gap": 0.575}],
+    }
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "chart_ids": ["sahm_chart"],
+                "current_signal_facts": [
+                    {
+                        "signal_id": "sahm_rule",
+                        "value": 0.133,
+                        "threshold": 0.5,
+                        "direction": "high",
+                        "triggered": False,
+                        "threshold_distance": -0.367,
+                        "as_of_date": "2026-03-01",
+                        "source_key": "UNRATE",
+                        "chart_id": "sahm_chart",
+                        "data_key": "sahm_gap",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "job_id": "qa-current-signal",
+                "created_at": "2026-05-14T12:00:00Z",
+                "query": "Include recession trigger charts in the macro report.",
+                "title": "Current Signal Mismatch",
+                "executive_summary": "The Sahm rule has not triggered.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "The Sahm rule has not triggered.\n"
+                    "<!-- CHART:sahm_chart -->"
+                ),
+                "charts": {"sahm_chart": chart},
+                "data_sources": [],
+                "metadata": {"analysis_type": "macro", "chart_count": 1, "word_count": 9},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "artifact_fact_mismatch"
+    assert payload["required_upstream"] == "quant-developer"
+    assert "current signal fact for sahm_rule" in payload["reason"]
 
 
 def test_submit_quality_decision_rejects_recession_probability_without_composite_diagnostics(tmp_path):

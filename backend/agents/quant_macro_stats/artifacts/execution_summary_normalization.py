@@ -34,6 +34,8 @@ _COMPACT_HANDOFF_KEYS = (
     "signal_false_positive_windows",
     "signal_validation_metrics",
     "latest_signal_observation",
+    "current_signal_facts",
+    "signal_design",
     "composite_current_row",
     "composite_score_rows",
     "composite_validation_metrics",
@@ -92,6 +94,15 @@ _NUMERIC_FACT_TEXT_FIELDS = ("id", "label", "display_value", "unit", "source_key
 _NUMERIC_FACT_FINITE_FIELDS = ("raw_value", "tolerance")
 _CURRENT_SCALAR_FACT_CONTAINERS = ("statistical_summary",)
 _CURRENT_SCALAR_DATE_FIELDS = ("latest_date",)
+_CURRENT_SIGNAL_REQUIRED_TEXT_FIELDS = (
+    "signal_id",
+    "direction",
+    "as_of_date",
+    "source_key",
+    "chart_id",
+    "data_key",
+)
+_CURRENT_SIGNAL_FINITE_FIELDS = ("value", "threshold", "threshold_distance")
 
 
 def normalize_quant_execution_summary(execution_summary: dict[str, Any]) -> dict[str, Any]:
@@ -594,6 +605,84 @@ def _validate_numeric_facts(summary: dict[str, Any]) -> None:
         )
 
 
+def _validate_current_signal_facts(summary: dict[str, Any]) -> None:
+    """Validate threshold-signal facts before they enter writer/QA handoffs."""
+
+    if "current_signal_facts" not in summary:
+        return
+    facts = summary.get("current_signal_facts")
+    if not isinstance(facts, list):
+        raise ValueError("execution_summary.current_signal_facts must be a list.")
+
+    errors: list[str] = []
+    for index, fact in enumerate(facts):
+        fallback_id = f"current_signal_facts[{index}]"
+        if not isinstance(fact, dict):
+            errors.append(f"{fallback_id}: expected object")
+            continue
+
+        label = str(fact.get("signal_id") or fallback_id)
+        missing_text = [
+            field
+            for field in _CURRENT_SIGNAL_REQUIRED_TEXT_FIELDS
+            if not _non_empty_text(fact.get(field))
+        ]
+        non_finite = [
+            field
+            for field in _CURRENT_SIGNAL_FINITE_FIELDS
+            if _finite(fact.get(field)) is None
+        ]
+        direction = str(fact.get("direction") or "").strip().lower()
+        if direction not in {"high", "low"}:
+            errors.append(f"{label}: direction must be 'high' or 'low'")
+        triggered = fact.get("triggered")
+        if not isinstance(triggered, bool):
+            errors.append(f"{label}: triggered must be a boolean")
+
+        if missing_text or non_finite:
+            problems = []
+            if missing_text:
+                problems.append(f"missing non-empty {', '.join(missing_text)}")
+            if non_finite:
+                problems.append(f"missing finite {', '.join(non_finite)}")
+            errors.append(f"{label}: {'; '.join(problems)}")
+            continue
+        if direction not in {"high", "low"} or not isinstance(triggered, bool):
+            continue
+
+        value = float(_finite(fact.get("value")))
+        threshold = float(_finite(fact.get("threshold")))
+        distance = float(_finite(fact.get("threshold_distance")))
+        expected_triggered = (
+            value >= threshold if direction == "high" else value <= threshold
+        )
+        if triggered is not expected_triggered:
+            errors.append(
+                f"{label}: triggered={triggered} contradicts value={value}, "
+                f"threshold={threshold}, direction={direction}"
+            )
+        expected_distance = (
+            value - threshold if direction == "high" else threshold - value
+        )
+        tolerance = _finite(fact.get("tolerance"))
+        if tolerance is None:
+            tolerance = 0.005
+        if abs(distance - expected_distance) > max(float(tolerance), 1e-9):
+            errors.append(
+                f"{label}: threshold_distance={distance} contradicts expected "
+                f"{expected_distance}"
+            )
+
+    if errors:
+        raise ValueError(
+            "Malformed execution_summary.current_signal_facts: "
+            + "; ".join(errors)
+            + ". Use sahm_rule_signal(...) or emit current threshold-signal "
+            "facts with signal_id, value, threshold, direction, triggered, "
+            "threshold_distance, as_of_date, source_key, chart_id, and data_key."
+        )
+
+
 def _normalize_numeric_fact_contracts(summary: dict[str, Any]) -> None:
     """Canonicalize legacy numeric_facts before saving or handing off artifacts."""
 
@@ -628,5 +717,6 @@ _SUMMARY_NORMALIZATION_RULES = (
     _preserve_sec_company_facts_contract,
     _normalize_numeric_fact_contracts,
     _collect_validation_methods,
+    _validate_current_signal_facts,
     _validate_numeric_facts,
 )

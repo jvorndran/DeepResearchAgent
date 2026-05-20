@@ -340,6 +340,7 @@ def _load_sibling_execution_summary(report_path: Path) -> dict[str, object]:
         "signal_false_positive_windows",
         "signal_validation_metrics",
         "latest_signal_observation",
+        "current_signal_facts",
         "signal_design",
         "lead_time_rows",
         "scenario_score_rows",

@@ -1568,6 +1568,20 @@ def test_plan_report_structure_surfaces_generic_signal_helper_evidence(tmp_path)
             "confirming_signals": ["Yield curve inversion lead window"],
             "contradicting_signals": ["Labor deterioration"],
         },
+        "current_signal_facts": [
+            {
+                "signal_id": "sahm_rule",
+                "value": 0.133,
+                "threshold": 0.5,
+                "direction": "high",
+                "triggered": False,
+                "threshold_distance": -0.367,
+                "as_of_date": "2026-03-01",
+                "source_key": "UNRATE",
+                "chart_id": "sahm_chart",
+                "data_key": "sahm_gap",
+            }
+        ],
         "signal_event_rows": [
             {
                 "event_label": "2008 recession 12m before",
@@ -1609,6 +1623,8 @@ def test_plan_report_structure_surfaces_generic_signal_helper_evidence(tmp_path)
     assert "events_met_threshold=3" in draft
     assert "false_positive_windows=4" in draft
     assert "latest_signal_observation: date=2026-03-01" in draft
+    assert "sahm_rule: signal_id=sahm_rule; value=0.133" in draft
+    assert "triggered=False" in draft
     assert "2008 recession 12m before: score=2" in draft
     assert "2022-2023: max_score=2" in draft
     assert "bear: score=3" in draft
@@ -1617,6 +1633,12 @@ def test_plan_report_structure_surfaces_generic_signal_helper_evidence(tmp_path)
             "false_positive_windows"
         ]
         == 4
+    )
+    assert (
+        result["helper_evidence_for_draft"]["tables"]["current_signal_facts"][0][
+            "signal_id"
+        ]
+        == "sahm_rule"
     )
 
 
