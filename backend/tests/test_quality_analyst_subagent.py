@@ -2241,6 +2241,498 @@ def test_submit_quality_decision_accepts_state_income_display_values_with_tolera
     assert payload["status"] == "approved"
 
 
+def test_submit_quality_decision_rejects_missing_requested_group_place_coverage(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "statistical_summary": {"latest_unemployment": 4.3},
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": (
+                    "Check whether the consumer is fine and show where national "
+                    "aggregates hide stress in specific groups or places."
+                ),
+                "title": "Consumer Stress Beneath National Aggregates",
+                "executive_summary": "The aggregate consumer picture is mixed.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "National unemployment and consumption aggregates look firm, "
+                    "but savings and sentiment show stress beneath the surface.\n"
+                    "Workers with tight budgets may feel more pressure, but this "
+                    "report does not provide a reusable subgroup or place breakout."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 35},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "requested_coverage_missing"
+    assert payload["required_upstream"] == "technical-writer"
+    assert "specific groups or places" in payload["reason"]
+
+
+def test_submit_quality_decision_accepts_requested_group_place_evidence(tmp_path):
+    report_path = tmp_path / "report.json"
+    numeric_facts = [
+        {
+            "id": "census_acs.CA.renter_cost_burden_pct",
+            "label": "California renter cost burden",
+            "subject": "California",
+            "metric": "renter_cost_burden_pct",
+            "raw_value": 47.0,
+            "display_value": "47.0%",
+            "unit": "percent",
+            "precision": 1,
+            "tolerance": 0.01,
+            "source_key": "census_acs.state.CA.renter_cost_burden_pct",
+            "as_of_date": "2025",
+        },
+        {
+            "id": "census_acs.TX.renter_cost_burden_pct",
+            "label": "Texas renter cost burden",
+            "subject": "Texas",
+            "metric": "renter_cost_burden_pct",
+            "raw_value": 44.0,
+            "display_value": "44.0%",
+            "unit": "percent",
+            "precision": 1,
+            "tolerance": 0.01,
+            "source_key": "census_acs.state.TX.renter_cost_burden_pct",
+            "as_of_date": "2025",
+        },
+        {
+            "id": "census_acs.FL.renter_cost_burden_pct",
+            "label": "Florida renter cost burden",
+            "subject": "Florida",
+            "metric": "renter_cost_burden_pct",
+            "raw_value": 45.0,
+            "display_value": "45.0%",
+            "unit": "percent",
+            "precision": 1,
+            "tolerance": 0.01,
+            "source_key": "census_acs.state.FL.renter_cost_burden_pct",
+            "as_of_date": "2025",
+        },
+        {
+            "id": "ny_fed.subprime.serious_delinquency_pct",
+            "label": "Subprime borrower serious delinquency",
+            "subject": "subprime borrowers",
+            "metric": "serious_delinquency_pct",
+            "raw_value": 9.2,
+            "display_value": "9.2%",
+            "unit": "percent",
+            "precision": 1,
+            "tolerance": 0.01,
+            "source_key": "ny_fed.borrower_segments.subprime.serious_delinquency_pct",
+            "as_of_date": "2025-Q1",
+        },
+        {
+            "id": "ny_fed.prime.serious_delinquency_pct",
+            "label": "Prime borrower serious delinquency",
+            "subject": "prime borrowers",
+            "metric": "serious_delinquency_pct",
+            "raw_value": 1.1,
+            "display_value": "1.1%",
+            "unit": "percent",
+            "precision": 1,
+            "tolerance": 0.01,
+            "source_key": "ny_fed.borrower_segments.prime.serious_delinquency_pct",
+            "as_of_date": "2025-Q1",
+        },
+    ]
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "statistical_summary": {"latest_unemployment": 4.3},
+                "numeric_facts": numeric_facts,
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": (
+                    "Check whether the consumer is fine and show where national "
+                    "aggregates hide stress in specific groups or places."
+                ),
+                "title": "Consumer Stress By Group And Place",
+                "executive_summary": "The subgroup and place evidence is mixed.",
+                "markdown": (
+                    "## Hidden Stress By Group And Place\n"
+                    "Census ACS state table evidence shows California at 47.0%, "
+                    "Texas at 44.0%, and Florida at 45.0% renter cost burden. "
+                    "New York Fed borrower data shows subprime borrowers at 9.2% "
+                    "serious delinquency, above prime borrowers at 1.1%."
+                ),
+                "charts": [],
+                "data_sources": [
+                    {
+                        "provider": "Census ACS",
+                        "description": "State renter cost burden by geography",
+                    },
+                    {
+                        "provider": "New York Fed",
+                        "description": "Borrower delinquency by credit segment",
+                    },
+                ],
+                "metadata": {"word_count": 45},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "approved"
+
+
+def test_submit_quality_decision_rejects_group_place_weak_proxy(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "statistical_summary": {"latest_cpi_yoy": 4.0},
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": (
+                    "Check whether national aggregates hide stress in specific "
+                    "groups or places."
+                ),
+                "title": "Consumer Stress By Group",
+                "executive_summary": (
+                    "Low-income households face stress because national CPI rose 4.0%."
+                ),
+                "markdown": (
+                    "## Hidden Stress\n"
+                    "Low-income households face stress because national CPI rose 4.0%, "
+                    "which is a national proxy rather than segmented evidence."
+                ),
+                "charts": [],
+                "data_sources": [
+                    {"provider": "BLS", "description": "National CPI"}
+                ],
+                "metadata": {"word_count": 24},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "requested_coverage_missing"
+
+
+def test_submit_quality_decision_rejects_group_place_scope_drift_caveat(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps({"status": "success", "statistical_summary": {}}),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": (
+                    "Check whether national aggregates hide stress in specific "
+                    "groups or places."
+                ),
+                "title": "Consumer Stress By Place",
+                "executive_summary": (
+                    "State-level breakouts are outside the scope of this report."
+                ),
+                "markdown": (
+                    "## Hidden Stress By Place\n"
+                    "State-level breakouts are outside the scope of this report."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 13},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "requested_coverage_missing"
+
+
+def test_submit_quality_decision_accepts_group_place_unavailable_data_caveat(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps({"status": "success", "statistical_summary": {}}),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": (
+                    "Check whether national aggregates hide stress in specific "
+                    "groups or places."
+                ),
+                "title": "Consumer Stress By Place",
+                "executive_summary": (
+                    "Census state-level data were unavailable after the source "
+                    "request failed."
+                ),
+                "markdown": (
+                    "## Hidden Stress By Place\n"
+                    "Census state-level data were unavailable after the source "
+                    "request failed, so the regional breakout cannot be stated "
+                    "reliably."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 24},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "approved"
+
+
+def test_submit_quality_decision_rejects_self_described_missing_state_table(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "numeric_facts": [
+                    {
+                        "id": "census_acs.CA.renter_cost_burden_pct",
+                        "label": "California renter cost burden",
+                        "subject": "California",
+                        "metric": "renter_cost_burden_pct",
+                        "raw_value": 47.0,
+                        "display_value": "47.0%",
+                        "unit": "percent",
+                        "precision": 1,
+                        "tolerance": 0.01,
+                        "source_key": "census_acs.state.CA.renter_cost_burden_pct",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": (
+                    "Check whether national aggregates hide stress in specific "
+                    "groups or places."
+                ),
+                "title": "Consumer Stress By Place",
+                "executive_summary": (
+                    "This report lacks and does not provide a state-level table "
+                    "for hidden stress."
+                ),
+                "markdown": (
+                    "## Hidden Stress By Place\n"
+                    "This report lacks and does not provide a state-level table "
+                    "for hidden stress."
+                ),
+                "charts": [],
+                "data_sources": [
+                    {
+                        "provider": "Census ACS",
+                        "description": "State renter cost burden by geography",
+                    }
+                ],
+                "metadata": {"word_count": 20},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "requested_coverage_missing"
+
+
+def test_submit_quality_decision_rejects_statistical_summary_direction_reversals(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "statistical_summary": {
+                    "real_wage_change_pct_2019_to_latest": 4.32,
+                    "dpi_pce_gap_latest_billions": 1406.8,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Assess whether wages and spending support the consumer-is-fine claim.",
+                "title": "Consumer Stress Check",
+                "executive_summary": (
+                    "Real average hourly earnings have been eroded by cumulative "
+                    "inflation, and real PCE has been running ahead of real DPI."
+                ),
+                "markdown": (
+                    "## Executive Summary\n"
+                    "Real wage erosion is the central household stress signal.\n"
+                    "Real personal consumption expenditures have been running ahead "
+                    "of real disposable personal income."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 31},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "statistical_summary_mismatch"
+    assert payload["required_upstream"] == "technical-writer"
+    assert "real_wage_change_pct_2019_to_latest" in payload["reason"]
+    assert any(
+        "dpi_pce_gap_latest_billions" in fix
+        for fix in payload["required_fixes"]
+    )
+
+
+def test_submit_quality_decision_accepts_statistical_summary_direction_language(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "statistical_summary": {
+                    "real_wage_change_pct_2019_to_latest": 4.32,
+                    "dpi_pce_gap_latest_billions": 1406.8,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Assess whether wages and spending support the consumer-is-fine claim.",
+                "title": "Consumer Stress Check",
+                "executive_summary": (
+                    "Real average hourly earnings fell during 2022 and are up "
+                    "4.3% since 2019, while the latest DPI-PCE gap is positive."
+                ),
+                "markdown": (
+                    "## Executive Summary\n"
+                    "Real wages have not eroded or declined since 2019. "
+                    "Real average hourly earnings fell during 2022 and are up "
+                    "4.3% from 2019 to the latest observation. The latest DPI-PCE "
+                    "gap is positive, so disposable personal income is above PCE "
+                    "at the latest point."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 35},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "approved"
+
+
 def test_submit_quality_decision_rejects_uncovered_historical_analog_claim(tmp_path):
     report_path = tmp_path / "report.json"
     (tmp_path / "execution_summary.json").write_text(

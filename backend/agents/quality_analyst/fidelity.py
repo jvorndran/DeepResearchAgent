@@ -67,6 +67,179 @@ _MARKET_VALUATION_AFFIRMATIVE_RE = re.compile(
     r"attractive|rich|reasonable|upside|downside)\b)",
     re.IGNORECASE,
 )
+_GROUP_PLACE_QUERY_RE = re.compile(
+    r"\b(?:specific\s+groups?|groups?|subgroups?|cohorts?|"
+    r"consumer\s+segments?|places?|"
+    r"geograph(?:y|ic|ical)?|regions?|regional|states|state[-\s]level|"
+    r"metros?|cities|"
+    r"counties|zip\s*codes?|localities)\b",
+    re.IGNORECASE,
+)
+_GROUP_PLACE_DIMENSION_RE = re.compile(
+    r"\b(?:groups?|subgroups?|cohorts?|consumer\s+segments?|demographics?|places?|"
+    r"geograph(?:y|ic|ical)?|regions?|regional|states|state[-\s]level|"
+    r"counties|metros?|"
+    r"cities|zip\s*codes?|income\s+(?:quintile|quartile|tercile|bracket|"
+    r"group)|low[-\s]income|lower[-\s]income|middle[-\s]income|"
+    r"high[-\s]income|renters?|homeowners?|borrowers?|subprime|prime|"
+    r"younger|older|age\s+(?:group|cohort)|racial|ethnic|black|hispanic|"
+    r"asian|white|rural|urban|northeast|midwest|south|west)\b",
+    re.IGNORECASE,
+)
+_US_STATE_PLACE_TERMS = (
+    "alabama",
+    "alaska",
+    "arizona",
+    "arkansas",
+    "california",
+    "colorado",
+    "connecticut",
+    "delaware",
+    "district of columbia",
+    "florida",
+    "georgia",
+    "hawaii",
+    "idaho",
+    "illinois",
+    "indiana",
+    "iowa",
+    "kansas",
+    "kentucky",
+    "louisiana",
+    "maine",
+    "maryland",
+    "massachusetts",
+    "michigan",
+    "minnesota",
+    "mississippi",
+    "missouri",
+    "montana",
+    "nebraska",
+    "nevada",
+    "new hampshire",
+    "new jersey",
+    "new mexico",
+    "new york",
+    "north carolina",
+    "north dakota",
+    "ohio",
+    "oklahoma",
+    "oregon",
+    "pennsylvania",
+    "rhode island",
+    "south carolina",
+    "south dakota",
+    "tennessee",
+    "texas",
+    "utah",
+    "vermont",
+    "virginia",
+    "washington",
+    "west virginia",
+    "wisconsin",
+    "wyoming",
+    "d.c.",
+    "dc",
+)
+_US_STATE_PLACE_RE = re.compile(
+    r"\b(?:"
+    + "|".join(re.escape(term) for term in _US_STATE_PLACE_TERMS)
+    + r")\b",
+    re.IGNORECASE,
+)
+_GROUP_PLACE_EVIDENCE_RE = re.compile(
+    r"\b(?:census|acs|cps|survey|bea|bls|new\s+york\s+fed|ny\s+fed|"
+    r"equifax|transunion|table|chart|source|dataset|state[-\s]level|"
+    r"county[-\s]level|metro[-\s]level|regional)\b",
+    re.IGNORECASE,
+)
+_GROUP_PLACE_EVIDENCE_DISCLAIMER_RE = re.compile(
+    r"\b(?:does\s+not|doesn't|did\s+not|didn't|not|no|without|lacks?|lack)\b"
+    r"[^\n.]{0,80}\b(?:provide|include|show|contain|evidence|data|source|"
+    r"table|breakout|break\s*out|segment|state[-\s]level|regional|cohort|"
+    r"group|subgroup|place[-\s]specific)\b",
+    re.IGNORECASE,
+)
+_GROUP_PLACE_SELF_MISSING_RE = re.compile(
+    r"\b(?:this\s+)?(?:report|analysis)\b[^\n.]{0,60}\b"
+    r"(?:lacks?|does\s+not|doesn't|without|not\s+include|not\s+provide)\b",
+    re.IGNORECASE,
+)
+_GROUP_PLACE_SCOPE_DRIFT_RE = re.compile(
+    r"\b(?:outside\s+(?:of\s+)?(?:the\s+)?(?:report(?:'s)?\s+)?scope|"
+    r"not\s+(?:covered|included)\s+(?:by|in)\s+(?:this\s+)?"
+    r"(?:report|analysis)|(?:this\s+)?(?:report|analysis)\s+"
+    r"(?:does\s+not|doesn't|did\s+not|didn't|will\s+not|won't)\s+"
+    r"(?:cover|include))\b",
+    re.IGNORECASE,
+)
+_GROUP_PLACE_UNAVAILABLE_RE = re.compile(
+    r"\b(?:unavailable|not\s+available|not\s+covered|missing|failed|"
+    r"insufficient|could\s+not|unable\s+to|no\s+reliable|lacks?|"
+    r"limitation|not\s+included)\b",
+    re.IGNORECASE,
+)
+_REAL_WAGE_NEGATIVE_CLAIM_RE = re.compile(
+    r"\breal\s+(?:average\s+hourly\s+)?(?:wages?|earnings|pay)\b"
+    r"[^\n.]{0,120}\b(?:erod(?:e|es|ed|ing)|declin(?:e|es|ed|ing)|"
+    r"fell|fall(?:en|ing)?|drop(?:ped|s|ping)?|compress(?:ed|ion)|"
+    r"lag(?:ged|ging)?|negative|lost\s+purchasing\s+power)\b|"
+    r"\breal[-\s]wage\s+erosion\b",
+    re.IGNORECASE,
+)
+_REAL_WAGE_POSITIVE_CLAIM_RE = re.compile(
+    r"\breal\s+(?:average\s+hourly\s+)?(?:wages?|earnings|pay)\b"
+    r"[^\n.]{0,120}\b(?:rose|risen|increas(?:e|es|ed|ing)|grew|growth|"
+    r"gain(?:ed|s|ing)?|up|positive|outpac(?:e|es|ed|ing)|ahead\s+of\s+"
+    r"inflation)\b",
+    re.IGNORECASE,
+)
+_REAL_WAGE_SUBJECT_RE = re.compile(
+    r"\breal\s+(?:average\s+hourly\s+)?(?:wages?|earnings|pay)\b|"
+    r"\breal[-\s]wage\b",
+    re.IGNORECASE,
+)
+_REAL_WAGE_ALTERNATE_PERIOD_RE = re.compile(
+    r"\b(?:peak|pandemic|2020|2021|2022)\b",
+    re.IGNORECASE,
+)
+_REAL_WAGE_CLAUSE_BOUNDARY_RE = re.compile(
+    r"\s*(?:;|\b(?:but|while|although|though|whereas)\b|"
+    r"\band\s+(?=(?:are|is|was|were|has|have|had|rose|risen|"
+    r"increas(?:e|es|ed|ing)|grew|gain(?:ed|s|ing)?|up|fell|"
+    r"fall(?:en|ing)?|declin(?:e|es|ed|ing)|erod(?:e|es|ed|ing)|"
+    r"drop(?:ped|s|ping)?|compress(?:ed|ion)|lag(?:ged|ging)?)\b))\s*",
+    re.IGNORECASE,
+)
+_PCE_AHEAD_OF_DPI_CLAIM_RE = re.compile(
+    r"\b(?:pce|consumption|spending|expenditures?)\b[^\n.]{0,120}\b"
+    r"(?:out(?:run|runs|ran|pace|paces|paced)|running\s+ahead|runs?\s+ahead|"
+    r"grew\s+faster|grown\s+faster|exceeds?|above|larger\s+than)\b"
+    r"[^\n.]{0,120}\b(?:dpi|disposable\s+personal\s+income|income)\b|"
+    r"\b(?:dpi|disposable\s+personal\s+income|income)\b[^\n.]{0,120}\b"
+    r"(?:lags?|lagging|trails?|behind|below|not\s+sustainably\s+supported)\b"
+    r"[^\n.]{0,120}\b(?:pce|consumption|spending|expenditures?)\b",
+    re.IGNORECASE,
+)
+_DPI_AHEAD_OF_PCE_CLAIM_RE = re.compile(
+    r"\b(?:dpi|disposable\s+personal\s+income|income)\b[^\n.]{0,120}\b"
+    r"(?:out(?:run|runs|ran|pace|paces|paced)|running\s+ahead|runs?\s+ahead|"
+    r"grew\s+faster|grown\s+faster|exceeds?|above|larger\s+than)\b"
+    r"[^\n.]{0,120}\b(?:pce|consumption|spending|expenditures?)\b|"
+    r"\b(?:pce|consumption|spending|expenditures?)\b[^\n.]{0,120}\b"
+    r"(?:lags?|lagging|trails?|behind|below)\b[^\n.]{0,120}\b"
+    r"(?:dpi|disposable\s+personal\s+income|income)\b",
+    re.IGNORECASE,
+)
+_DIRECTION_NEGATION_RE = re.compile(
+    r"\b(?:not|no|does\s+not|doesn't|did\s+not|didn't|is\s+not|isn't|"
+    r"are\s+not|aren't|without)\b[^\n.]{0,60}\b(?:"
+    r"erod(?:e|es|ed|ing)|declin(?:e|es|ed|ing)|fell|fall(?:en|ing)?|"
+    r"drop(?:ped|s|ping)?|compress(?:ed|ion)|lag(?:ged|ging)?|"
+    r"out(?:run|runs|ran|pace|paces|paced)|running\s+ahead|runs?\s+ahead|"
+    r"ahead|exceed(?:s|ed|ing)?|above|below)\b",
+    re.IGNORECASE,
+)
 
 
 def _looks_like_sec_company_facts_ref(value: object) -> bool:
@@ -911,6 +1084,135 @@ def _report_claim_text(report_data: dict[str, object]) -> str:
     )
 
 
+def _markdown_review_lines(markdown: object) -> list[str]:
+    lines: list[str] = []
+    in_research_query = False
+    for raw_line in str(markdown or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("#"):
+            heading = line.lstrip("#").strip().lower()
+            in_research_query = heading == "research query"
+            if in_research_query:
+                continue
+        if in_research_query:
+            continue
+        lines.append(line)
+    return lines
+
+
+def _report_review_lines(report_data: dict[str, object]) -> list[str]:
+    lines: list[str] = []
+    for key in ("title", "executive_summary"):
+        for raw_line in str(report_data.get(key) or "").splitlines():
+            line = raw_line.strip()
+            if line:
+                lines.append(line)
+    lines.extend(_markdown_review_lines(report_data.get("markdown")))
+    return lines
+
+
+def _query_requests_group_place_coverage(query: object) -> bool:
+    return bool(_GROUP_PLACE_QUERY_RE.search(str(query or "")))
+
+
+def _line_mentions_group_place_dimension(line: str) -> bool:
+    return bool(
+        _GROUP_PLACE_DIMENSION_RE.search(line) or _US_STATE_PLACE_RE.search(line)
+    )
+
+
+def _line_has_group_place_evidence(line: str) -> bool:
+    if not _line_mentions_group_place_dimension(line):
+        return False
+    if _GROUP_PLACE_SCOPE_DRIFT_RE.search(line):
+        return False
+    if _GROUP_PLACE_UNAVAILABLE_RE.search(line):
+        return False
+    if _GROUP_PLACE_EVIDENCE_DISCLAIMER_RE.search(line):
+        return False
+    return bool(_NUMERIC_TOKEN_RE.search(line) or _GROUP_PLACE_EVIDENCE_RE.search(line))
+
+
+def _group_place_fact_text(fact: dict[str, object]) -> str:
+    return " ".join(
+        str(fact.get(key) or "")
+        for key in ("id", "label", "subject", "metric", "source_key")
+    )
+
+
+def _numeric_fact_mentions_group_place_dimension(fact: dict[str, object]) -> bool:
+    return _line_mentions_group_place_dimension(_group_place_fact_text(fact))
+
+
+def _line_matches_group_place_numeric_fact(
+    line: str,
+    fact: dict[str, object],
+) -> bool:
+    if not _line_has_group_place_evidence(line):
+        return False
+    if not _numeric_fact_mentions_group_place_dimension(fact):
+        return False
+    if not _contains_numeric_fact_value(line, fact):
+        return False
+
+    subject = str(fact.get("subject") or "").strip()
+    if subject and _line_mentions_group_place_dimension(subject):
+        return subject.lower() in line.lower()
+    return True
+
+
+def _report_has_artifact_backed_group_place_evidence(
+    summary: dict[str, object],
+    lines: list[str],
+) -> bool:
+    facts = _numeric_facts_from_summary(summary)
+    if not facts:
+        return False
+    return any(
+        _line_matches_group_place_numeric_fact(line, fact)
+        for fact in facts
+        for line in lines
+    )
+
+
+def _line_has_group_place_unavailable_caveat(line: str) -> bool:
+    if _GROUP_PLACE_SCOPE_DRIFT_RE.search(line):
+        return False
+    if not _GROUP_PLACE_UNAVAILABLE_RE.search(line):
+        return False
+    if _GROUP_PLACE_SELF_MISSING_RE.search(line):
+        return False
+    return bool(
+        _line_mentions_group_place_dimension(line)
+        or _GROUP_PLACE_EVIDENCE_RE.search(line)
+    )
+
+
+def _requested_group_place_coverage_blocker(
+    report_data: dict[str, object],
+    summary: dict[str, object],
+) -> str | None:
+    if not _query_requests_group_place_coverage(report_data.get("query")):
+        return None
+
+    lines = _report_review_lines(report_data)
+    if any(_line_has_group_place_unavailable_caveat(line) for line in lines):
+        return None
+    if _report_has_artifact_backed_group_place_evidence(summary, lines):
+        return None
+
+    return (
+        "User query asks for stress hidden in specific groups or places, but "
+        "the report includes neither artifact-backed group/place evidence nor "
+        "a clear unavailable-data caveat. Regenerate the report with cohort, "
+        "regional, state, metro, county, or other place-specific evidence from "
+        "execution_summary.json numeric_facts, or explicitly state that the "
+        "requested group/place data was unavailable."
+    )
+
+
 def _report_claims_company_fundamental_analysis(report_data: dict[str, object]) -> bool:
     lowered = _report_claim_text(report_data).lower()
     return any(
@@ -1234,6 +1536,140 @@ def _finite_number(value: object) -> float | None:
     if number != number or number in {float("inf"), float("-inf")}:
         return None
     return number
+
+
+def _real_wage_direction_clauses(line: str) -> list[str]:
+    subject_match = _REAL_WAGE_SUBJECT_RE.search(line)
+    subject = subject_match.group(0) if subject_match else ""
+    clauses: list[str] = []
+    for raw_clause in _REAL_WAGE_CLAUSE_BOUNDARY_RE.split(line):
+        clause = raw_clause.strip(" ,")
+        if not clause:
+            continue
+        if subject and not _REAL_WAGE_SUBJECT_RE.search(clause):
+            clause = f"{subject} {clause}"
+        clauses.append(clause)
+    return clauses
+
+
+def _line_matches_direction_claim(
+    line: str,
+    pattern: re.Pattern[str],
+    *,
+    ignore_alternate_real_wage_period: bool = False,
+) -> bool:
+    if not pattern.search(line):
+        return False
+    if _DIRECTION_NEGATION_RE.search(line):
+        return False
+    if (
+        ignore_alternate_real_wage_period
+        and _REAL_WAGE_ALTERNATE_PERIOD_RE.search(line)
+    ):
+        claim_clauses = [
+            clause
+            for clause in _real_wage_direction_clauses(line)
+            if pattern.search(clause) and not _DIRECTION_NEGATION_RE.search(clause)
+        ]
+        if claim_clauses:
+            return any(
+                "2019" in clause
+                or not _REAL_WAGE_ALTERNATE_PERIOD_RE.search(clause)
+                for clause in claim_clauses
+            )
+        if "2019" not in line:
+            return False
+    return True
+
+
+def _statistical_summary_direction_blockers(
+    summary: dict[str, object],
+    report_data: dict[str, object],
+) -> list[str]:
+    stats = summary.get("statistical_summary")
+    if not isinstance(stats, dict):
+        return []
+
+    lines = _report_review_lines(report_data)
+    blockers: list[str] = []
+
+    real_wage_change = _finite_number(
+        stats.get("real_wage_change_pct_2019_to_latest")
+    )
+    if real_wage_change is not None:
+        if real_wage_change > 0:
+            claim_lines = [
+                line
+                for line in lines
+                if _line_matches_direction_claim(
+                    line,
+                    _REAL_WAGE_NEGATIVE_CLAIM_RE,
+                    ignore_alternate_real_wage_period=True,
+                )
+            ]
+            if claim_lines:
+                blockers.append(
+                    "Report reverses execution_summary.json statistical_summary "
+                    "direction for real_wage_change_pct_2019_to_latest "
+                    f"({real_wage_change:+.2f}): it describes real-wage "
+                    "erosion or decline. Regenerate the affected wage prose "
+                    "from statistical_summary, or qualify the claim with "
+                    "separate subgroup/period evidence."
+                )
+        elif real_wage_change < 0:
+            claim_lines = [
+                line
+                for line in lines
+                if _line_matches_direction_claim(
+                    line,
+                    _REAL_WAGE_POSITIVE_CLAIM_RE,
+                    ignore_alternate_real_wage_period=True,
+                )
+            ]
+            if claim_lines:
+                blockers.append(
+                    "Report reverses execution_summary.json statistical_summary "
+                    "direction for real_wage_change_pct_2019_to_latest "
+                    f"({real_wage_change:+.2f}): it describes real-wage "
+                    "growth. Regenerate the affected wage prose from "
+                    "statistical_summary, or qualify the claim with separate "
+                    "subgroup/period evidence."
+                )
+
+    dpi_pce_gap = _finite_number(stats.get("dpi_pce_gap_latest_billions"))
+    if dpi_pce_gap is not None:
+        if dpi_pce_gap > 0:
+            claim_lines = [
+                line
+                for line in lines
+                if _line_matches_direction_claim(line, _PCE_AHEAD_OF_DPI_CLAIM_RE)
+            ]
+            if claim_lines:
+                blockers.append(
+                    "Report reverses execution_summary.json statistical_summary "
+                    "direction for dpi_pce_gap_latest_billions "
+                    f"({dpi_pce_gap:+.1f}): it says PCE, consumption, or "
+                    "spending is ahead of disposable personal income even "
+                    "though the latest DPI-PCE gap is positive. Regenerate "
+                    "the affected income/spending prose from statistical_summary."
+                )
+        elif dpi_pce_gap < 0:
+            claim_lines = [
+                line
+                for line in lines
+                if _line_matches_direction_claim(line, _DPI_AHEAD_OF_PCE_CLAIM_RE)
+            ]
+            if claim_lines:
+                blockers.append(
+                    "Report reverses execution_summary.json statistical_summary "
+                    "direction for dpi_pce_gap_latest_billions "
+                    f"({dpi_pce_gap:+.1f}): it says disposable personal income "
+                    "is ahead of PCE, consumption, or spending even though the "
+                    "latest DPI-PCE gap is negative. Regenerate the affected "
+                    "income/spending prose from statistical_summary."
+                )
+
+    return blockers
 
 
 def _dict_rows(value: object) -> list[dict[str, object]]:
@@ -1774,6 +2210,13 @@ def _execution_summary_fidelity_blockers(
         blockers.append(unsupported_valuation)
     blockers.extend(_source_unit_fidelity_blockers(summary, markdown, report_data))
     blockers.extend(_state_comparison_fidelity_blockers(summary, markdown))
+    requested_coverage = _requested_group_place_coverage_blocker(
+        report_data,
+        summary,
+    )
+    if requested_coverage:
+        blockers.append(requested_coverage)
+    blockers.extend(_statistical_summary_direction_blockers(summary, report_data))
     blockers.extend(_numeric_fact_fidelity_blockers(summary, markdown))
 
     ranked_analog = _top_ranked_analog_label(summary)
@@ -2153,6 +2596,16 @@ def _approval_failure_metadata(report_path: str) -> dict[str, str]:
     if _unsupported_market_valuation_claim_blocker(summary, data):
         return {
             "failure_category": "unsupported_valuation_claim",
+            "required_upstream": "technical-writer",
+        }
+    if _requested_group_place_coverage_blocker(data, summary):
+        return {
+            "failure_category": "requested_coverage_missing",
+            "required_upstream": "technical-writer",
+        }
+    if _statistical_summary_direction_blockers(summary, data):
+        return {
+            "failure_category": "statistical_summary_mismatch",
             "required_upstream": "technical-writer",
         }
     if _numeric_fact_fidelity_blockers(summary, markdown):

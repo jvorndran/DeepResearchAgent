@@ -14,6 +14,11 @@ approved repository state.
 Options:
   --dry-run, --prompt-only  Write stub artifacts and summaries without running the agent or Codex.
   -h, --help               Show this help text.
+
+Useful environment variables:
+  MAX_ITERS                 Number of improve passes to attempt. Default: 5.
+  START_ITER                First pass number for this run. Default: 1.
+  MAX_FIX_ATTEMPTS          Fix/review cap per pass, or unlimited. Default: unlimited.
 USAGE
 }
 
@@ -55,7 +60,7 @@ fi
 
 MAX_ITERS="${REQUESTED_ITERS:-5}"
 START_ITER="${START_ITER:-1}"
-MAX_FIX_ATTEMPTS="${MAX_FIX_ATTEMPTS:-3}"
+MAX_FIX_ATTEMPTS="${MAX_FIX_ATTEMPTS:-unlimited}"
 CODEX_SANDBOX_MODE="${CODEX_SANDBOX_MODE:-danger-full-access}"
 CODEX_REASONING_EFFORT="${CODEX_REASONING_EFFORT:-xhigh}"
 LOG_ROOT="${LOG_ROOT:-$REPO_ROOT/logs/improve-loop}"
@@ -93,8 +98,8 @@ for value_name in MAX_ITERS START_ITER; do
   fi
 done
 
-if ! [[ "$MAX_FIX_ATTEMPTS" =~ ^[0-9]+$ ]]; then
-  printf 'MAX_FIX_ATTEMPTS must be a non-negative integer, got %s\n' "$MAX_FIX_ATTEMPTS" >&2
+if [[ "$MAX_FIX_ATTEMPTS" != "unlimited" ]] && ! [[ "$MAX_FIX_ATTEMPTS" =~ ^[0-9]+$ ]]; then
+  printf 'MAX_FIX_ATTEMPTS must be a non-negative integer or unlimited, got %s\n' "$MAX_FIX_ATTEMPTS" >&2
   exit 2
 fi
 
@@ -898,6 +903,7 @@ end_iter=$((START_ITER + MAX_ITERS - 1))
 
 printf 'Improve loop run directory: %s\n' "$RUN_DIR"
 printf 'Memory: %s\n' "$MEMORY_FILE"
+printf 'Max fix attempts per pass: %s\n' "$MAX_FIX_ATTEMPTS"
 printf 'Codex reasoning effort: %s\n' "$CODEX_REASONING_EFFORT"
 printf 'Dry run: %s\n' "$DRY_RUN"
 printf 'Git auto-commit: %s\n' "$IMPROVE_LOOP_AUTO_COMMIT"
@@ -993,7 +999,7 @@ for i in $(seq "$START_ITER" "$end_iter"); do
       if [[ "$final_review_result" != "changes_requested" ]]; then
         break
       fi
-      if [[ "$fix_attempts" -ge "$MAX_FIX_ATTEMPTS" ]]; then
+      if [[ "$MAX_FIX_ATTEMPTS" != "unlimited" && "$fix_attempts" -ge "$MAX_FIX_ATTEMPTS" ]]; then
         final_review_result="blocked"
         break
       fi
