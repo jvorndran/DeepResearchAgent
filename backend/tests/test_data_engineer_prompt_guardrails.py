@@ -352,6 +352,10 @@ def test_data_engineer_prompt_requires_fresh_current_macro_fetches():
     assert "do not set `observation_end`" in prompt
     assert "unless the user explicitly gives" in prompt
     assert "historical cutoff date" in prompt
+    assert '`sort_order: "desc"`' in prompt
+    assert "latest observations, not the" in prompt
     assert "backtests before earlier downturns" in prompt
+    assert "Use explicit" in prompt
+    assert "offset, or sort order" in prompt
     assert "`DGS2` = 2-year Treasury yield" in prompt
     assert "Do not use `TC2Y`" in prompt

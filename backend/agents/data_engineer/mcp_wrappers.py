@@ -68,6 +68,7 @@ _MCP_INLINE_LIMIT = 800  # chars — MCP results longer than this go to a temp f
 # never sees series IDs and may call fred_search in a loop.
 _MCP_METADATA_TOOLS = frozenset({"fred_search", "fred_browse"})
 _METADATA_RESULT_MAX_CHARS = 100_000
+_FRED_SERIES_TOOL = "fred_get_series"
 
 
 def _sanitize_nan(result: str) -> str:
@@ -100,6 +101,38 @@ def _json_loads_safe(value: str) -> Any | None:
         return json.loads(value)
     except Exception:
         return None
+
+
+def _positive_limit(value: Any) -> bool:
+    if isinstance(value, bool) or value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return math.isfinite(value) and value > 0
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return False
+        try:
+            parsed = float(stripped)
+            return math.isfinite(parsed) and parsed > 0
+        except ValueError:
+            return False
+    return False
+
+
+def _has_explicit_fred_series_window_or_page(args: dict[str, Any]) -> bool:
+    for key in ("sort_order", "observation_start", "observation_end", "offset"):
+        if key in args and args[key] is not None and args[key] != "":
+            return True
+    return False
+
+
+def _normalize_fred_get_series_args(args: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    if not _positive_limit(args.get("limit")):
+        return args, False
+    if _has_explicit_fred_series_window_or_page(args):
+        return args, False
+    return {**args, "sort_order": "desc"}, True
 
 
 def _looks_like_content_blocks(value: Any) -> bool:
@@ -350,6 +383,9 @@ def _with_timeout(mcp_tool, timeout_secs: float, provider: str):
     server only accepts "FY"|"Q1"|"Q2"|"Q3"|"Q4"; the LLM sometimes passes
     "annual" or "quarter" which causes a -32602 validation error.
 
+    For limited FRED series pulls, ambiguous calls default to newest-first so
+    current macro requests do not silently return the oldest observations.
+
     Tool failures are raised as normal Exceptions so the subagent can see the
     exact error immediately and choose a corrected follow-up request.
     """
@@ -391,6 +427,18 @@ def _with_timeout(mcp_tool, timeout_secs: float, provider: str):
                     kwargs = {**kwargs, "input": fixed}
             elif args and isinstance(args[0], dict) and "period" in args[0]:
                 fixed, changed = _fix(args[0])
+                if changed:
+                    args = (fixed,) + args[1:]
+
+        if provider == "FRED" and tool_name == _FRED_SERIES_TOOL:
+            if "limit" in kwargs:
+                kwargs, _ = _normalize_fred_get_series_args(kwargs)
+            elif isinstance(kwargs.get("input"), dict) and "limit" in kwargs["input"]:
+                fixed, changed = _normalize_fred_get_series_args(kwargs["input"])
+                if changed:
+                    kwargs = {**kwargs, "input": fixed}
+            elif args and isinstance(args[0], dict) and "limit" in args[0]:
+                fixed, changed = _normalize_fred_get_series_args(args[0])
                 if changed:
                     args = (fixed,) + args[1:]
 

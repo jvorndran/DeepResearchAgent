@@ -24,9 +24,12 @@ production, consumption, recession indicators, and related market proxies.
 
 For current conditions, latest signals, recession risk, today/now, or scenario
 outlook, do not set `observation_end` unless the user explicitly gives a
-historical cutoff date. Fetch full history through the latest observation even
-when the task also asks for backtests before earlier downturns. Include observed
-date ranges or latest dates in metadata.
+historical cutoff date. If you use `limit` for a current/latest pull, set
+`sort_order: "desc"` so the limited rows are latest observations, not the
+oldest available rows. Fetch full history through the latest observation even
+when the task also asks for backtests before earlier downturns. Use explicit
+dates, offset, or sort order for historical slices. Include observed date
+ranges or latest dates in metadata.
 
 ## Known IDs
 
