@@ -34,7 +34,6 @@ from .qa_recovery import (
     description_requests_qa_quant_fix,
     latest_quality_decision,
     latest_pipeline_status,
-    latest_required_upstream,
     qa_repair_budget_exhausted,
 )
 from ..quantitative_developer.handoff import (
@@ -420,6 +419,27 @@ class OrchestratorToolBoundaryMiddleware(AgentMiddleware):
     def _state_messages(state: Any) -> list[Any]:
         return state_messages(state)
 
+    def _latest_active_required_upstream(self, messages: list[Any]) -> str | None:
+        latest_decision = latest_quality_decision(messages)
+        if latest_decision is None or latest_decision.status not in {
+            "rejected",
+            "failed",
+        }:
+            return None
+        required_upstream = latest_decision.required_upstream
+        if required_upstream != "quant-developer":
+            return required_upstream
+
+        for message in reversed(messages):
+            content = str(getattr(message, "content", "") or "")
+            if payload := self._quant_handoff_payload_from_content(content):
+                if self._valid_quant_handoff_payload(payload):
+                    return None
+            decision = latest_quality_decision([message])
+            if decision is not None and decision.status in {"rejected", "failed"}:
+                return decision.required_upstream
+        return required_upstream
+
     def _is_blocked_terminal_approval_emit(self, request: ToolCallRequest) -> bool:
         args = self._tool_call_args(request.tool_call)
         markdown = args.get("markdown") if isinstance(args, dict) else None
@@ -448,7 +468,7 @@ class OrchestratorToolBoundaryMiddleware(AgentMiddleware):
         messages = self._state_messages(getattr(request, "state", None))
         if qa_repair_budget_exhausted(messages):
             return self._blocked_qa_repair_budget_message(request)
-        required_upstream = latest_required_upstream(messages)
+        required_upstream = self._latest_active_required_upstream(messages)
         if (
             required_upstream
             and subagent_type
