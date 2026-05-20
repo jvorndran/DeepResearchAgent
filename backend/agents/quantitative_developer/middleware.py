@@ -46,6 +46,7 @@ from .handoff import (
 from .path_helpers import (
     _is_allowed_analysis_script_path,
     _job_id_from_request,
+    _next_available_analysis_script_path,
     _required_script_path_hint,
 )
 from .script_inspection import (
@@ -1694,7 +1695,7 @@ class QuantDeveloperToolBoundaryMiddleware(AgentMiddleware):
             ),
         )
 
-    def _existing_initial_script_rule(
+    def _existing_script_path_rule(
         self, context: QuantToolCallContext
     ) -> QuantGuardrailDecision | None:
         draft = context.write
@@ -1702,22 +1703,23 @@ class QuantDeveloperToolBoundaryMiddleware(AgentMiddleware):
             return None
         if context.has_written_analysis_script:
             return None
-        if not draft.file_path.replace("\\", "/").endswith("/code/analysis.py"):
+        if not _is_allowed_analysis_script_path(draft.file_path):
             return None
         path = Path(draft.file_path).expanduser()
         if not path.exists():
             return None
-        fallback_path = path.with_name("analysis_v2.py")
+        replacement_path = _next_available_analysis_script_path(path)
         return QuantGuardrailDecision.block(
             context,
             ToolMessage(
                 content=(
-                    "Blocked initial quant script write because `analysis.py` already "
-                    f"exists at `{path}` from an earlier quant attempt for this job. "
-                    f"Write one compact replacement script to `{fallback_path}` and "
+                    "Blocked quant script write because the target analysis script "
+                    f"already exists at `{path}` from an earlier quant attempt for "
+                    "this job. "
+                    f"Write one compact replacement script to `{replacement_path}` and "
                     "execute that file. Still save final artifacts to the job output "
                     "directory via `save_quant_outputs`; do not inspect, delete, or "
-                    "overwrite the existing `analysis.py` first."
+                    "overwrite existing analysis scripts first."
                 ),
                 name="write_file",
                 tool_call_id=context.tool_call_id,
@@ -2758,7 +2760,7 @@ class QuantDeveloperToolBoundaryMiddleware(AgentMiddleware):
             (
                 self._runtime_install_rule,
                 self._script_path_rule,
-                self._existing_initial_script_rule,
+                self._existing_script_path_rule,
                 self._helper_source_read_rule,
                 self._truncated_argument_rule,
                 self._script_budget_rule,

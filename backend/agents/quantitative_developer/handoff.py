@@ -77,19 +77,7 @@ def _has_execute_after_latest_analysis_script_write(messages: list[Any]) -> bool
 
 
 def _has_written_analysis_script(messages: list[Any]) -> bool:
-    for message in messages:
-        if type(message).__name__ == "ToolMessage":
-            content = str(getattr(message, "content", "") or "")
-            if (
-                _is_allowed_analysis_script_path(content)
-                and (
-                    "Updated file" in content
-                    or "Created file" in content
-                    or "Wrote file" in content
-                )
-            ):
-                return True
-    return False
+    return _latest_written_analysis_script_path(messages) is not None
 
 
 def _has_successful_quant_handoff(messages: list[Any]) -> bool:

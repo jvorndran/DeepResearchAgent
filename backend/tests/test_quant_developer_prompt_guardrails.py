@@ -197,7 +197,10 @@ def test_model_call_forces_execute_after_written_script_without_tool_call(tmp_pa
     )
 
     tool_call = response.result[0].tool_calls[0]
-    expected_command = f"{shlex.quote(quant_dev.PYTHON_EXECUTABLE)} {shlex.quote(str(script_path))}"
+    expected_command = (
+        f"{shlex.quote(quant_dev.PYTHON_EXECUTABLE)} "
+        f"{shlex.quote(str(script_path))}"
+    )
     assert tool_call["name"] == "execute"
     assert tool_call["args"] == {"command": expected_command}
 
@@ -229,6 +232,90 @@ def test_model_call_does_not_repeat_execute_after_latest_write_failure(tmp_path)
 
     assert response.result[0].content == "I need to inspect stderr."
     assert response.result[0].tool_calls == []
+
+
+def test_existing_analysis_script_redirects_to_first_unused_fallback(tmp_path):
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    code_dir = tmp_path / "outputs" / "job-fallback" / "code"
+    code_dir.mkdir(parents=True)
+    script_path = code_dir / "analysis.py"
+    occupied_fallback_path = code_dir / "analysis_v2.py"
+    replacement_path = code_dir / "analysis_v3.py"
+    script_path.write_text("print('prior')\n", encoding="utf-8")
+    occupied_fallback_path.write_text("print('prior fallback')\n", encoding="utf-8")
+    request = SimpleNamespace(
+        tool_call={
+            "name": "write_file",
+            "id": "call-write",
+            "args": {"file_path": str(script_path), "content": "print('new')\n"},
+        },
+        state={"messages": []},
+    )
+
+    response = middleware.wrap_tool_call(
+        request,
+        lambda req: (_ for _ in ()).throw(AssertionError("handler should not run")),
+    )
+
+    assert response.status == "error"
+    assert f"already exists at `{script_path}`" in response.content
+    assert f"replacement script to `{replacement_path}`" in response.content
+
+
+def test_existing_fallback_script_redirects_to_next_unused_sibling(tmp_path):
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    code_dir = tmp_path / "outputs" / "job-fallback" / "code"
+    code_dir.mkdir(parents=True)
+    script_path = code_dir / "analysis.py"
+    occupied_fallback_path = code_dir / "analysis_v2.py"
+    replacement_path = code_dir / "analysis_v3.py"
+    script_path.write_text("print('prior')\n", encoding="utf-8")
+    occupied_fallback_path.write_text("print('prior fallback')\n", encoding="utf-8")
+    request = SimpleNamespace(
+        tool_call={
+            "name": "write_file",
+            "id": "call-write",
+            "args": {
+                "file_path": str(occupied_fallback_path),
+                "content": "print('new')\n",
+            },
+        },
+        state={"messages": []},
+    )
+
+    response = middleware.wrap_tool_call(
+        request,
+        lambda req: (_ for _ in ()).throw(AssertionError("handler should not run")),
+    )
+
+    assert response.status == "error"
+    assert f"already exists at `{occupied_fallback_path}`" in response.content
+    assert f"replacement script to `{replacement_path}`" in response.content
+
+
+def test_model_call_forces_execute_after_fallback_script_write(tmp_path):
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+    script_path = tmp_path / "outputs" / "job-execute" / "code" / "analysis_v3.py"
+    request = _Request(
+        [SimpleNamespace(name="execute"), SimpleNamespace(name="read_file")],
+        messages=[
+            ToolMessage(
+                content=f"Created file {script_path}",
+                name="write_file",
+                tool_call_id="call-write",
+            )
+        ],
+    )
+
+    response = middleware.wrap_model_call(
+        request,
+        lambda req: ModelResponse(result=[AIMessage(content="No more tools needed.")]),
+    )
+
+    tool_call = response.result[0].tool_calls[0]
+    expected_command = f"{shlex.quote(quant_dev.PYTHON_EXECUTABLE)} {shlex.quote(str(script_path))}"
+    assert tool_call["name"] == "execute"
+    assert tool_call["args"] == {"command": expected_command}
 
 
 def test_prewrite_failure_handoff_overwrites_prior_quant_artifacts(tmp_path, monkeypatch):
