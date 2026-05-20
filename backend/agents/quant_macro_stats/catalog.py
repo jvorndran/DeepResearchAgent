@@ -362,7 +362,9 @@ QUANT_HELPER_CATALOG: tuple[QuantHelperCategory, ...] = (
                 signature="attach_methods_used(charts, methods)",
                 use_when=(
                     "Annotate chart definitions with method labels before saving; "
-                    "evidence_bundle uses them as chart transform IDs."
+                    "evidence_bundle uses them as chart transform IDs, so derived "
+                    "correlation, growth, spread, or normalized-index labels also "
+                    "need chart transform_basis or declared transform descriptors."
                 ),
                 preserves=("methods_used",),
             ),

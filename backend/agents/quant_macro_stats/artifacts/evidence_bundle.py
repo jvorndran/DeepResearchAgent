@@ -36,6 +36,7 @@ _TRANSFORM_BASIS_KEYS = (
     "value_transform",
     "calculation_basis",
 )
+TRANSFORM_BASIS_KEYS = _TRANSFORM_BASIS_KEYS
 _SOURCE_DESCRIPTOR_KEYS = (
     "provider",
     "series_id",
@@ -1578,12 +1579,26 @@ def _operation_requires_basis(*values: Any) -> bool:
     }
 
 
+def transform_operation_from_text(*values: Any) -> str | None:
+    """Return the canonical operation inferred by the evidence bundle."""
+
+    return _operation_from_text(*values)
+
+
+def transform_operation_requires_basis(*values: Any) -> bool:
+    """Return whether inferred transform metadata needs an explicit basis."""
+
+    return _operation_requires_basis(*values)
+
+
 def _is_normalized_index_text(text: str, tokens: set[str]) -> bool:
     return (
         ("normalized" in tokens and "index" in tokens)
         or "normalized_index" in text
         or "index_normalized" in text
         or "indexed_to" in text
+        or ({"z", "score", "normalization"} <= tokens)
+        or ({"zscore", "normalization"} <= tokens)
     )
 
 

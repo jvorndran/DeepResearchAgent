@@ -10,7 +10,11 @@ from agents.artifact_fact_consistency import (
     artifact_fact_consistency_blocker,
     artifact_fact_consistency_dict,
 )
-from agents.quant_macro_stats.artifacts.evidence_bundle import EvidenceBundle
+from agents.quant_macro_stats.artifacts.evidence_bundle import (
+    EvidenceBundle,
+    transform_operation_from_text,
+    transform_operation_requires_basis,
+)
 from agents.quant_macro_stats.artifacts.artifact_fingerprints import (
     evidence_bundle_self_excluded_bytes,
     sha256_bytes,
@@ -2251,6 +2255,14 @@ def test_save_quant_outputs_allows_mixed_unit_chart_with_provenance_normalizatio
     assert transforms["normalization.base_date"]["transform_basis"] == (
         "base_date=2026-01; base_value=100"
     )
+
+
+def test_transform_operation_helpers_classify_basis_required_labels():
+    assert transform_operation_from_text("pearson_correlation") == "correlation"
+    assert transform_operation_from_text("yoy_growth") == "growth_rate"
+    assert transform_operation_from_text("z_score_normalization") == "normalized_index"
+    assert transform_operation_requires_basis("z_score_normalization") is True
+    assert transform_operation_requires_basis("quarterly_resampling") is False
 
 
 def test_save_quant_outputs_requires_transform_basis_for_correlation_facts(tmp_path):

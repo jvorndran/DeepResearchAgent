@@ -40,6 +40,10 @@ def test_quant_prompt_requires_analysis_script_not_prebuilt_report_tools():
     assert "latest_numeric_fact(panel, key" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "raw_value" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "display_value" in QUANT_DEVELOPER_SYSTEM_PROMPT
+    assert "Correlation, growth-rate, spread, and normalized-index" in (
+        QUANT_DEVELOPER_SYSTEM_PROMPT
+    )
+    assert "transform_descriptors" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "save_quant_outputs(output_dir, charts, execution_summary)" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert '"evidence_bundle_json": "outputs/{job_id}/evidence_bundle.json"' in (
         QUANT_DEVELOPER_SYSTEM_PROMPT
@@ -333,6 +337,129 @@ def _allowed_write_response(tmp_path, content):
             status="success",
         ),
     )
+
+
+def test_quant_guardrail_blocks_derived_methods_without_transform_basis(tmp_path):
+    content = '''
+from agents.quant_macro_stats import chart_provenance, save_quant_outputs
+
+output_dir = "/tmp/out"
+charts = {
+    "sentiment_gap": {
+        "type": "line",
+        "xAxisKey": "date",
+        "data": [{"date": "2026 Q1", "gap": 0.2}],
+        "series": [{"dataKey": "gap", "label": "Gap"}],
+        "provenance": chart_provenance(source_series=["UMCSENT", "UNRATE"]),
+    }
+}
+execution_summary = {
+    "chart_ids": ["sentiment_gap"],
+    "methods_used": ["pearson_correlation", "yoy_growth"],
+}
+handoff = save_quant_outputs(output_dir, charts, execution_summary)
+'''
+
+    response = _blocked_write_response(tmp_path, content)
+
+    assert response.status == "error"
+    assert "Blocked derived transform metadata" in response.content
+    assert "`pearson_correlation`" in response.content
+    assert "`yoy_growth`" in response.content
+    assert "`transform_basis`" in response.content
+    assert "transform_descriptors" in response.content
+
+
+def test_quant_guardrail_blocks_z_score_normalization_without_basis(tmp_path):
+    content = '''
+from agents.quant_macro_stats import chart_provenance, save_quant_outputs
+
+output_dir = "/tmp/out"
+charts = {
+    "normalized_overlay": {
+        "type": "line",
+        "xAxisKey": "date",
+        "data": [{"date": "2026 Q1", "sentiment_z": 0.4}],
+        "series": [{"dataKey": "sentiment_z", "label": "Sentiment z-score"}],
+        "provenance": chart_provenance(source_series=["UMCSENT"]),
+    }
+}
+execution_summary = {
+    "chart_ids": ["normalized_overlay"],
+    "methods_used": ["z_score_normalization"],
+}
+handoff = save_quant_outputs(output_dir, charts, execution_summary)
+'''
+
+    response = _blocked_write_response(tmp_path, content)
+
+    assert response.status == "error"
+    assert "Blocked derived transform metadata" in response.content
+    assert "`z_score_normalization`" in response.content
+    assert "`normalized_overlay`" in response.content
+    assert "`transform_basis`" in response.content
+
+
+def test_quant_guardrail_allows_declared_transform_basis_for_methods(tmp_path):
+    content = '''
+from agents.quant_macro_stats import chart_provenance, save_quant_outputs
+
+output_dir = "/tmp/out"
+charts = {
+    "sentiment_gap": {
+        "type": "line",
+        "xAxisKey": "date",
+        "data": [{"date": "2026 Q1", "gap": 0.2}],
+        "series": [{"dataKey": "gap", "label": "Gap"}],
+        "provenance": chart_provenance(source_series=["UMCSENT", "UNRATE"]),
+    }
+}
+execution_summary = {
+    "chart_ids": ["sentiment_gap"],
+    "methods_used": ["pearson_correlation"],
+    "transforms": [
+        {
+            "transform_id": "pearson_correlation",
+            "operation": "correlation",
+            "transform_basis": "Pearson r on quarterly UMCSENT and UNRATE levels",
+            "source_ids": ["UMCSENT", "UNRATE"],
+        }
+    ],
+}
+handoff = save_quant_outputs(output_dir, charts, execution_summary)
+'''
+
+    response = _allowed_write_response(tmp_path, content)
+
+    assert response.status == "success"
+    assert response.content == "write allowed"
+
+
+def test_quant_guardrail_blocks_attach_methods_used_without_transform_basis(tmp_path):
+    content = '''
+from agents.quant_macro_stats import attach_methods_used, chart_provenance, save_quant_outputs
+
+output_dir = "/tmp/out"
+base_charts = {
+    "sentiment_gap": {
+        "type": "line",
+        "xAxisKey": "date",
+        "data": [{"date": "2026 Q1", "gap": 0.2}],
+        "series": [{"dataKey": "gap", "label": "Gap"}],
+        "provenance": chart_provenance(source_series=["UMCSENT", "UNRATE"]),
+    }
+}
+methods = ["pearson_correlation"]
+charts = attach_methods_used(base_charts, methods)
+execution_summary = {"chart_ids": ["sentiment_gap"]}
+handoff = save_quant_outputs(output_dir, charts, execution_summary)
+'''
+
+    response = _blocked_write_response(tmp_path, content)
+
+    assert response.status == "error"
+    assert "Blocked derived transform metadata" in response.content
+    assert "`pearson_correlation`" in response.content
 
 
 def test_quant_guardrail_blocks_sec_company_facts_without_helper_evidence(tmp_path):

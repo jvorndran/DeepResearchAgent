@@ -5,7 +5,7 @@ import json
 import re
 import shlex
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -15,6 +15,11 @@ from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.prebuilt.tool_node import ToolCallRequest
 
 from ..quant_macro_stats import format_quant_helper_catalog_for_prompt
+from ..quant_macro_stats.artifacts.evidence_bundle import (
+    TRANSFORM_BASIS_KEYS,
+    transform_operation_from_text,
+    transform_operation_requires_basis,
+)
 from .constants import (
     _AFTER_WRITE_TOOL_NAMES,
     _BACKEND_DIR,
@@ -116,6 +121,14 @@ _REMOVED_QUANT_OUTPUT_PRESERVATION_SURFACES = {
     "merge_quant_validation_summary",
 }
 _SEC_COMPANY_FACTS_EVIDENCE_HELPER = "sec_company_facts_evidence"
+_CHART_TRANSFORM_KEYS = (
+    "transform_id",
+    "transform_ids",
+    "methods_used",
+    *TRANSFORM_BASIS_KEYS,
+)
+_STATIC_UNKNOWN = object()
+_STATIC_UNKNOWN_MERGE = object()
 
 
 def _pseudo_parameter_values(content: str) -> dict[str, str]:
@@ -546,6 +559,467 @@ def _has_sec_company_facts_evidence_handoff(tree: ast.Module) -> bool:
         return False
     found, _ = _statement_list_has_sec_evidence_handoff(tree.body)
     return found
+
+
+@dataclass(frozen=True)
+class TransformBasisViolation:
+    transform_id: str
+    operation: str
+    chart_id: str
+
+
+def _has_static_value(value: object) -> bool:
+    return (
+        value is not None
+        and value is not _STATIC_UNKNOWN
+        and value is not _STATIC_UNKNOWN_MERGE
+    )
+
+
+def _static_text(value: object) -> str | None:
+    if not _has_static_value(value):
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _static_texts(value: object) -> list[str]:
+    if not _has_static_value(value):
+        return []
+    if isinstance(value, str):
+        items = [value]
+    elif isinstance(value, Mapping):
+        items = [key for key in value if _has_static_value(key)]
+    elif isinstance(value, (list, tuple, set)):
+        items = [item for item in value if _has_static_value(item)]
+    else:
+        items = [value]
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        text = str(item).strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
+
+
+def _static_first_text(*values: object) -> str | None:
+    for value in values:
+        if text := _static_text(value):
+            return text
+    return None
+
+
+def _static_merge_mapping(target: dict[object, object], value: object) -> None:
+    if isinstance(value, Mapping):
+        target.update(value)
+        return
+    target[_STATIC_UNKNOWN_MERGE] = True
+
+
+def _clone_static_value(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {key: _clone_static_value(child) for key, child in value.items()}
+    if isinstance(value, list):
+        return [_clone_static_value(child) for child in value]
+    return value
+
+
+def _static_unique_texts(values: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out
+
+
+def _static_looks_like_chart_definition(value: Mapping[object, object]) -> bool:
+    return isinstance(value.get("id"), str) and isinstance(value.get("type"), str)
+
+
+def _static_attach_methods_used(charts: object, methods: object) -> object:
+    method_list = _static_texts(methods)
+    if not method_list or not isinstance(charts, Mapping):
+        return charts if _has_static_value(charts) else _STATIC_UNKNOWN
+    annotated = _clone_static_value(charts)
+    if not isinstance(annotated, dict):
+        return _STATIC_UNKNOWN
+    chart_payloads = (
+        [annotated]
+        if _static_looks_like_chart_definition(annotated)
+        else [chart for chart in annotated.values() if isinstance(chart, dict)]
+    )
+    for chart in chart_payloads:
+        existing = _static_texts(chart.get("methods_used"))
+        chart["methods_used"] = _static_unique_texts([*existing, *method_list])
+    return annotated
+
+
+def _static_attach_summary_methods(summary: object, methods: object) -> object:
+    if not isinstance(summary, Mapping):
+        return summary if _has_static_value(summary) else _STATIC_UNKNOWN
+    method_list = _static_texts(methods)
+    annotated = _clone_static_value(summary)
+    if not isinstance(annotated, dict):
+        return _STATIC_UNKNOWN
+    existing = _static_texts(annotated.get("methods_used"))
+    annotated["methods_used"] = _static_unique_texts([*existing, *method_list])
+    return annotated
+
+
+def _static_value(
+    node: ast.AST | None,
+    names: Mapping[str, object],
+) -> object:
+    if node is None:
+        return _STATIC_UNKNOWN
+    if isinstance(node, ast.Constant):
+        return node.value
+    if isinstance(node, ast.Name):
+        return names.get(node.id, _STATIC_UNKNOWN)
+    if isinstance(node, ast.UnaryOp):
+        operand = _static_value(node.operand, names)
+        if isinstance(node.op, ast.USub) and isinstance(operand, (int, float)):
+            return -operand
+        if isinstance(node.op, ast.UAdd) and isinstance(operand, (int, float)):
+            return operand
+        return _STATIC_UNKNOWN
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        return [_static_value(element, names) for element in node.elts]
+    if isinstance(node, ast.Dict):
+        payload: dict[object, object] = {}
+        for key_node, value_node in zip(node.keys, node.values, strict=False):
+            value = _static_value(value_node, names)
+            if key_node is None:
+                _static_merge_mapping(payload, value)
+                continue
+            key = _static_value(key_node, names)
+            if not _has_static_value(key):
+                payload[_STATIC_UNKNOWN_MERGE] = True
+                continue
+            payload[key] = value
+        return payload
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        left = _static_value(node.left, names)
+        right = _static_value(node.right, names)
+        payload: dict[object, object] = {}
+        _static_merge_mapping(payload, left)
+        _static_merge_mapping(payload, right)
+        return payload
+    if _is_call_named(node, "dict"):
+        payload: dict[object, object] = {}
+        assert isinstance(node, ast.Call)
+        for arg in node.args:
+            _static_merge_mapping(payload, _static_value(arg, names))
+        for keyword in node.keywords:
+            value = _static_value(keyword.value, names)
+            if keyword.arg is None:
+                _static_merge_mapping(payload, value)
+            else:
+                payload[keyword.arg] = value
+        return payload
+    if _is_call_named(node, "chart_provenance"):
+        payload: dict[object, object] = {}
+        assert isinstance(node, ast.Call)
+        for keyword in node.keywords:
+            if keyword.arg is not None:
+                payload[keyword.arg] = _static_value(keyword.value, names)
+        return payload
+    if _is_call_named(node, "attach_methods_used"):
+        assert isinstance(node, ast.Call)
+        charts = _static_value(node.args[0], names) if node.args else _STATIC_UNKNOWN
+        methods = _static_value(node.args[1], names) if len(node.args) >= 2 else None
+        for keyword in node.keywords:
+            if keyword.arg == "methods":
+                methods = _static_value(keyword.value, names)
+        return _static_attach_methods_used(charts, methods)
+    if _is_call_named(node, "attach_summary_methods"):
+        assert isinstance(node, ast.Call)
+        summary = _static_value(node.args[0], names) if node.args else _STATIC_UNKNOWN
+        methods = _static_value(node.args[1], names) if len(node.args) >= 2 else None
+        for keyword in node.keywords:
+            if keyword.arg == "methods":
+                methods = _static_value(keyword.value, names)
+        return _static_attach_summary_methods(summary, methods)
+    return _STATIC_UNKNOWN
+
+
+def _static_subscript_key(node: ast.Subscript, names: Mapping[str, object]) -> object:
+    return _static_value(node.slice, names)
+
+
+def _assign_static_target(
+    names: dict[str, object],
+    target: ast.AST,
+    value: object,
+) -> None:
+    if isinstance(target, ast.Name):
+        if _has_static_value(value):
+            names[target.id] = value
+        else:
+            names.pop(target.id, None)
+        return
+    if isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name):
+        base = names.get(target.value.id)
+        if not isinstance(base, dict):
+            return
+        key = _static_subscript_key(target, names)
+        if _has_static_value(key):
+            base[key] = value
+
+
+def _apply_static_statement(
+    names: dict[str, object],
+    stmt: ast.stmt,
+) -> None:
+    if isinstance(stmt, ast.Assign):
+        value = _static_value(stmt.value, names)
+        for target in stmt.targets:
+            _assign_static_target(names, target, value)
+        return
+    if isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
+        _assign_static_target(names, stmt.target, _static_value(stmt.value, names))
+        return
+    if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
+        call = stmt.value
+        func = call.func
+        if (
+            isinstance(func, ast.Attribute)
+            and func.attr == "update"
+            and isinstance(func.value, ast.Name)
+            and isinstance(names.get(func.value.id), dict)
+        ):
+            target = names[func.value.id]
+            assert isinstance(target, dict)
+            for arg in call.args:
+                _static_merge_mapping(target, _static_value(arg, names))
+            for keyword in call.keywords:
+                value = _static_value(keyword.value, names)
+                if keyword.arg is None:
+                    _static_merge_mapping(target, value)
+                else:
+                    target[keyword.arg] = value
+
+
+def _save_quant_outputs_payload_exprs(
+    call: ast.Call,
+) -> tuple[ast.AST | None, ast.AST | None]:
+    charts_expr = call.args[1] if len(call.args) >= 2 else None
+    summary_expr = call.args[2] if len(call.args) >= 3 else None
+    for keyword in call.keywords:
+        if keyword.arg == "charts":
+            charts_expr = keyword.value
+        elif keyword.arg in {"execution_summary", "summary"}:
+            summary_expr = keyword.value
+    return charts_expr, summary_expr
+
+
+def _static_declared_transform_metadata(
+    summary: Mapping[object, object],
+) -> tuple[dict[str, str], dict[str, str], bool]:
+    value = summary.get("transforms", summary.get("transform_descriptors"))
+    if value is None:
+        return {}, {}, False
+    if not _has_static_value(value):
+        return {}, {}, True
+
+    payloads: list[Mapping[object, object]] = []
+    unknown = False
+    if isinstance(value, Mapping):
+        descriptor_keys = {
+            "transform_id",
+            "id",
+            "operation",
+            "source_ids",
+            "source_groups",
+            *TRANSFORM_BASIS_KEYS,
+        }
+        if any(key in value for key in descriptor_keys):
+            payloads.append(value)
+        else:
+            for fallback_id, item in value.items():
+                if isinstance(item, Mapping):
+                    payload = dict(item)
+                    payload.setdefault("transform_id", fallback_id)
+                    payloads.append(payload)
+                elif _has_static_value(item):
+                    payloads.append(
+                        {"transform_id": fallback_id, "operation": item}
+                    )
+                else:
+                    unknown = True
+    elif isinstance(value, list):
+        for item in value:
+            if isinstance(item, Mapping):
+                payloads.append(item)
+            elif not _has_static_value(item):
+                unknown = True
+    else:
+        unknown = True
+
+    basis_by_id: dict[str, str] = {}
+    operation_by_id: dict[str, str] = {}
+    for payload in payloads:
+        transform_id = _static_first_text(
+            payload.get("transform_id"),
+            payload.get("id"),
+        )
+        if transform_id is None:
+            continue
+        if basis := _static_first_text(
+            *(payload.get(key) for key in TRANSFORM_BASIS_KEYS)
+        ):
+            basis_by_id[transform_id] = basis
+        operation = _static_first_text(payload.get("operation"))
+        if operation is None:
+            operation = transform_operation_from_text(transform_id)
+        if operation:
+            operation_by_id[transform_id] = operation
+    return basis_by_id, operation_by_id, unknown
+
+
+def _static_normalization_basis(value: object) -> str | None:
+    if not _has_static_value(value):
+        return None
+    if not isinstance(value, Mapping):
+        return _static_text(value)
+    parts: list[str] = []
+    for key, child in value.items():
+        key_text = _static_text(key)
+        child_text = _static_text(child)
+        if key_text and child_text:
+            parts.append(f"{key_text}={child_text}")
+    return "; ".join(parts) or None
+
+
+def _static_chart_transform_basis(
+    payload: Mapping[object, object],
+    operation: str | None,
+) -> str | None:
+    if basis := _static_first_text(*(payload.get(key) for key in TRANSFORM_BASIS_KEYS)):
+        return basis
+    provenance = payload.get("provenance")
+    if operation == "normalized_index" and isinstance(provenance, Mapping):
+        return _static_normalization_basis(provenance.get("normalization"))
+    return None
+
+
+def _static_chart_transform_ids(
+    payload: Mapping[object, object],
+    summary_methods: list[str],
+) -> list[str]:
+    transform_ids: list[str] = []
+    for key in _CHART_TRANSFORM_KEYS:
+        transform_ids.extend(_static_texts(payload.get(key)))
+    provenance = payload.get("provenance")
+    if isinstance(provenance, Mapping):
+        if _static_text(provenance.get("resampling")):
+            transform_ids.append("resampling")
+        normalization = provenance.get("normalization")
+        if isinstance(normalization, Mapping):
+            transform_ids.extend(
+                f"normalization.{key}"
+                for key in normalization
+                if _static_text(key)
+            )
+        elif _static_text(normalization):
+            transform_ids.append("normalization")
+    if not transform_ids:
+        transform_ids.extend(summary_methods)
+    out: list[str] = []
+    seen: set[str] = set()
+    for transform_id in transform_ids:
+        if transform_id in seen:
+            continue
+        seen.add(transform_id)
+        out.append(transform_id)
+    return out
+
+
+def _static_chart_items(value: object) -> list[tuple[str, Mapping[object, object]]]:
+    if isinstance(value, Mapping):
+        return [
+            (str(chart_id), chart)
+            for chart_id, chart in value.items()
+            if _has_static_value(chart_id) and isinstance(chart, Mapping)
+        ]
+    if isinstance(value, list):
+        items: list[tuple[str, Mapping[object, object]]] = []
+        for index, chart in enumerate(value):
+            if not isinstance(chart, Mapping):
+                continue
+            chart_id = _static_first_text(chart.get("id")) or f"chart_{index}"
+            items.append((chart_id, chart))
+        return items
+    return []
+
+
+def _static_summary_transform_metadata_unknown(
+    summary: Mapping[object, object],
+) -> bool:
+    return (
+        _STATIC_UNKNOWN_MERGE in summary
+        or summary.get("transforms") is _STATIC_UNKNOWN
+        or summary.get("transform_descriptors") is _STATIC_UNKNOWN
+    )
+
+
+def _save_quant_outputs_transform_basis_violations(
+    tree: ast.Module,
+) -> list[TransformBasisViolation]:
+    names: dict[str, object] = {}
+    violations: list[TransformBasisViolation] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    for stmt in tree.body:
+        for node in ast.walk(stmt):
+            if not _is_call_named(node, "save_quant_outputs"):
+                continue
+            assert isinstance(node, ast.Call)
+            charts_expr, summary_expr = _save_quant_outputs_payload_exprs(node)
+            charts = _static_value(charts_expr, names)
+            summary = _static_value(summary_expr, names)
+            if not isinstance(summary, Mapping):
+                continue
+            if _static_summary_transform_metadata_unknown(summary):
+                continue
+            chart_items = _static_chart_items(charts)
+            if not chart_items:
+                continue
+            basis_by_id, operation_by_id, metadata_unknown = (
+                _static_declared_transform_metadata(summary)
+            )
+            if metadata_unknown:
+                continue
+            summary_methods = _static_texts(summary.get("methods_used"))
+            for chart_id, payload in chart_items:
+                for transform_id in _static_chart_transform_ids(payload, summary_methods):
+                    operation = operation_by_id.get(transform_id)
+                    operation = operation or transform_operation_from_text(transform_id)
+                    if not transform_operation_requires_basis(operation, transform_id):
+                        continue
+                    if basis_by_id.get(transform_id):
+                        continue
+                    if _static_chart_transform_basis(payload, operation):
+                        continue
+                    key = (chart_id, transform_id, operation or "")
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    violations.append(
+                        TransformBasisViolation(
+                            transform_id=transform_id,
+                            operation=operation or "derived",
+                            chart_id=chart_id,
+                        )
+                    )
+        _apply_static_statement(names, stmt)
+    return violations
 
 
 @dataclass(frozen=True)
@@ -1976,6 +2450,53 @@ class QuantDeveloperToolBoundaryMiddleware(AgentMiddleware):
             ),
         )
 
+    def _transform_basis_contract_rule(
+        self, context: QuantToolCallContext
+    ) -> QuantGuardrailDecision | None:
+        draft = context.write
+        if draft is None:
+            return None
+        if not draft.is_python:
+            return None
+        if draft.content is None:
+            return None
+        if draft.syntax_error is not None:
+            return None
+        tree = draft.tree
+        if tree is None or not _calls_named(tree, "save_quant_outputs"):
+            return None
+
+        violations = _save_quant_outputs_transform_basis_violations(tree)
+        if not violations:
+            return None
+
+        examples = "; ".join(
+            f"`{violation.transform_id}` on chart `{violation.chart_id}` "
+            f"({violation.operation})"
+            for violation in violations[:4]
+        )
+        return QuantGuardrailDecision.block(
+            context,
+            ToolMessage(
+                content=(
+                    "Blocked derived transform metadata before writing because "
+                    "`save_quant_outputs(...)` would promote chart transform IDs or "
+                    "`methods_used` labels into evidence-bundle transforms that need "
+                    f"`transform_basis`: {examples}. Add chart-level "
+                    "`transform_basis`, `correlation_basis`, or `calculation_basis` "
+                    "to each affected chart, or declare matching "
+                    '`execution_summary["transforms"]` / '
+                    '`execution_summary["transform_descriptors"]` entries with '
+                    "`transform_id`, `operation`, `transform_basis`, and source IDs. "
+                    "Do not remove the derived method labels; make the basis explicit "
+                    "before calling `save_quant_outputs`."
+                ),
+                name="write_file",
+                tool_call_id=context.tool_call_id,
+                status="error",
+            ),
+        )
+
     def _forecast_helper_contract_rule(
         self, context: QuantToolCallContext
     ) -> QuantGuardrailDecision | None:
@@ -2244,6 +2765,7 @@ class QuantDeveloperToolBoundaryMiddleware(AgentMiddleware):
                 self._python_static_lint_rule,
                 self._data_manifest_repair_rule,
                 self._data_manifest_rule,
+                self._transform_basis_contract_rule,
             ),
         )
         if hard_decision.blocked:

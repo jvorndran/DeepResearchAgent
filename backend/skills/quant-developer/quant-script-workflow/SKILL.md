@@ -140,6 +140,10 @@ report-specific shortcut tool.
 - Execution summaries should expose reusable evidence fields: `numeric_facts`,
   source paths, methods used, chart IDs, tables, model diagnostics,
   limitations, and source coverage.
+- When charts or summaries use method labels such as correlations,
+  year-over-year growth, spreads, z-score normalization, or normalized indexes,
+  make the transform basis explicit on each affected chart or in matching
+  `execution_summary["transforms"]` / `["transform_descriptors"]` records.
 - If you repeatedly write the same runtime code across generated
   `analysis.py` scripts, that pattern belongs in a common helper rather than
   another long script. Keep helpers deterministic, local-data-only, JSON-safe,

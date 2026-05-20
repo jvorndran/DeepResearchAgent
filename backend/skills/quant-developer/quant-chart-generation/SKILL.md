@@ -39,7 +39,10 @@ triggers: [chart, Recharts, AxisChartDef, ScatterChartDef, PieChartDef, TreemapC
    user's decision easier; a mostly time-series pack is acceptable when time
    series are genuinely the most insightful views.
 12. **Method labels:** For deterministic macro statistics, include `methods_used`
-   on each relevant chart definition and in `execution_summary.json`.
+   on each relevant chart definition and in `execution_summary.json`. If a
+   label names a correlation, growth rate, spread, or normalized index, add a
+   chart-level `transform_basis`/`correlation_basis`/`calculation_basis` or a
+   matching `execution_summary["transforms"]` descriptor.
 13. **Provenance:** For charts that resample, index, normalize, or truncate
    source data, attach `provenance` from
    `chart_provenance(...)`: raw source window/latest observation, displayed

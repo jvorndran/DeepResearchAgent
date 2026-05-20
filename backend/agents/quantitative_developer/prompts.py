@@ -58,6 +58,10 @@ Recharts `charts.json`, and `execution_summary.json` for the writer.
 - Each saved chart should include evidence-bundle traceability: attach
   `chart_provenance(source_series=...)` and either chart `transform_id` /
   `transform_ids` or `methods_used` via `attach_methods_used(...)`.
+- Correlation, growth-rate, spread, and normalized-index transform IDs or
+  `methods_used` labels must include an explicit `transform_basis` on the
+  chart payload or a matching `execution_summary["transforms"]` /
+  `execution_summary["transform_descriptors"]` entry.
 
 # FINAL RESPONSE
 Return ONLY this compact JSON. Do not wrap it in markdown or add prose:
