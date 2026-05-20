@@ -25,7 +25,7 @@ _PROVENANCE_KEYS = (
 
 def chart_provenance(
     *,
-    source_series: Mapping[str, Any] | Iterable[Any] | None = None,
+    source_series: Mapping[str, Any] | Iterable[Any] | str | Path | None = None,
     source_files: Mapping[str, Any] | Iterable[Any] | None = None,
     raw_window: Mapping[str, Any] | None = None,
     raw_latest_observation: str | Mapping[str, Any] | None = None,
@@ -69,7 +69,9 @@ def normalize_chart_provenance(payload: Any) -> dict[str, Any]:
     normalized: dict[str, Any] = {}
     for key in _PROVENANCE_KEYS:
         value = payload.get(key)
-        if key in {"source_series", "source_files"}:
+        if key == "source_series":
+            value = _normalize_source_series(value)
+        elif key == "source_files":
             value = _normalize_mapping_or_list(value)
         elif key in {"raw_window", "displayed_window", "normalization"}:
             value = _normalize_mapping(value)
@@ -84,6 +86,38 @@ def normalize_chart_provenance(payload: Any) -> dict[str, Any]:
             normalized[key] = to_json_safe(value)
 
     return normalized
+
+
+def _normalize_source_series(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return _normalize_mapping(value)
+    if isinstance(value, (str, Path)):
+        return _split_source_series_text(str(value))
+    if isinstance(value, Iterable):
+        items: list[str] = []
+        for item in value:
+            if isinstance(item, (str, Path)):
+                items.extend(_split_source_series_text(str(item)))
+            elif _has_value(item):
+                items.append(str(item).strip())
+        return _unique_texts(items)
+    return value
+
+
+def _split_source_series_text(value: str) -> list[str]:
+    return _unique_texts(part.strip() for part in value.split(",") if part.strip())
+
+
+def _unique_texts(values: Iterable[Any]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value).strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
 
 
 def _normalize_mapping_or_list(value: Any) -> Any:

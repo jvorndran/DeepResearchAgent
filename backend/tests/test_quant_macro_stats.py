@@ -1775,6 +1775,18 @@ def test_save_quant_outputs_infers_simple_evidence_bundle_fact_source_keys(tmp_p
     }
 
 
+def test_chart_provenance_normalizes_comma_delimited_source_series_only():
+    provenance = qms.chart_provenance(
+        source_series=" UMCSENT, UNRATE, UMCSENT ",
+        source_files=["inputs/UMCSENT, UNRATE.csv"],
+        limitations="sentiment, hard data overlay",
+    )
+
+    assert provenance["source_series"] == ["UMCSENT", "UNRATE"]
+    assert provenance["source_files"] == ["inputs/UMCSENT, UNRATE.csv"]
+    assert provenance["limitations"] == ["sentiment, hard data overlay"]
+
+
 def test_save_quant_outputs_preserves_chart_provenance_and_generator_path(
     tmp_path, monkeypatch
 ):
@@ -1827,6 +1839,57 @@ def test_save_quant_outputs_preserves_chart_provenance_and_generator_path(
     assert saved_bundle["charts"][0]["provenance"]["displayed_latest_label"] == "2026-05"
     assert handoff["chart_provenance"]["yield_spread"]["frequency"] == "daily"
     assert handoff["generated_by"]["script_path"] == str(script_path)
+
+
+def test_save_quant_outputs_accepts_comma_delimited_chart_provenance_sources(tmp_path):
+    qms.save_quant_outputs(
+        tmp_path,
+        {
+            "sentiment_unemployment": {
+                "type": "line",
+                "title": "Sentiment and unemployment",
+                "data": [
+                    {"date": "2026-01", "sentiment": 71.7, "unrate": 4.0},
+                    {"date": "2026-02", "sentiment": 64.7, "unrate": 4.1},
+                ],
+                "series": [
+                    {"dataKey": "sentiment", "name": "Consumer sentiment"},
+                    {"dataKey": "unrate", "name": "Unemployment rate"},
+                ],
+                "xAxis": {"dataKey": "date"},
+                "transform_id": "sentiment_unemployment_correlation",
+                "provenance": qms.chart_provenance(
+                    source_series="UMCSENT, UNRATE",
+                ),
+            }
+        },
+        {
+            "transforms": [
+                {
+                    "transform_id": "sentiment_unemployment_correlation",
+                    "operation": "correlation",
+                    "transform_basis": (
+                        "Pearson correlation between monthly UMCSENT and "
+                        "UNRATE observations over common dates"
+                    ),
+                    "source_ids": ["UMCSENT", "UNRATE"],
+                    "source_groups": [["UMCSENT", "UNRATE"]],
+                }
+            ],
+        },
+    )
+
+    saved_bundle = json.loads((tmp_path / "evidence_bundle.json").read_text())
+    source_ids = [source["source_id"] for source in saved_bundle["sources"]]
+    transform = saved_bundle["transforms"][0]
+
+    assert source_ids == ["UMCSENT", "UNRATE"]
+    assert transform["source_ids"] == ["UMCSENT", "UNRATE"]
+    assert transform["source_groups"] == [["UMCSENT", "UNRATE"]]
+    assert saved_bundle["charts"][0]["provenance"]["source_series"] == [
+        "UMCSENT",
+        "UNRATE",
+    ]
 
 
 def test_source_unit_helpers_flag_hourly_weekly_wage_mismatch(tmp_path):
