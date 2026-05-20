@@ -86,6 +86,16 @@ _GROUP_PLACE_DIMENSION_RE = re.compile(
     r"asian|white|rural|urban|northeast|midwest|south|west)\b",
     re.IGNORECASE,
 )
+_SPECIFIC_GROUP_PLACE_DIMENSION_RE = re.compile(
+    r"\b(?:states?|state[-\s]level|counties|county[-\s]level|metros?|"
+    r"metro[-\s]level|cities|zip\s*codes?|income\s+(?:quintile|quartile|"
+    r"tercile|bracket|group)|low[-\s]income|lower[-\s]income|"
+    r"middle[-\s]income|high[-\s]income|renters?|homeowners?|borrowers?|"
+    r"subprime|prime|younger|older|age\s+(?:group|cohort)|racial|ethnic|"
+    r"black|hispanic|asian|white|rural|urban|northeast|midwest|"
+    r"south(?:ern)?|west(?:ern)?|sun\s+belt|rust\s+belt|coastal)\b",
+    re.IGNORECASE,
+)
 _US_STATE_PLACE_TERMS = (
     "alabama",
     "alaska",
@@ -147,6 +157,16 @@ _US_STATE_PLACE_RE = re.compile(
     + r")\b",
     re.IGNORECASE,
 )
+_GROUP_PLACE_PROVIDER_NAME_RE = re.compile(
+    r"\b(?:new\s+york\s+fed|ny\s+fed|"
+    r"federal\s+reserve\s+bank\s+of\s+new\s+york|"
+    r"new\s+york\s+federal\s+reserve)\b",
+    re.IGNORECASE,
+)
+_GROUP_PLACE_NON_SPECIFIC_PLACE_RE = re.compile(
+    r"\b(?:united\s+states|u\.s\.|us)\b",
+    re.IGNORECASE,
+)
 _GROUP_PLACE_EVIDENCE_RE = re.compile(
     r"\b(?:census|acs|cps|survey|bea|bls|new\s+york\s+fed|ny\s+fed|"
     r"equifax|transunion|table|chart|source|dataset|state[-\s]level|"
@@ -158,6 +178,13 @@ _GROUP_PLACE_EVIDENCE_DISCLAIMER_RE = re.compile(
     r"[^\n.]{0,80}\b(?:provide|include|show|contain|evidence|data|source|"
     r"table|breakout|break\s*out|segment|state[-\s]level|regional|cohort|"
     r"group|subgroup|place[-\s]specific)\b",
+    re.IGNORECASE,
+)
+_GROUP_PLACE_NON_ASSERTIVE_LIMITATION_RE = re.compile(
+    r"(?:\b(?:cannot|can't|can\s+not|could\s+not|unable\s+to)\b"
+    r"[^\n.]{0,100}\b(?:state|stated|say|claim|infer|rank|map|"
+    r"breakout|breakdown|show|report|estimate|determine|assess|"
+    r"reliable|reliably)\b|\bnot\s+(?:possible|feasible)\b)",
     re.IGNORECASE,
 )
 _GROUP_PLACE_SELF_MISSING_RE = re.compile(
@@ -176,7 +203,153 @@ _GROUP_PLACE_SCOPE_DRIFT_RE = re.compile(
 _GROUP_PLACE_UNAVAILABLE_RE = re.compile(
     r"\b(?:unavailable|not\s+available|not\s+covered|missing|failed|"
     r"insufficient|could\s+not|unable\s+to|no\s+reliable|lacks?|"
-    r"limitation|not\s+included)\b",
+    r"limitation|not\s+included)\b|"
+    r"\bno\b[^\n.]{0,80}\b(?:data|breakdown|break\s*out|evidence|"
+    r"source|table)\b[^\n.]{0,40}\bavailable\b",
+    re.IGNORECASE,
+)
+_GROUP_PLACE_AVAILABILITY_CONTEXT_RE = re.compile(
+    r"\b(?:data|dataset|source|coverage|table|breakout|break\s*out|"
+    r"breakdown|ranking|map|request|fetch|query|evidence|census|acs|"
+    r"cps|survey|bea|bls|equifax|transunion|state[-\s]level|"
+    r"county[-\s]level|metro[-\s]level|regional|place[-\s]specific|"
+    r"group[-\s]specific)\b",
+    re.IGNORECASE,
+)
+_GROUP_PLACE_METADATA_SOURCE_OR_DIMENSION_RE = re.compile(
+    r"\b(?:census|acs|cps|new\s+york\s+fed|ny\s+fed|equifax|transunion|"
+    r"state|county|metro|geograph(?:y|ic|ical)?|regional|cohort|subgroup|"
+    r"segment|demographic|income|borrower|renter|homeowner|housing\s+tenure|"
+    r"subprime|prime|younger|older|age|race|racial|ethnic|ethnicity|black|"
+    r"hispanic|asian|white|rural|urban)\b",
+    re.IGNORECASE,
+)
+_GROUP_PLACE_UNAVAILABLE_SOURCE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("census", re.compile(r"\b(?:census|acs)\b", re.IGNORECASE)),
+    ("cps", re.compile(r"\bcps\b", re.IGNORECASE)),
+    ("bls", re.compile(r"\bbls\b", re.IGNORECASE)),
+    (
+        "ny_fed",
+        re.compile(
+            r"\b(?:new\s+york\s+fed|ny\s+fed|"
+            r"federal\s+reserve\s+bank\s+of\s+new\s+york)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    ("equifax", re.compile(r"\bequifax\b", re.IGNORECASE)),
+    ("transunion", re.compile(r"\btransunion\b", re.IGNORECASE)),
+    ("bea", re.compile(r"\bbea\b", re.IGNORECASE)),
+)
+_GROUP_PLACE_UNAVAILABLE_DIMENSION_PATTERNS: tuple[
+    tuple[str, re.Pattern[str]],
+    ...
+] = (
+    ("state", re.compile(r"\bstate(?:s|[\s-]+level)?\b", re.IGNORECASE)),
+    ("county", re.compile(r"\bcount(?:y|ies|y[\s-]+level)\b", re.IGNORECASE)),
+    ("metro", re.compile(r"\bmetros?\b|\bmetro[\s-]+level\b", re.IGNORECASE)),
+    ("city", re.compile(r"\bcities\b|\bcity\b|\bzip\s*codes?\b", re.IGNORECASE)),
+    (
+        "regional",
+        re.compile(
+            r"\b(?:regions?|regional|northeast|midwest|south(?:ern)?|"
+            r"west(?:ern)?|sun\s+belt|rust\s+belt|coastal)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "place",
+        re.compile(r"\bplaces?\b|\bgeograph(?:y|ic|ical)?\b", re.IGNORECASE),
+    ),
+    (
+        "income",
+        re.compile(
+            r"\bincome\s+(?:quintiles?|quartiles?|terciles?|brackets?|"
+            r"groups?|segments?)\b|\b(?:low|lower|middle|high)[-\s]income\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "housing_tenure",
+        re.compile(r"\b(?:housing\s+tenure|renters?|homeowners?)\b", re.IGNORECASE),
+    ),
+    (
+        "borrower_segment",
+        re.compile(r"\b(?:borrowers?|subprime|prime)\b", re.IGNORECASE),
+    ),
+    (
+        "age",
+        re.compile(
+            r"\b(?:younger|older|age(?:\s+(?:groups?|cohorts?))?)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "race_ethnicity",
+        re.compile(
+            r"\b(?:race|racial|ethnic|ethnicity|black|hispanic|asian|white)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    ("rural_urban", re.compile(r"\b(?:rural|urban)\b", re.IGNORECASE)),
+    (
+        "group",
+        re.compile(
+            r"\b(?:groups?|subgroups?|cohorts?|segments?|demographics?|"
+            r"borrowers?|renters?|homeowners?)\b",
+            re.IGNORECASE,
+        ),
+    ),
+)
+_GROUP_PLACE_UNAVAILABLE_PLACE_DIMENSIONS = {
+    "place",
+    "state",
+    "county",
+    "metro",
+    "city",
+    "regional",
+}
+_GROUP_PLACE_UNAVAILABLE_GROUP_DIMENSIONS = {
+    "group",
+    "income",
+    "housing_tenure",
+    "borrower_segment",
+    "age",
+    "race_ethnicity",
+    "rural_urban",
+}
+_GROUP_PLACE_UNAVAILABLE_STATUS_VALUES = {
+    "failed",
+    "failure",
+    "error",
+    "missing",
+    "not_available",
+    "not_covered",
+    "unavailable",
+}
+_GROUP_PLACE_UNAVAILABLE_ERROR_LEVEL_VALUES = {"error", "failed", "failure"}
+_GROUP_PLACE_METADATA_RECORD_KEYS = {
+    "available",
+    "availability",
+    "coverage",
+    "dataset",
+    "dimension",
+    "dimensions",
+    "error",
+    "errors",
+    "fetch_error",
+    "fetch_errors",
+    "granularity",
+    "level",
+    "provider",
+    "reason",
+    "scope",
+    "source",
+    "source_key",
+    "status",
+}
+_GROUP_PLACE_CLAUSE_BOUNDARY_RE = re.compile(
+    r"(?<=[.!?])\s+|\s*[;|:]\s*|\s+(?:--?|-)\s+|"
+    r"\s+\b(?:but|however|nevertheless|nonetheless|yet|so|therefore|thus)\b\s+",
     re.IGNORECASE,
 )
 _REAL_WAGE_NEGATIVE_CLAIM_RE = re.compile(
@@ -1118,9 +1291,31 @@ def _query_requests_group_place_coverage(query: object) -> bool:
     return bool(_GROUP_PLACE_QUERY_RE.search(str(query or "")))
 
 
+def _strip_group_place_provider_names(text: str) -> str:
+    return _GROUP_PLACE_PROVIDER_NAME_RE.sub(" ", text)
+
+
+def _strip_non_specific_group_place_terms(text: str) -> str:
+    return _GROUP_PLACE_NON_SPECIFIC_PLACE_RE.sub(" ", text)
+
+
 def _line_mentions_group_place_dimension(line: str) -> bool:
+    scan_line = _strip_non_specific_group_place_terms(
+        _strip_group_place_provider_names(line),
+    )
     return bool(
-        _GROUP_PLACE_DIMENSION_RE.search(line) or _US_STATE_PLACE_RE.search(line)
+        _GROUP_PLACE_DIMENSION_RE.search(scan_line)
+        or _US_STATE_PLACE_RE.search(scan_line)
+    )
+
+
+def _line_mentions_specific_group_place_dimension(line: str) -> bool:
+    scan_line = _strip_non_specific_group_place_terms(
+        _strip_group_place_provider_names(line),
+    )
+    return bool(
+        _SPECIFIC_GROUP_PLACE_DIMENSION_RE.search(scan_line)
+        or _US_STATE_PLACE_RE.search(scan_line)
     )
 
 
@@ -1151,17 +1346,24 @@ def _line_matches_group_place_numeric_fact(
     line: str,
     fact: dict[str, object],
 ) -> bool:
-    if not _line_has_group_place_evidence(line):
-        return False
     if not _numeric_fact_mentions_group_place_dimension(fact):
         return False
-    if not _contains_numeric_fact_value(line, fact):
-        return False
 
-    subject = str(fact.get("subject") or "").strip()
-    if subject and _line_mentions_group_place_dimension(subject):
-        return subject.lower() in line.lower()
-    return True
+    candidate_segments = [line]
+    if _GROUP_PLACE_UNAVAILABLE_RE.search(line):
+        candidate_segments = _split_group_place_claim_clauses(line)
+
+    for segment in candidate_segments:
+        if not _line_has_group_place_evidence(segment):
+            continue
+        if not _contains_numeric_fact_value(segment, fact):
+            continue
+        subject = str(fact.get("subject") or "").strip()
+        if subject and _line_mentions_group_place_dimension(subject):
+            if subject.lower() not in segment.lower():
+                continue
+        return True
+    return False
 
 
 def _report_has_artifact_backed_group_place_evidence(
@@ -1178,10 +1380,286 @@ def _report_has_artifact_backed_group_place_evidence(
     )
 
 
+def _normalized_group_place_metadata_key(value: object) -> str:
+    return re.sub(r"[-\s]+", "_", str(value).strip().lower())
+
+
+def _group_place_metadata_text(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list)):
+        try:
+            return json.dumps(value, ensure_ascii=False, sort_keys=True)
+        except (TypeError, ValueError):
+            return str(value)
+    return str(value)
+
+
+def _normalized_group_place_metadata_text(label: str, value: object) -> str:
+    text = f"{label} {_group_place_metadata_text(value)}"
+    return re.sub(r"[_-]+", " ", text)
+
+
+def _group_place_metadata_label_parts(label: str) -> set[str]:
+    return {
+        _normalized_group_place_metadata_key(part)
+        for part in re.split(r"[.\[\]\s]+", label)
+        if part
+    }
+
+
+def _group_place_metadata_mapping_is_record(value: dict[Any, Any]) -> bool:
+    normalized_keys = {
+        _normalized_group_place_metadata_key(key)
+        for key in value
+        if str(key).strip()
+    }
+    return bool(normalized_keys & _GROUP_PLACE_METADATA_RECORD_KEYS)
+
+
+def _group_place_metadata_value_is_nonempty(value: object) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = _normalized_group_place_metadata_key(value)
+        return bool(normalized) and normalized not in {
+            "available",
+            "covered",
+            "false",
+            "none",
+            "null",
+            "ok",
+            "success",
+        }
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return any(_group_place_metadata_value_is_nonempty(item) for item in value)
+    if isinstance(value, dict):
+        return any(
+            _group_place_metadata_value_is_nonempty(child)
+            for child in value.values()
+        )
+    return True
+
+
+def _group_place_unavailable_key_value_signal(key: str, value: object) -> bool:
+    normalized_value = _normalized_group_place_metadata_key(value)
+    if key == "status":
+        return normalized_value in _GROUP_PLACE_UNAVAILABLE_STATUS_VALUES
+    if isinstance(value, bool):
+        unavailable = not value
+    else:
+        unavailable = normalized_value in {
+            "false",
+            "no",
+            "error",
+            "failed",
+            "failure",
+            "missing",
+            "not_available",
+            "not_covered",
+            "unavailable",
+        }
+    if key in {"available", "availability"}:
+        return unavailable
+    if key in {"level", "severity"}:
+        return normalized_value in _GROUP_PLACE_UNAVAILABLE_ERROR_LEVEL_VALUES
+    if key in {"error", "errors", "fetch_error", "fetch_errors"}:
+        return _group_place_metadata_value_is_nonempty(value)
+    return False
+
+
+def _group_place_metadata_record_has_unavailable_signal(
+    label: str,
+    value: object,
+) -> bool:
+    if isinstance(value, dict):
+        for key, child_value in value.items():
+            if _group_place_unavailable_key_value_signal(
+                _normalized_group_place_metadata_key(key),
+                child_value,
+            ):
+                return True
+    label_parts = _group_place_metadata_label_parts(label)
+    if any(
+        _group_place_unavailable_key_value_signal(key, value)
+        for key in label_parts
+    ):
+        return True
+    if "limitations" in label_parts:
+        return bool(
+            _GROUP_PLACE_UNAVAILABLE_RE.search(
+                _normalized_group_place_metadata_text(label, value),
+            )
+        )
+    return False
+
+
+def _iter_group_place_metadata_records(
+    label: str,
+    value: object,
+) -> Iterable[tuple[str, object, str]]:
+    if value is None:
+        return
+    if isinstance(value, dict):
+        if _group_place_metadata_mapping_is_record(value):
+            yield label, value, _normalized_group_place_metadata_text(label, value)
+        for key, child_value in value.items():
+            child_label = f"{label}.{key}"
+            if isinstance(child_value, (dict, list)):
+                yield from _iter_group_place_metadata_records(
+                    child_label,
+                    child_value,
+                )
+            else:
+                yield (
+                    child_label,
+                    child_value,
+                    _normalized_group_place_metadata_text(child_label, child_value),
+                )
+        return
+    if isinstance(value, list):
+        for index, child_value in enumerate(value):
+            child_label = f"{label}[{index}]"
+            if isinstance(child_value, (dict, list)):
+                yield from _iter_group_place_metadata_records(
+                    child_label,
+                    child_value,
+                )
+            else:
+                yield (
+                    child_label,
+                    child_value,
+                    _normalized_group_place_metadata_text(child_label, child_value),
+                )
+        return
+    yield label, value, _normalized_group_place_metadata_text(label, value)
+
+
+def _metadata_text_mentions_group_place_source_or_dimension(text: str) -> bool:
+    return bool(
+        _line_mentions_group_place_dimension(text)
+        or _GROUP_PLACE_METADATA_SOURCE_OR_DIMENSION_RE.search(text)
+    )
+
+
+def _group_place_unavailable_signature(text: str) -> tuple[set[str], set[str]]:
+    normalized = re.sub(r"[_-]+", " ", text.lower())
+    sources = {
+        source
+        for source, pattern in _GROUP_PLACE_UNAVAILABLE_SOURCE_PATTERNS
+        if pattern.search(normalized)
+    }
+    dimension_text = _strip_non_specific_group_place_terms(
+        _strip_group_place_provider_names(normalized),
+    )
+    dimensions = {
+        dimension
+        for dimension, pattern in _GROUP_PLACE_UNAVAILABLE_DIMENSION_PATTERNS
+        if pattern.search(dimension_text)
+    }
+    if _US_STATE_PLACE_RE.search(dimension_text):
+        dimensions.update({"place", "state"})
+    if dimensions & {"state", "county", "metro", "city", "regional"}:
+        dimensions.add("place")
+    return sources, dimensions
+
+
+def _group_place_unavailable_dimensions_match(
+    caveat_dimensions: set[str],
+    metadata_dimensions: set[str],
+) -> bool:
+    if not caveat_dimensions:
+        return True
+    if not metadata_dimensions:
+        return False
+    caveat_specific_dimensions = caveat_dimensions - {"place"}
+    if caveat_specific_dimensions:
+        if (
+            "group" in caveat_specific_dimensions
+            and metadata_dimensions & _GROUP_PLACE_UNAVAILABLE_GROUP_DIMENSIONS
+        ):
+            return True
+        return bool(
+            caveat_specific_dimensions & (metadata_dimensions - {"place"})
+        )
+    if "place" in caveat_dimensions:
+        return bool(
+            metadata_dimensions & _GROUP_PLACE_UNAVAILABLE_PLACE_DIMENSIONS
+        )
+    return bool(caveat_dimensions & metadata_dimensions)
+
+
+def _group_place_unavailable_metadata_matches_caveat(
+    caveat_line: str,
+    metadata_text: str,
+) -> bool:
+    caveat_sources, caveat_dimensions = _group_place_unavailable_signature(
+        caveat_line,
+    )
+    metadata_sources, metadata_dimensions = _group_place_unavailable_signature(
+        metadata_text,
+    )
+    if not (caveat_sources or caveat_dimensions):
+        return False
+    if not (metadata_sources or metadata_dimensions):
+        return False
+    if (
+        caveat_sources
+        and metadata_sources
+        and not caveat_sources & metadata_sources
+    ):
+        return False
+    if not _group_place_unavailable_dimensions_match(
+        caveat_dimensions,
+        metadata_dimensions,
+    ):
+        return False
+    return bool(
+        (not caveat_sources or caveat_sources & metadata_sources)
+        and (not caveat_dimensions or metadata_dimensions)
+    )
+
+
+def _summary_has_artifact_backed_group_place_unavailable(
+    summary: dict[str, object],
+    caveat_line: str,
+) -> bool:
+    candidates: list[tuple[str, object]] = [
+        ("source_coverage", summary.get("source_coverage")),
+        ("diagnostics", summary.get("diagnostics")),
+        ("limitations", summary.get("limitations")),
+    ]
+    metadata = summary.get("metadata")
+    if isinstance(metadata, dict):
+        candidates.append(("metadata.fetch_errors", metadata.get("fetch_errors")))
+
+    for label, value in candidates:
+        for record_label, record_value, text in _iter_group_place_metadata_records(
+            label,
+            value,
+        ):
+            if not text.strip():
+                continue
+            if not _metadata_text_mentions_group_place_source_or_dimension(text):
+                continue
+            if not _group_place_metadata_record_has_unavailable_signal(
+                record_label,
+                record_value,
+            ):
+                continue
+            if _group_place_unavailable_metadata_matches_caveat(caveat_line, text):
+                return True
+    return False
+
+
 def _line_has_group_place_unavailable_caveat(line: str) -> bool:
     if _GROUP_PLACE_SCOPE_DRIFT_RE.search(line):
         return False
     if not _GROUP_PLACE_UNAVAILABLE_RE.search(line):
+        return False
+    if not _GROUP_PLACE_AVAILABILITY_CONTEXT_RE.search(line):
         return False
     if _GROUP_PLACE_SELF_MISSING_RE.search(line):
         return False
@@ -1189,6 +1667,92 @@ def _line_has_group_place_unavailable_caveat(line: str) -> bool:
         _line_mentions_group_place_dimension(line)
         or _GROUP_PLACE_EVIDENCE_RE.search(line)
     )
+
+
+def _strip_markdown_heading_marker(line: str) -> str:
+    stripped = line.strip()
+    if stripped.startswith("#"):
+        return stripped.lstrip("#").strip()
+    return stripped
+
+
+def _group_place_clause_is_non_assertive_limitation(clause: str) -> bool:
+    return bool(
+        _line_has_group_place_unavailable_caveat(clause)
+        or _GROUP_PLACE_EVIDENCE_DISCLAIMER_RE.search(clause)
+        or _GROUP_PLACE_NON_ASSERTIVE_LIMITATION_RE.search(clause)
+        or _GROUP_PLACE_SCOPE_DRIFT_RE.search(clause)
+        or _GROUP_PLACE_SELF_MISSING_RE.search(clause)
+    )
+
+
+def _split_group_place_claim_clauses(line: str) -> list[str]:
+    stripped = _strip_markdown_heading_marker(line).strip(" |")
+    if not stripped:
+        return []
+    clauses: list[str] = []
+    for clause in _GROUP_PLACE_CLAUSE_BOUNDARY_RE.split(stripped):
+        clause = clause.strip(" ,:-")
+        if not clause:
+            continue
+        comma_parts = [
+            part.strip(" ,:-")
+            for part in clause.split(",")
+            if part.strip(" ,:-")
+        ]
+        if (
+            len(comma_parts) > 1
+            and any(
+                _group_place_clause_is_non_assertive_limitation(part)
+                for part in comma_parts
+            )
+        ):
+            clauses.extend(comma_parts)
+            continue
+        if _group_place_clause_is_non_assertive_limitation(clause):
+            making_parts = [
+                part.strip(" ,:-")
+                for part in re.split(r"\s+\bmaking\b\s+", clause)
+                if part.strip(" ,:-")
+            ]
+            if len(making_parts) > 1:
+                clauses.extend(making_parts)
+                continue
+            and_match = re.search(r"\s+\band\b\s+", clause)
+            if and_match:
+                left = clause[: and_match.start()].strip(" ,:-")
+                right = clause[and_match.end() :].strip(" ,:-")
+                if (
+                    left
+                    and right
+                    and _group_place_clause_is_non_assertive_limitation(left)
+                ):
+                    clauses.extend([left, right])
+                    continue
+        clauses.append(clause)
+    return clauses
+
+
+def _unsupported_specific_group_place_claim_lines(
+    lines: list[str],
+    summary: dict[str, object],
+) -> list[str]:
+    unsupported: list[str] = []
+    facts = _numeric_facts_from_summary(summary)
+    for line in lines:
+        for clause in _split_group_place_claim_clauses(line):
+            if _group_place_clause_is_non_assertive_limitation(clause):
+                continue
+            if not _line_mentions_specific_group_place_dimension(clause):
+                continue
+            if any(
+                _line_matches_group_place_numeric_fact(clause, fact)
+                for fact in facts
+            ):
+                continue
+            unsupported.append(clause)
+            break
+    return unsupported
 
 
 def _requested_group_place_coverage_blocker(
@@ -1199,18 +1763,52 @@ def _requested_group_place_coverage_blocker(
         return None
 
     lines = _report_review_lines(report_data)
-    if any(_line_has_group_place_unavailable_caveat(line) for line in lines):
-        return None
+    caveat_lines = [
+        line for line in lines if _line_has_group_place_unavailable_caveat(line)
+    ]
+    if caveat_lines:
+        unsupported_lines = _unsupported_specific_group_place_claim_lines(
+            lines,
+            summary,
+        )
+        if unsupported_lines:
+            examples = "; ".join(unsupported_lines[:3])
+            return (
+                "Report pairs an unavailable-data caveat with unsupported "
+                "specific group/place claims. Remove or qualify the unsupported "
+                f"claims before approval. Examples: {examples}"
+            )
+        unbacked_caveat_lines = [
+            line
+            for line in caveat_lines
+            if not _summary_has_artifact_backed_group_place_unavailable(
+                summary,
+                line,
+            )
+        ]
+        if not unbacked_caveat_lines:
+            return None
+        return (
+            "User query asks for stress hidden in specific groups or places, "
+            "but the report relies on an unavailable-data caveat that is not "
+            "backed by matching execution_summary.json source_coverage, "
+            "diagnostics, limitations, or metadata.fetch_errors. Preserve the "
+            "matching source failure metadata or regenerate with "
+            "artifact-backed group/place evidence."
+        )
+
     if _report_has_artifact_backed_group_place_evidence(summary, lines):
         return None
 
     return (
         "User query asks for stress hidden in specific groups or places, but "
         "the report includes neither artifact-backed group/place evidence nor "
-        "a clear unavailable-data caveat. Regenerate the report with cohort, "
-        "regional, state, metro, county, or other place-specific evidence from "
-        "execution_summary.json numeric_facts, or explicitly state that the "
-        "requested group/place data was unavailable."
+        "an artifact-backed unavailable-data caveat. Regenerate the report "
+        "with cohort, regional, state, metro, county, or other place-specific "
+        "evidence from execution_summary.json numeric_facts, or explicitly "
+        "state that the requested group/place data was unavailable using "
+        "preserved source_coverage, diagnostics, limitations, or "
+        "metadata.fetch_errors."
     )
 
 

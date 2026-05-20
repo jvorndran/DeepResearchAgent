@@ -2527,7 +2527,7 @@ def test_submit_quality_decision_rejects_group_place_scope_drift_caveat(tmp_path
     assert payload["failure_category"] == "requested_coverage_missing"
 
 
-def test_submit_quality_decision_accepts_group_place_unavailable_data_caveat(tmp_path):
+def test_submit_quality_decision_rejects_bare_group_place_unavailable_data_caveat(tmp_path):
     report_path = tmp_path / "report.json"
     (tmp_path / "execution_summary.json").write_text(
         json.dumps({"status": "success", "statistical_summary": {}}),
@@ -2569,7 +2569,570 @@ def test_submit_quality_decision_accepts_group_place_unavailable_data_caveat(tmp
         )
     )
 
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "requested_coverage_missing"
+    assert "source_coverage" in payload["reason"]
+
+
+def test_submit_quality_decision_accepts_artifact_backed_group_place_unavailable_caveat(
+    tmp_path,
+):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "statistical_summary": {},
+                "source_coverage": {
+                    "census_acs_state": {
+                        "source": "Census ACS",
+                        "dimension": "state",
+                        "status": "not_available",
+                        "reason": "Census state-level request failed.",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": (
+                    "Check whether national aggregates hide stress in specific "
+                    "groups or places."
+                ),
+                "title": "Consumer Stress By Place",
+                "executive_summary": (
+                    "Census state-level data were unavailable after the source "
+                    "request failed."
+                ),
+                "markdown": (
+                    "## Hidden Stress By Place\n"
+                    "Census state-level data were unavailable after the source "
+                    "request failed, so the regional breakout cannot be stated "
+                    "reliably."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 24},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
     assert payload["status"] == "approved"
+
+
+def test_submit_quality_decision_accepts_united_states_text_with_group_place_caveat(
+    tmp_path,
+):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "statistical_summary": {},
+                "source_coverage": {
+                    "census_acs_state": {
+                        "source": "Census ACS",
+                        "dimension": "state",
+                        "status": "not_available",
+                        "reason": "Census state-level request failed.",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": (
+                    "Check whether national aggregates hide stress in specific "
+                    "groups or places."
+                ),
+                "title": "United States Consumer Stress",
+                "executive_summary": "The United States consumer picture is mixed.",
+                "markdown": (
+                    "## Hidden Stress By Place\n"
+                    "Census state-level data were unavailable after the source "
+                    "request failed, so the state breakout cannot be stated "
+                    "reliably."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 23},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "approved"
+
+
+def test_submit_quality_decision_rejects_group_claim_after_unavailable_caveat(
+    tmp_path,
+):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "statistical_summary": {},
+                "source_coverage": {
+                    "census_acs_state": {
+                        "source": "Census ACS",
+                        "dimension": "state",
+                        "status": "not_available",
+                        "reason": "Census state-level request failed.",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": (
+                    "Check whether the consumer is fine and show where national "
+                    "aggregates hide stress in specific groups or places."
+                ),
+                "title": "Consumer Stress By Group",
+                "executive_summary": (
+                    "Census state-level data were unavailable after the source "
+                    "request failed."
+                ),
+                "markdown": (
+                    "## Hidden Stress By Group\n"
+                    "Census state-level data were unavailable after the source "
+                    "request failed, so the state breakout cannot be stated "
+                    "reliably.\n"
+                    "Low-income households lack savings buffers."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 32},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "requested_coverage_missing"
+    assert "unsupported specific group/place claims" in payload["reason"]
+    assert "Low-income households lack savings buffers" in payload["reason"]
+
+
+def test_submit_quality_decision_rejects_mixed_fact_and_unbacked_unavailable_caveat(
+    tmp_path,
+):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "statistical_summary": {},
+                "numeric_facts": [
+                    {
+                        "id": "census_acs.CA.renter_cost_burden_pct",
+                        "label": "California renter cost burden",
+                        "subject": "California",
+                        "metric": "renter_cost_burden_pct",
+                        "raw_value": 47.0,
+                        "display_value": "47.0%",
+                        "unit": "percent",
+                        "precision": 1,
+                        "tolerance": 0.01,
+                        "source_key": "census_acs.state.CA.renter_cost_burden_pct",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": (
+                    "Check whether national aggregates hide stress in specific "
+                    "groups or places."
+                ),
+                "title": "Consumer Stress By Place",
+                "executive_summary": (
+                    "California at 47.0% renter cost burden. Census county data "
+                    "were unavailable after the source request failed."
+                ),
+                "markdown": (
+                    "## Hidden Stress By Place\n"
+                    "California at 47.0% renter cost burden. Census county data "
+                    "were unavailable after the source request failed, so county "
+                    "rankings cannot be stated reliably."
+                ),
+                "charts": [],
+                "data_sources": [
+                    {
+                        "provider": "Census ACS",
+                        "description": "State renter cost burden by geography",
+                    }
+                ],
+                "metadata": {"word_count": 32},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "requested_coverage_missing"
+    assert "unavailable-data caveat" in payload["reason"]
+    assert "source_coverage" in payload["reason"]
+
+
+def test_submit_quality_decision_accepts_mixed_fact_and_unavailable_caveat_paragraph(
+    tmp_path,
+):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "statistical_summary": {},
+                "numeric_facts": [
+                    {
+                        "id": "census_acs.CA.renter_cost_burden_pct",
+                        "label": "California renter cost burden",
+                        "subject": "California",
+                        "metric": "renter_cost_burden_pct",
+                        "raw_value": 47.0,
+                        "display_value": "47.0%",
+                        "unit": "percent",
+                        "precision": 1,
+                        "tolerance": 0.01,
+                        "source_key": "census_acs.state.CA.renter_cost_burden_pct",
+                    }
+                ],
+                "source_coverage": {
+                    "census_acs_county": {
+                        "dimension": "county",
+                        "status": "not_available",
+                        "reason": "County-level request failed.",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": (
+                    "Check whether national aggregates hide stress in specific "
+                    "groups or places."
+                ),
+                "title": "Consumer Stress By Place",
+                "executive_summary": (
+                    "California at 47.0% renter cost burden. Census county data "
+                    "were unavailable after the source request failed."
+                ),
+                "markdown": (
+                    "## Hidden Stress By Place\n"
+                    "California at 47.0% renter cost burden. Census county data "
+                    "were unavailable after the source request failed, so county "
+                    "rankings cannot be stated reliably."
+                ),
+                "charts": [],
+                "data_sources": [
+                    {
+                        "provider": "Census ACS",
+                        "description": "State renter cost burden by geography",
+                    }
+                ],
+                "metadata": {"word_count": 32},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "approved"
+
+
+def test_submit_quality_decision_accepts_artifact_backed_group_dimension_unavailable_caveats(
+    tmp_path,
+):
+    cases = [
+        (
+            "income_quintile",
+            "Income quintile",
+            "income-group",
+        ),
+        (
+            "age_group",
+            "Age group",
+            "age-group",
+        ),
+        (
+            "race_ethnicity",
+            "Racial and ethnic",
+            "race/ethnicity",
+        ),
+    ]
+
+    for index, (dimension, caveat_label, ranking_label) in enumerate(cases, start=1):
+        report_path = tmp_path / f"report-{index}.json"
+        (tmp_path / "execution_summary.json").write_text(
+            json.dumps(
+                {
+                    "status": "success",
+                    "statistical_summary": {},
+                    "source_coverage": {
+                        dimension: {
+                            "dimension": dimension,
+                            "status": "not_available",
+                            "reason": f"{caveat_label} table was not available.",
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        report_path.write_text(
+            json.dumps(
+                {
+                    "query": (
+                        "Check whether national aggregates hide stress in specific "
+                        "groups or places."
+                    ),
+                    "title": "Consumer Stress By Group",
+                    "executive_summary": (
+                        f"{caveat_label} data were unavailable after the source "
+                        "request failed."
+                    ),
+                    "markdown": (
+                        "## Hidden Stress By Group\n"
+                        f"{caveat_label} data were unavailable after the source "
+                        f"request failed, so {ranking_label} rankings cannot be "
+                        "stated reliably."
+                    ),
+                    "charts": [],
+                    "data_sources": [],
+                    "metadata": {"word_count": 24},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        payload = json.loads(
+            submit_quality_decision.invoke(
+                {
+                    "decision": "approve",
+                    "report_path": str(report_path),
+                    "notes": "Looks acceptable.",
+                }
+            )
+        )
+
+        assert payload["status"] == "approved"
+
+
+def test_submit_quality_decision_rejects_specific_place_claim_after_unavailable_caveat(
+    tmp_path,
+):
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "statistical_summary": {},
+                "source_coverage": {
+                    "census_acs_state": {
+                        "source": "Census ACS",
+                        "dimension": "state",
+                        "status": "not_available",
+                        "reason": "Census state-level request failed.",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    unsupported_lines = [
+        "Census state-level data were unavailable. Sun Belt states are most vulnerable.",
+        "Census state-level data were unavailable. Sun Belt states are most at risk.",
+        "Census state-level data were unavailable. Sun Belt states bear the brunt.",
+    ]
+
+    for index, unsupported_line in enumerate(unsupported_lines, start=1):
+        report_path = tmp_path / f"report-{index}.json"
+        report_path.write_text(
+            json.dumps(
+                {
+                    "query": (
+                        "Check whether the consumer is fine and show where national "
+                        "aggregates hide stress in specific groups or places."
+                    ),
+                    "title": "Consumer Stress By Place",
+                    "executive_summary": unsupported_line,
+                    "markdown": (
+                        "## Place-Specific Caveat\n"
+                        "Census state-level data were unavailable after the source "
+                        "request failed, so the regional breakout cannot be stated "
+                        "reliably."
+                    ),
+                    "charts": [],
+                    "data_sources": [],
+                    "metadata": {"word_count": 35},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        payload = json.loads(
+            submit_quality_decision.invoke(
+                {
+                    "decision": "approve",
+                    "report_path": str(report_path),
+                    "notes": "Looks acceptable.",
+                }
+            )
+        )
+
+        assert payload["status"] == "rejected"
+        assert payload["failure_category"] == "requested_coverage_missing"
+        assert "unsupported specific group/place claims" in payload["reason"]
+        assert "Sun Belt states" in payload["reason"]
+
+
+def test_submit_quality_decision_rejects_specific_place_claim_after_fact_and_caveat(
+    tmp_path,
+):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "statistical_summary": {},
+                "numeric_facts": [
+                    {
+                        "id": "census_acs.CA.renter_cost_burden_pct",
+                        "label": "California renter cost burden",
+                        "subject": "California",
+                        "metric": "renter_cost_burden_pct",
+                        "raw_value": 47.0,
+                        "display_value": "47.0%",
+                        "unit": "percent",
+                        "precision": 1,
+                        "tolerance": 0.01,
+                        "source_key": "census_acs.state.CA.renter_cost_burden_pct",
+                    }
+                ],
+                "source_coverage": {
+                    "census_acs_state": {
+                        "source": "Census ACS",
+                        "dimension": "state",
+                        "status": "not_available",
+                        "reason": "Census state-level request failed.",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": (
+                    "Check whether the consumer is fine and show where national "
+                    "aggregates hide stress in specific groups or places."
+                ),
+                "title": "Consumer Stress By Place",
+                "executive_summary": (
+                    "California renter cost burden is 47.0%. Census state-level "
+                    "data were unavailable. Sun Belt states are most vulnerable."
+                ),
+                "markdown": (
+                    "## Place-Specific Stress\n"
+                    "Census ACS state table evidence shows California at 47.0% "
+                    "renter cost burden.\n"
+                    "Census state-level data were unavailable after the source "
+                    "request failed. Sun Belt states are most vulnerable."
+                ),
+                "charts": [],
+                "data_sources": [
+                    {
+                        "provider": "Census ACS",
+                        "description": "State renter cost burden by geography",
+                    }
+                ],
+                "metadata": {"word_count": 41},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "requested_coverage_missing"
+    assert "unsupported specific group/place claims" in payload["reason"]
+    assert "Sun Belt states" in payload["reason"]
 
 
 def test_submit_quality_decision_rejects_self_described_missing_state_table(tmp_path):
