@@ -27,6 +27,7 @@ from ..requested_coverage import (
 )
 from agents.quant_macro_stats.artifacts.numeric_fact_contracts import (
     normalize_numeric_facts,
+    numeric_fact_conflicting_current_value_contexts,
     numeric_fact_current_state_duration_misuse,
     numeric_fact_literal_required,
 )
@@ -1667,6 +1668,7 @@ def _numeric_fact_fidelity_blockers(
     markdown_lower = markdown.lower()
     missing: list[str] = []
     semantic_misuse: list[str] = []
+    contradictions: list[str] = []
     direction_reversals: list[str] = []
     review_lines = _markdown_review_lines(markdown)
     for fact in facts:
@@ -1689,6 +1691,9 @@ def _numeric_fact_fidelity_blockers(
             continue
         if not numeric_fact_literal_required(fact):
             continue
+        if numeric_fact_conflicting_current_value_contexts(markdown, fact):
+            contradictions.append(label)
+            continue
         if not _contains_numeric_fact_value(markdown, fact):
             missing.append(label)
 
@@ -1705,6 +1710,13 @@ def _numeric_fact_fidelity_blockers(
             f"{', '.join(direction_reversals[:8])}. Regenerate the affected "
             "prose from display_value, raw_value, and metric direction in "
             "execution_summary.json."
+        ]
+    if contradictions:
+        return [
+            "Report contradicts helper-produced chart-latest numeric_facts from "
+            "execution_summary.json for "
+            f"{', '.join(contradictions[:8])}. Regenerate current-value prose "
+            "from display_value fields in the quantitative handoff."
         ]
     if not missing:
         return []

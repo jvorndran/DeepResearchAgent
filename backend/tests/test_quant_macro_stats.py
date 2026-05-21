@@ -19,6 +19,12 @@ from agents.quant_macro_stats.artifacts.artifact_fingerprints import (
     evidence_bundle_self_excluded_bytes,
     sha256_bytes,
 )
+from agents.quant_macro_stats.artifacts.chart_latest_facts import (
+    chart_latest_numeric_facts,
+)
+from agents.quant_macro_stats.artifacts.numeric_fact_contracts import (
+    numeric_fact_conflicting_current_value_contexts,
+)
 from agents.quant_macro_stats.artifacts.recharts_schema_normalization import (
     normalize_quant_report_charts,
 )
@@ -1042,6 +1048,163 @@ def test_save_quant_outputs_rejects_current_signal_chart_latest_mismatch(tmp_pat
         )
 
 
+def test_save_quant_outputs_synthesizes_latest_chart_numeric_facts(tmp_path):
+    charts = {
+        "policy_inflation": {
+            "id": "policy_inflation",
+            "type": "line",
+            "title": "Fed Funds vs CPI YoY",
+            "xAxisKey": "date",
+            "series": [
+                {"dataKey": "fed_funds", "label": "Fed Funds (%)"},
+                {"dataKey": "cpi_yoy", "label": "CPI YoY %"},
+            ],
+            "data": [
+                {"date": "2026-03", "fed_funds": 3.64, "cpi_yoy": 3.29},
+                {"date": "2026-04", "fed_funds": 3.64, "cpi_yoy": 3.78},
+            ],
+            **_chart_traceability("FRED", "policy_inflation_projection"),
+        }
+    }
+    authored_fact = qms.numeric_fact(
+        fact_id="authored.sample",
+        label="Authored sample",
+        raw_value=10,
+        unit="index",
+        precision=0,
+        tolerance=0.5,
+        source_key="manual_source",
+    )
+
+    handoff = qms.save_quant_outputs(
+        tmp_path,
+        charts,
+        {"methods_used": ["unit_test_method"], "numeric_facts": [authored_fact]},
+    )
+    saved_summary = json.loads((tmp_path / "execution_summary.json").read_text())
+
+    chart_facts = [
+        fact
+        for fact in saved_summary["numeric_facts"]
+        if fact.get("fact_origin") == "chart_latest_point"
+    ]
+    assert [fact["id"] for fact in chart_facts] == [
+        "chart_latest.policy_inflation.fed_funds",
+        "chart_latest.policy_inflation.cpi_yoy",
+    ]
+    cpi_fact = chart_facts[1]
+    assert cpi_fact["raw_value"] == pytest.approx(3.78)
+    assert cpi_fact["display_value"] == "3.78%"
+    assert cpi_fact["as_of_date"] == "2026-04"
+    assert cpi_fact["chart_id"] == "policy_inflation"
+    assert cpi_fact["data_key"] == "cpi_yoy"
+    assert cpi_fact["metric"] == "cpi_yoy"
+    assert cpi_fact["source_key"] == "FRED.policy_inflation.cpi_yoy"
+    assert cpi_fact["tolerance"] == pytest.approx(0.005)
+    assert saved_summary["numeric_facts"][-1]["id"] == "authored.sample"
+    assert handoff["numeric_facts"][1]["display_value"] == "3.78%"
+
+
+def test_save_quant_outputs_skips_categorical_chart_latest_numeric_facts(tmp_path):
+    charts = {
+        "margin_bridge": {
+            "id": "margin_bridge",
+            "type": "bar",
+            "title": "Cash Flow Bridge",
+            "xAxisKey": "metric",
+            "series": [{"dataKey": "value", "label": "Value"}],
+            "data": [
+                {"metric": "FCF", "value": 12.4},
+                {"metric": "Capex", "value": -4.2},
+            ],
+            **_chart_traceability("internal_model", "bridge_projection"),
+        }
+    }
+
+    qms.save_quant_outputs(
+        tmp_path,
+        charts,
+        {"methods_used": ["unit_test_method"]},
+    )
+    saved_summary = json.loads((tmp_path / "execution_summary.json").read_text())
+
+    assert [
+        fact
+        for fact in saved_summary.get("numeric_facts", [])
+        if fact.get("fact_origin") == "chart_latest_point"
+    ] == []
+
+
+def test_save_quant_outputs_uses_chart_latest_facts_for_current_scalar_coverage(
+    tmp_path,
+):
+    charts = {
+        "cpi_yoy": {
+            "id": "cpi_yoy",
+            "type": "line",
+            "title": "CPI YoY",
+            "xAxisKey": "date",
+            "series": [{"dataKey": "cpi_yoy", "label": "CPI YoY %"}],
+            "data": [{"date": "2026-04", "cpi_yoy": 3.78}],
+            **_chart_traceability("FRED", "cpi_projection"),
+        }
+    }
+
+    qms.save_quant_outputs(
+        tmp_path,
+        charts,
+        {
+            "statistical_summary": {
+                "latest_date": "2026-04",
+                "latest_cpi_yoy": 3.78,
+            },
+            "methods_used": ["unit_test_method"],
+        },
+    )
+    saved_summary = json.loads((tmp_path / "execution_summary.json").read_text())
+
+    assert saved_summary["numeric_facts"][0]["id"] == "chart_latest.cpi_yoy.cpi_yoy"
+    assert saved_summary["numeric_facts"][0]["display_value"] == "3.78%"
+
+
+def test_save_quant_outputs_rejects_chart_linked_numeric_fact_mismatch(tmp_path):
+    charts = {
+        "cpi_chart": {
+            "id": "cpi_chart",
+            "type": "line",
+            "title": "CPI YoY",
+            "xAxisKey": "date",
+            "series": [{"dataKey": "cpi_yoy", "label": "CPI YoY %"}],
+            "data": [{"date": "2026-04", "cpi_yoy": 3.78}],
+            **_chart_traceability("FRED", "cpi_projection"),
+        }
+    }
+    stale_fact = qms.numeric_fact(
+        fact_id="chart_latest.cpi_chart.cpi_yoy",
+        label="Latest CPI YoY from CPI YoY",
+        raw_value=2.3,
+        unit="percent",
+        precision=2,
+        tolerance=0.005,
+        source_key="chart_latest.cpi_chart.cpi_yoy",
+        as_of_date="2026-04",
+        metric="cpi_yoy",
+        transform_basis="latest finite chart endpoint",
+    )
+    stale_fact["chart_id"] = "cpi_chart"
+    stale_fact["data_key"] = "cpi_yoy"
+
+    with pytest.raises(ValueError, match="chart-linked numeric fact"):
+        qms.save_quant_outputs(
+            tmp_path,
+            charts,
+            {"methods_used": ["unit_test_method"], "numeric_facts": [stale_fact]},
+        )
+
+    assert not (tmp_path / "charts.json").exists()
+    assert not (tmp_path / "execution_summary.json").exists()
+
+
 def test_historical_scenario_replay_requires_explicit_windows_and_returns_rows():
     frame = pd.DataFrame(
         {
@@ -1698,6 +1861,646 @@ def test_current_state_duration_fact_supports_inactive_day_contract():
         )
 
 
+def test_chart_latest_current_value_context_ignores_month_year_dates():
+    fact = qms.numeric_fact(
+        fact_id="chart_latest.cpi_yoy.cpi_yoy",
+        label="Latest CPI YoY from CPI YoY",
+        raw_value=3.78,
+        unit="percent",
+        precision=2,
+        tolerance=0.005,
+        source_key="chart_latest.cpi_yoy.cpi_yoy",
+        as_of_date="2026-04",
+        metric="cpi_yoy",
+    )
+    assert fact is not None
+    fact["chart_id"] = "cpi_yoy"
+    fact["data_key"] = "cpi_yoy"
+
+    assert (
+        numeric_fact_conflicting_current_value_contexts(
+            "CPI YoY is 3.78% as of April 2026.",
+            fact,
+        )
+        == []
+    )
+    assert (
+        numeric_fact_conflicting_current_value_contexts(
+            "CPI YoY reads 3.78% (April 2026).",
+            fact,
+        )
+        == []
+    )
+    assert (
+        numeric_fact_conflicting_current_value_contexts(
+            "CPI YoY stands at 3.78% as of 2026.",
+            fact,
+        )
+        == []
+    )
+
+
+def test_chart_latest_current_value_context_ignores_trigger_value_only():
+    fact = qms.numeric_fact(
+        fact_id="chart_latest.cpi_yoy.cpi_yoy",
+        label="Latest CPI YoY from CPI YoY",
+        raw_value=3.78,
+        unit="percent",
+        precision=2,
+        tolerance=0.005,
+        source_key="chart_latest.cpi_yoy.cpi_yoy",
+        as_of_date="2026-04",
+        metric="cpi_yoy",
+    )
+    assert fact is not None
+    fact["chart_id"] = "cpi_yoy"
+    fact["data_key"] = "cpi_yoy"
+
+    assert (
+        numeric_fact_conflicting_current_value_contexts(
+            "CPI YoY is 3.78% below the 3.00% trigger.",
+            fact,
+        )
+        == []
+    )
+    assert (
+        numeric_fact_conflicting_current_value_contexts(
+            "CPI YoY is below 4.00%, and the current reading is 3.78%.",
+            fact,
+        )
+        == []
+    )
+    assert (
+        numeric_fact_conflicting_current_value_contexts(
+            "CPI YoY is under 4.00% with a current reading of 3.78%.",
+            fact,
+        )
+        == []
+    )
+    assert numeric_fact_conflicting_current_value_contexts(
+        "CPI YoY is 2.30% below the 3.00% trigger.",
+        fact,
+    )
+    assert numeric_fact_conflicting_current_value_contexts(
+        "CPI YoY is 2.30% below trigger.",
+        fact,
+    )
+
+
+def test_chart_latest_current_value_context_handles_change_and_prior_values():
+    fact = qms.numeric_fact(
+        fact_id="chart_latest.cpi_yoy.cpi_yoy",
+        label="Latest CPI YoY from CPI YoY",
+        raw_value=3.78,
+        unit="percent",
+        precision=2,
+        tolerance=0.005,
+        source_key="chart_latest.cpi_yoy.cpi_yoy",
+        as_of_date="2026-04",
+        metric="cpi_yoy",
+    )
+    assert fact is not None
+    fact["chart_id"] = "cpi_yoy"
+    fact["data_key"] = "cpi_yoy"
+
+    assert (
+        numeric_fact_conflicting_current_value_contexts(
+            "CPI YoY rose 0.4 percentage points to 3.78%.",
+            fact,
+        )
+        == []
+    )
+    assert (
+        numeric_fact_conflicting_current_value_contexts(
+            "CPI YoY slowed from 4.0% last month to 3.78%.",
+            fact,
+        )
+        == []
+    )
+    assert (
+        numeric_fact_conflicting_current_value_contexts(
+            "CPI YoY was 4.0% last month.",
+            fact,
+        )
+        == []
+    )
+    assert (
+        numeric_fact_conflicting_current_value_contexts(
+            "CPI YoY was 2.30% in March 2026 and is now 3.78%.",
+            fact,
+        )
+        == []
+    )
+    assert numeric_fact_conflicting_current_value_contexts(
+        "CPI YoY slowed from 4.0% last month to 2.30%.",
+        fact,
+    )
+    assert numeric_fact_conflicting_current_value_contexts(
+        "Headline CPI has moderated to 2.30% YoY.",
+        fact,
+    )
+
+
+def test_chart_latest_current_value_context_matches_inflation_alias():
+    fact = qms.numeric_fact(
+        fact_id="chart_latest.cpi_yoy.cpi_yoy",
+        label="Latest CPI YoY from CPI YoY",
+        raw_value=3.78,
+        unit="percent",
+        precision=2,
+        tolerance=0.005,
+        source_key="chart_latest.cpi_yoy.cpi_yoy",
+        as_of_date="2026-04",
+        metric="cpi_yoy",
+    )
+    assert fact is not None
+    fact["chart_id"] = "cpi_yoy"
+    fact["data_key"] = "cpi_yoy"
+
+    stale_headline_with_correct_table = "\n".join(
+        [
+            "Inflation has eased to 2.30% YoY.",
+            "",
+            "| Metric | Current |",
+            "| --- | ---: |",
+            "| CPI YoY | 3.78% |",
+        ]
+    )
+    blockers = numeric_fact_conflicting_current_value_contexts(
+        stale_headline_with_correct_table,
+        fact,
+    )
+    assert blockers
+    assert blockers[0] == "Inflation has eased to 2.30% YoY."
+
+    valid_headline_with_table = stale_headline_with_correct_table.replace(
+        "2.30%",
+        "3.78%",
+        1,
+    )
+    assert (
+        numeric_fact_conflicting_current_value_contexts(
+            valid_headline_with_table,
+            fact,
+        )
+        == []
+    )
+
+
+def test_chart_latest_current_value_context_is_metric_local_for_multi_metric_sentence():
+    cpi_fact = qms.numeric_fact(
+        fact_id="chart_latest.cpi_yoy.cpi_yoy",
+        label="Latest CPI YoY from CPI YoY",
+        raw_value=3.78,
+        unit="percent",
+        precision=2,
+        tolerance=0.005,
+        source_key="chart_latest.cpi_yoy.cpi_yoy",
+        as_of_date="2026-04",
+        metric="cpi_yoy",
+    )
+    assert cpi_fact is not None
+    cpi_fact["chart_id"] = "cpi_yoy"
+    cpi_fact["data_key"] = "cpi_yoy"
+    fed_funds_fact = qms.numeric_fact(
+        fact_id="chart_latest.fed_funds.fed_funds",
+        label="Latest Fed Funds from Fed Funds",
+        raw_value=3.64,
+        unit="percent",
+        precision=2,
+        tolerance=0.005,
+        source_key="chart_latest.fed_funds.fed_funds",
+        as_of_date="2026-04",
+        metric="fed_funds",
+    )
+    assert fed_funds_fact is not None
+    fed_funds_fact["chart_id"] = "fed_funds"
+    fed_funds_fact["data_key"] = "fed_funds"
+    payrolls_fact = qms.numeric_fact(
+        fact_id="chart_latest.payrolls_yoy.payrolls_yoy",
+        label="Latest Payrolls YoY from Payrolls YoY",
+        raw_value=0.16,
+        unit="percent",
+        precision=2,
+        tolerance=0.005,
+        source_key="chart_latest.payrolls_yoy.payrolls_yoy",
+        as_of_date="2026-04",
+        metric="payrolls_yoy",
+    )
+    assert payrolls_fact is not None
+    payrolls_fact["chart_id"] = "payrolls_yoy"
+    payrolls_fact["data_key"] = "payrolls_yoy"
+    breakeven_fact = qms.numeric_fact(
+        fact_id="chart_latest.breakeven.breakeven",
+        label="Latest Breakeven from Breakeven",
+        raw_value=2.67,
+        unit="percent",
+        precision=2,
+        tolerance=0.005,
+        source_key="chart_latest.breakeven.breakeven",
+        as_of_date="2026-04",
+        metric="breakeven",
+    )
+    assert breakeven_fact is not None
+    breakeven_fact["chart_id"] = "breakeven"
+    breakeven_fact["data_key"] = "breakeven"
+
+    valid_while_sentence = "CPI YoY is 3.78% while fed funds are 3.64%."
+    assert (
+        numeric_fact_conflicting_current_value_contexts(
+            valid_while_sentence,
+            cpi_fact,
+        )
+        == []
+    )
+    assert (
+        numeric_fact_conflicting_current_value_contexts(
+            valid_while_sentence,
+            fed_funds_fact,
+        )
+        == []
+    )
+
+    valid_and_sentence = "CPI YoY is 3.78% and fed funds are 3.64%."
+    assert (
+        numeric_fact_conflicting_current_value_contexts(
+            valid_and_sentence,
+            cpi_fact,
+        )
+        == []
+    )
+    assert (
+        numeric_fact_conflicting_current_value_contexts(
+            valid_and_sentence,
+            fed_funds_fact,
+        )
+        == []
+    )
+
+    valid_elided_and_sentence = "CPI YoY is 3.78% and fed funds 3.64%."
+    assert (
+        numeric_fact_conflicting_current_value_contexts(
+            valid_elided_and_sentence,
+            cpi_fact,
+        )
+        == []
+    )
+    assert (
+        numeric_fact_conflicting_current_value_contexts(
+            valid_elided_and_sentence,
+            fed_funds_fact,
+        )
+        == []
+    )
+
+    valid_compact_sentence = "Current readings: CPI YoY 3.78%, fed funds 3.64%."
+    assert (
+        numeric_fact_conflicting_current_value_contexts(
+            valid_compact_sentence,
+            cpi_fact,
+        )
+        == []
+    )
+    assert (
+        numeric_fact_conflicting_current_value_contexts(
+            valid_compact_sentence,
+            fed_funds_fact,
+        )
+        == []
+    )
+
+    valid_multi_metric_table = "\n".join(
+        [
+            "| Metric | Current |",
+            "| --- | --- |",
+            "| Real Fed Funds vs Breakeven Inflation | Fed Funds 3.64%, Breakeven 2.67% |",
+        ]
+    )
+    assert (
+        numeric_fact_conflicting_current_value_contexts(
+            valid_multi_metric_table,
+            fed_funds_fact,
+        )
+        == []
+    )
+    assert (
+        numeric_fact_conflicting_current_value_contexts(
+            valid_multi_metric_table,
+            breakeven_fact,
+        )
+        == []
+    )
+    valid_multi_metric_reading_table = "\n".join(
+        [
+            "| Metric | Reading |",
+            "| --- | --- |",
+            "| Real Fed Funds vs Breakeven Inflation | Fed Funds 3.64%, Breakeven 2.67% |",
+        ]
+    )
+    assert (
+        numeric_fact_conflicting_current_value_contexts(
+            valid_multi_metric_reading_table,
+            fed_funds_fact,
+        )
+        == []
+    )
+
+    assert numeric_fact_conflicting_current_value_contexts(
+        "CPI YoY is 2.30% while fed funds are 3.64%.",
+        cpi_fact,
+    )
+    assert numeric_fact_conflicting_current_value_contexts(
+        "CPI YoY is 3.78% while fed funds are 4.30%.",
+        fed_funds_fact,
+    )
+    assert numeric_fact_conflicting_current_value_contexts(
+        "CPI YoY is 3.78% and fed funds 4.30%.",
+        fed_funds_fact,
+    )
+    assert numeric_fact_conflicting_current_value_contexts(
+        "Current readings: CPI YoY 3.78%, fed funds 4.30%.",
+        fed_funds_fact,
+    )
+    semicolon_current_readings = (
+        "Current readings: CPI YoY 3.78%; payrolls YoY 0.90%; fed funds 4.30%."
+    )
+    assert numeric_fact_conflicting_current_value_contexts(
+        semicolon_current_readings,
+        payrolls_fact,
+    )
+    assert numeric_fact_conflicting_current_value_contexts(
+        semicolon_current_readings,
+        fed_funds_fact,
+    )
+    assert numeric_fact_conflicting_current_value_contexts(
+        "Nonfarm payroll growth has decelerated to approximately 0.90%.",
+        payrolls_fact,
+    )
+    assert numeric_fact_conflicting_current_value_contexts(
+        "Payroll growth has moderated to 0.90%.",
+        payrolls_fact,
+    )
+    stale_fed_funds_table = "\n".join(
+        [
+            "| Metric | Current |",
+            "| --- | --- |",
+            "| Real Fed Funds vs Breakeven Inflation | Fed Funds 4.30%, Breakeven 2.67% |",
+        ]
+    )
+    assert numeric_fact_conflicting_current_value_contexts(
+        stale_fed_funds_table,
+        fed_funds_fact,
+    )
+    stale_breakeven_table = "\n".join(
+        [
+            "| Metric | Current |",
+            "| --- | --- |",
+            "| Real Fed Funds vs Breakeven Inflation | Fed Funds 3.64%, Breakeven 2.10% |",
+        ]
+    )
+    assert numeric_fact_conflicting_current_value_contexts(
+        stale_breakeven_table,
+        breakeven_fact,
+    )
+    simple_stale_current_table = "\n".join(
+        [
+            "| Metric | Current |",
+            "| --- | --- |",
+            "| Fed Funds | 4.30% |",
+        ]
+    )
+    assert numeric_fact_conflicting_current_value_contexts(
+        simple_stale_current_table,
+        fed_funds_fact,
+    )
+
+
+def test_chart_latest_current_value_context_uses_generated_series_local_markers():
+    charts = {
+        "fed-funds-vs-breakeven": {
+            "id": "fed-funds-vs-breakeven",
+            "type": "line",
+            "title": "Fed Funds vs Breakeven",
+            "xAxisKey": "date",
+            "series": [
+                {"dataKey": "fed_funds", "label": "Fed Funds (%)"},
+                {"dataKey": "breakeven", "label": "Breakeven (%)"},
+            ],
+            "data": [
+                {"date": "2026-03", "fed_funds": 3.64, "breakeven": 2.62},
+                {"date": "2026-04", "fed_funds": 3.64, "breakeven": 2.67},
+            ],
+            **_chart_traceability("FRED", "policy_inflation_projection"),
+        }
+    }
+    facts = {
+        fact["data_key"]: fact
+        for fact in chart_latest_numeric_facts(charts)
+    }
+    fed_funds_fact = facts["fed_funds"]
+    breakeven_fact = facts["breakeven"]
+    assert "Fed Funds vs Breakeven" in fed_funds_fact["label"]
+    assert "Fed Funds vs Breakeven" in breakeven_fact["label"]
+
+    assert (
+        numeric_fact_conflicting_current_value_contexts(
+            "Fed funds are 3.64%.",
+            breakeven_fact,
+        )
+        == []
+    )
+    assert (
+        numeric_fact_conflicting_current_value_contexts(
+            "Breakeven is 2.67%.",
+            fed_funds_fact,
+        )
+        == []
+    )
+    assert (
+        numeric_fact_conflicting_current_value_contexts(
+            "Fed funds are 3.64%, while breakeven is 2.67%.",
+            fed_funds_fact,
+        )
+        == []
+    )
+    assert (
+        numeric_fact_conflicting_current_value_contexts(
+            "Fed funds are 3.64%, while breakeven is 2.67%.",
+            breakeven_fact,
+        )
+        == []
+    )
+    valid_comparison_sentence = (
+        "Fed funds at 3.64% sits above breakeven inflation at 2.67%."
+    )
+    assert (
+        numeric_fact_conflicting_current_value_contexts(
+            valid_comparison_sentence,
+            fed_funds_fact,
+        )
+        == []
+    )
+    assert (
+        numeric_fact_conflicting_current_value_contexts(
+            valid_comparison_sentence,
+            breakeven_fact,
+        )
+        == []
+    )
+
+    assert numeric_fact_conflicting_current_value_contexts(
+        "Fed funds are 4.30%.",
+        fed_funds_fact,
+    )
+    assert numeric_fact_conflicting_current_value_contexts(
+        "Breakeven is 2.10%.",
+        breakeven_fact,
+    )
+    assert numeric_fact_conflicting_current_value_contexts(
+        "Fed funds at 4.30% sits above breakeven inflation at 2.67%.",
+        fed_funds_fact,
+    )
+    assert numeric_fact_conflicting_current_value_contexts(
+        "Fed funds at 3.64% sits above breakeven inflation at 2.10%.",
+        breakeven_fact,
+    )
+
+
+def test_chart_latest_current_value_context_uses_qualified_spread_markers():
+    charts = {
+        "yield_spread": {
+            "id": "yield_spread",
+            "type": "line",
+            "title": "Yield Curve Spread",
+            "xAxisKey": "date",
+            "series": [{"dataKey": "spread", "label": "Spread"}],
+            "data": [{"date": "2026-05", "spread": 0.52}],
+            **_chart_traceability("FRED", "yield_curve_spread"),
+        },
+        "credit_spread_baa10y": {
+            "id": "credit_spread_baa10y",
+            "type": "line",
+            "title": "Credit Spread (BAA10Y)",
+            "xAxisKey": "date",
+            "series": [{"dataKey": "spread", "label": "Spread"}],
+            "data": [{"date": "2026-05", "spread": 1.70}],
+            **_chart_traceability("FRED", "credit_spread"),
+        },
+    }
+    facts = {fact["chart_id"]: fact for fact in chart_latest_numeric_facts(charts)}
+    yield_spread_fact = facts["yield_spread"]
+    credit_spread_fact = facts["credit_spread_baa10y"]
+
+    valid_table = "\n".join(
+        [
+            "| Metric | Current |",
+            "| --- | ---: |",
+            "| Yield Curve Spread | 0.52% |",
+            "| Credit Spread (BAA10Y) | 1.70% |",
+        ]
+    )
+    assert (
+        numeric_fact_conflicting_current_value_contexts(
+            valid_table,
+            yield_spread_fact,
+        )
+        == []
+    )
+    assert (
+        numeric_fact_conflicting_current_value_contexts(
+            valid_table,
+            credit_spread_fact,
+        )
+        == []
+    )
+
+    stale_yield_table = "\n".join(
+        [
+            "| Metric | Current |",
+            "| --- | ---: |",
+            "| Yield Curve Spread | 0.21% |",
+            "| Credit Spread (BAA10Y) | 1.70% |",
+        ]
+    )
+    assert numeric_fact_conflicting_current_value_contexts(
+        stale_yield_table,
+        yield_spread_fact,
+    )
+    assert (
+        numeric_fact_conflicting_current_value_contexts(
+            stale_yield_table,
+            credit_spread_fact,
+        )
+        == []
+    )
+
+    stale_credit_table = "\n".join(
+        [
+            "| Metric | Current |",
+            "| --- | ---: |",
+            "| Yield Curve Spread | 0.52% |",
+            "| Credit Spread (BAA10Y) | 1.55% |",
+        ]
+    )
+    assert (
+        numeric_fact_conflicting_current_value_contexts(
+            stale_credit_table,
+            yield_spread_fact,
+        )
+        == []
+    )
+    assert numeric_fact_conflicting_current_value_contexts(
+        stale_credit_table,
+        credit_spread_fact,
+    )
+
+
+def test_chart_latest_current_value_context_treats_metric_value_table_as_current():
+    fact = qms.numeric_fact(
+        fact_id="chart_latest.cpi_yoy.cpi_yoy",
+        label="Latest CPI YoY from CPI YoY",
+        raw_value=3.78,
+        unit="percent",
+        precision=2,
+        tolerance=0.005,
+        source_key="chart_latest.cpi_yoy.cpi_yoy",
+        as_of_date="2026-04",
+        metric="cpi_yoy",
+    )
+    assert fact is not None
+    fact["chart_id"] = "cpi_yoy"
+    fact["data_key"] = "cpi_yoy"
+
+    valid_dashboard_table = "\n".join(
+        [
+            "| Metric | Value | Trigger |",
+            "| --- | ---: | ---: |",
+            "| CPI YoY | 3.78% | 3.00% |",
+        ]
+    )
+    assert (
+        numeric_fact_conflicting_current_value_contexts(
+            valid_dashboard_table,
+            fact,
+        )
+        == []
+    )
+
+    stale_dashboard_table = "\n".join(
+        [
+            "CPI YoY latest chart endpoint is 3.78%.",
+            "",
+            "| Metric | Value | Trigger |",
+            "| --- | ---: | ---: |",
+            "| CPI YoY | 2.30% | 3.00% |",
+        ]
+    )
+    assert numeric_fact_conflicting_current_value_contexts(
+        stale_dashboard_table,
+        fact,
+    )
+
+
 def test_normalize_quant_summary_rejects_inactive_nonzero_duration_fact():
     with pytest.raises(ValueError, match="current-state duration"):
         qms.normalize_quant_execution_summary(
@@ -2020,10 +2823,12 @@ def test_save_quant_outputs_writes_generic_evidence_payload(tmp_path):
     assert saved_summary["evidence_bundle_json"] == str(
         tmp_path / "evidence_bundle.json"
     )
-    assert saved_summary["numeric_facts"][0]["id"] == "latest_value"
+    assert saved_summary["numeric_facts"][0]["id"] == "chart_latest.trend.value"
+    assert saved_summary["numeric_facts"][1]["id"] == "latest_value"
     assert list(saved_charts) == ["trend"]
     assert saved_bundle["bundle_type"] == "quant_evidence_bundle"
-    assert saved_bundle["facts"][0]["fact_id"] == "latest_value"
+    assert saved_bundle["facts"][0]["fact_id"] == "chart_latest.trend.value"
+    assert saved_bundle["facts"][1]["fact_id"] == "latest_value"
     assert saved_bundle["charts"][0]["chart_id"] == "trend"
     assert saved_bundle["charts"][0]["source_table_ids"] == ["chart_data:trend"]
     assert saved_bundle["charts"][0]["transform_ids"] == ["unit_test_projection"]

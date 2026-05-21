@@ -8,6 +8,7 @@ from ...artifact_fact_consistency import (
     artifact_fact_consistency_blocker,
     artifact_fact_consistency_dict,
 )
+from .chart_latest_facts import attach_chart_latest_numeric_facts
 from .chart_provenance import normalize_chart_provenance
 from .chart_source_validation import validate_chart_source_tables
 from .evidence_bundle import build_evidence_bundle
@@ -70,12 +71,16 @@ def save_quant_outputs(
     chart_ids = list(chart_map.keys())
     chart_render_validation = validate_chart_source_tables(chart_map)
 
-    summary = normalize_quant_execution_summary(execution_summary)
+    summary_seed = dict(execution_summary)
+    _preserve_chart_provenance(chart_map, summary_seed, chart_ids)
+    attach_chart_latest_numeric_facts(summary_seed, chart_map)
+    summary = normalize_quant_execution_summary(summary_seed)
     _normalize_declared_since_lists(summary)
     _preserve_source_unit_contract(summary)
     _attach_generated_by(summary, output_path)
     _preserve_chart_provenance(chart_map, summary, chart_ids)
     _attach_raw_share_chart_limitations(chart_map, summary, chart_ids)
+    attach_chart_latest_numeric_facts(summary, chart_map)
 
     summary["charts_json"] = str(charts_path)
     summary["execution_summary_json"] = str(summary_path)

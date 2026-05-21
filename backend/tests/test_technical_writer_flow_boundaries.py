@@ -4394,6 +4394,134 @@ def test_validate_research_report_file_rejects_artifact_fact_mismatch(tmp_path):
     assert "artifact_fact_mismatch" in gate["blockers"][0]
 
 
+def test_write_research_report_rejects_stale_chart_latest_numeric_fact(
+    tmp_path,
+):
+    charts_path = tmp_path / "charts.json"
+    chart = {
+        "id": "cpi_yoy",
+        "type": "line",
+        "title": "CPI YoY",
+        "description": "CPI year-over-year inflation.",
+        "xAxisKey": "date",
+        "series": [{"dataKey": "cpi_yoy", "label": "CPI YoY %", "color": "#ef4444"}],
+        "data": [{"date": "2026-04", "cpi_yoy": 3.78}],
+    }
+    charts_path.write_text(json.dumps({"cpi_yoy": chart}), encoding="utf-8")
+    summary = {
+        "status": "success",
+        "chart_ids": ["cpi_yoy"],
+        "numeric_facts": [
+            {
+                "id": "chart_latest.cpi_yoy.cpi_yoy",
+                "label": "Latest CPI YoY from CPI YoY",
+                "raw_value": 3.78,
+                "display_value": "3.78%",
+                "unit": "percent",
+                "precision": 2,
+                "tolerance": 0.005,
+                "source_key": "chart_latest.cpi_yoy.cpi_yoy",
+                "as_of_date": "2026-04",
+                "metric": "cpi_yoy",
+                "fact_origin": "chart_latest_point",
+                "chart_id": "cpi_yoy",
+                "data_key": "cpi_yoy",
+            }
+        ],
+    }
+
+    result = json.loads(
+        write_research_report.func(
+            markdown=(
+                "## Executive Summary\n"
+                "Inflation has eased to 2.3% YoY.\n\n"
+                "<!-- CHART:cpi_yoy -->\n\n"
+                "| Metric | Current |\n"
+                "| --- | ---: |\n"
+                "| CPI YoY | 3.78% |\n\n"
+                "## Research Query\nBuild a CPI watchlist chart report."
+            ),
+            charts_json_path=str(charts_path),
+            original_query="Build a CPI watchlist chart report.",
+            execution_summary=json.dumps(summary),
+            runtime=SimpleNamespace(
+                context=SimpleNamespace(job_id="job-cpi", output_dir=str(tmp_path))
+            ),
+        )
+    )
+
+    assert result["status"] == "error"
+    assert result["failure_category"] == "numeric_fact_mismatch"
+    assert "contradicts" in result["message"]
+    assert "numeric_facts" in result["message"]
+    assert "cpi_yoy" in result["message"]
+
+
+def test_write_research_report_rejects_stale_current_table_chart_latest_fact(
+    tmp_path,
+):
+    charts_path = tmp_path / "charts.json"
+    chart = {
+        "id": "cpi_yoy",
+        "type": "line",
+        "title": "CPI YoY",
+        "description": "CPI year-over-year inflation.",
+        "xAxisKey": "date",
+        "series": [{"dataKey": "cpi_yoy", "label": "CPI YoY %", "color": "#ef4444"}],
+        "data": [{"date": "2026-04", "cpi_yoy": 3.78}],
+    }
+    charts_path.write_text(json.dumps({"cpi_yoy": chart}), encoding="utf-8")
+    summary = {
+        "status": "success",
+        "chart_ids": ["cpi_yoy"],
+        "numeric_facts": [
+            {
+                "id": "chart_latest.cpi_yoy.cpi_yoy",
+                "label": "Latest CPI YoY from CPI YoY",
+                "raw_value": 3.78,
+                "display_value": "3.78%",
+                "unit": "percent",
+                "precision": 2,
+                "tolerance": 0.005,
+                "source_key": "chart_latest.cpi_yoy.cpi_yoy",
+                "as_of_date": "2026-04",
+                "metric": "cpi_yoy",
+                "fact_origin": "chart_latest_point",
+                "chart_id": "cpi_yoy",
+                "data_key": "cpi_yoy",
+            }
+        ],
+    }
+
+    result = json.loads(
+        write_research_report.func(
+            markdown=(
+                "## Executive Summary\n"
+                "CPI YoY latest chart endpoint is 3.78%.\n\n"
+                "| Metric | Current | Trigger |\n"
+                "| --- | ---: | ---: |\n"
+                "| CPI YoY | 2.30% | 3.00% |\n\n"
+                "<!-- CHART:cpi_yoy -->\n\n"
+                "## Research Query\nBuild a CPI watchlist chart report."
+            ),
+            charts_json_path=str(charts_path),
+            original_query="Build a CPI watchlist chart report.",
+            execution_summary=json.dumps(summary),
+            runtime=SimpleNamespace(
+                context=SimpleNamespace(
+                    job_id="job-cpi-table",
+                    output_dir=str(tmp_path),
+                )
+            ),
+        )
+    )
+
+    assert result["status"] == "error"
+    assert result["failure_category"] == "numeric_fact_mismatch"
+    assert "contradicts" in result["message"]
+    assert "cpi_yoy" in result["message"]
+
+
 def test_validate_research_report_file_rejects_malformed_sibling_execution_summary(
     tmp_path,
 ):

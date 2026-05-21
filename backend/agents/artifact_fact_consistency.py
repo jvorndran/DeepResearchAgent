@@ -41,6 +41,7 @@ _CORRELATION_ID_RE = re.compile(
 _PAIR_LABEL_SPLIT_RE = re.compile(r"\s*(?:/|\||,|\bvs\.?\b|\band\b)\s*", re.IGNORECASE)
 _DEFAULT_CORRELATION_TOLERANCE = 0.005
 _DEFAULT_SIGNAL_TOLERANCE = 0.005
+_DEFAULT_CHART_NUMERIC_TOLERANCE = 0.005
 _CHART_SIGNAL_DATE_KEYS = ("date", "period", "month", "timestamp", "time")
 
 
@@ -92,6 +93,17 @@ def artifact_fact_consistency_dict(
     if isinstance(execution_summary, dict):
         signal_checked_facts, signal_mismatches = _current_signal_fact_mismatches(
             execution_summary.get("current_signal_facts"),
+            chart_payload,
+            chart_source,
+        )
+    chart_numeric_checked_facts: list[str] = []
+    chart_numeric_mismatches: list[dict[str, Any]] = []
+    if isinstance(execution_summary, dict):
+        (
+            chart_numeric_checked_facts,
+            chart_numeric_mismatches,
+        ) = _chart_numeric_fact_mismatches(
+            execution_summary.get("numeric_facts"),
             chart_payload,
             chart_source,
         )
@@ -150,7 +162,7 @@ def artifact_fact_consistency_dict(
         if comparable_pair_seen:
             checked_pairs.append("/".join(pair_items[0].pair_display))
 
-    all_mismatches = [*mismatches, *signal_mismatches]
+    all_mismatches = [*mismatches, *signal_mismatches, *chart_numeric_mismatches]
     return {
         "valid": not all_mismatches,
         "fact_type": "correlation",
@@ -160,6 +172,8 @@ def artifact_fact_consistency_dict(
         "skipped_comparisons": skipped_comparisons,
         "checked_signal_facts": signal_checked_facts,
         "signal_mismatches": signal_mismatches,
+        "checked_chart_numeric_facts": chart_numeric_checked_facts,
+        "chart_numeric_mismatches": chart_numeric_mismatches,
     }
 
 
@@ -174,6 +188,8 @@ def artifact_fact_consistency_blocker(consistency: dict[str, Any] | None) -> str
     mismatch = mismatches[0]
     if isinstance(mismatch, dict) and mismatch.get("fact_type") == "current_signal":
         return _current_signal_blocker(mismatch)
+    if isinstance(mismatch, dict) and mismatch.get("fact_type") == "chart_numeric_fact":
+        return _chart_numeric_fact_blocker(mismatch)
     pair = mismatch.get("pair") if isinstance(mismatch, dict) else None
     pair_label = "/".join(str(item) for item in pair) if isinstance(pair, list) else "unknown"
     observations = mismatch.get("observations") if isinstance(mismatch, dict) else None
@@ -220,6 +236,31 @@ def _current_signal_blocker(mismatch: dict[str, Any]) -> str:
         f"{signal_id} ({reason}: {detail_text}). Regenerate quant artifacts so "
         "execution_summary.json current_signal_facts and chart data share one "
         "threshold basis."
+    )
+
+
+def _chart_numeric_fact_blocker(mismatch: dict[str, Any]) -> str:
+    fact_id = str(mismatch.get("fact_id") or "unknown")
+    reason = str(mismatch.get("reason") or "mismatch")
+    observations = mismatch.get("observations")
+    details: list[str] = []
+    if isinstance(observations, list):
+        for observation in observations[:4]:
+            if not isinstance(observation, dict):
+                continue
+            source = observation.get("source")
+            value = observation.get("value")
+            as_of_date = observation.get("as_of_date")
+            pieces = [f"{source}={value}"]
+            if as_of_date is not None:
+                pieces.append(f"as_of={as_of_date}")
+            details.append(", ".join(str(piece) for piece in pieces if piece))
+    detail_text = "; ".join(details) if details else "conflicting observations"
+    return (
+        "artifact_fact_mismatch: conflicting chart-linked numeric fact for "
+        f"{fact_id} ({reason}: {detail_text}). Regenerate quant artifacts so "
+        "execution_summary.json numeric_facts and charts.json latest data points "
+        "share one current value."
     )
 
 
@@ -495,6 +536,117 @@ def _current_signal_fact_mismatches(
     return checked, mismatches
 
 
+def _chart_numeric_fact_mismatches(
+    value: Any,
+    charts: dict[str, Any] | list[Any] | None,
+    chart_source: str,
+) -> tuple[list[str], list[dict[str, Any]]]:
+    if not isinstance(value, list) or charts is None:
+        return [], []
+
+    checked: list[str] = []
+    mismatches: list[dict[str, Any]] = []
+    for index, fact in enumerate(value):
+        if not isinstance(fact, dict):
+            continue
+        chart_id = _non_empty_string(fact.get("chart_id"))
+        data_key = _non_empty_string(fact.get("data_key"))
+        if not chart_id and not data_key:
+            continue
+
+        fact_id = str(fact.get("id") or f"numeric_facts[{index}]")
+        checked.append(fact_id)
+        source = f"execution_summary.numeric_facts[{index}]"
+        fact_observation = _numeric_fact_chart_observation(fact, source)
+        tolerance = _finite_float(fact.get("tolerance"))
+        if tolerance is None:
+            tolerance = _DEFAULT_CHART_NUMERIC_TOLERANCE
+        value_number = _finite_float(fact.get("raw_value", fact.get("value")))
+        if not chart_id or not data_key or value_number is None:
+            mismatches.append(
+                _chart_numeric_mismatch(
+                    fact_id=fact_id,
+                    reason="malformed_chart_numeric_fact",
+                    observations=[fact_observation],
+                    tolerance=tolerance,
+                )
+            )
+            continue
+
+        chart_observation = _latest_chart_numeric_observation(
+            charts,
+            chart_id=chart_id,
+            data_key=data_key,
+            source_prefix=chart_source,
+        )
+        if chart_observation is None:
+            mismatches.append(
+                _chart_numeric_mismatch(
+                    fact_id=fact_id,
+                    reason="chart_reference_missing",
+                    observations=[fact_observation],
+                    tolerance=tolerance,
+                )
+            )
+            continue
+        chart_value = _finite_float(chart_observation.get("value"))
+        if chart_value is None or abs(chart_value - value_number) > max(tolerance, 1e-9):
+            mismatches.append(
+                _chart_numeric_mismatch(
+                    fact_id=fact_id,
+                    reason="chart_latest_value_mismatch",
+                    observations=[fact_observation, chart_observation],
+                    tolerance=tolerance,
+                )
+            )
+            continue
+
+        fact_date = _non_empty_string(fact.get("as_of_date"))
+        chart_date = _non_empty_string(chart_observation.get("as_of_date"))
+        if fact_date and chart_date and not _dates_match(fact_date, chart_date):
+            mismatches.append(
+                _chart_numeric_mismatch(
+                    fact_id=fact_id,
+                    reason="chart_latest_date_mismatch",
+                    observations=[fact_observation, chart_observation],
+                    tolerance=tolerance,
+                )
+            )
+    return checked, mismatches
+
+
+def _numeric_fact_chart_observation(
+    fact: dict[str, Any],
+    source: str,
+) -> dict[str, Any]:
+    observation = {
+        "source": source,
+        "value": _finite_float(fact.get("raw_value", fact.get("value"))),
+    }
+    for key in ("as_of_date", "chart_id", "data_key", "source_key"):
+        if fact.get(key) is not None:
+            observation[key] = fact.get(key)
+    return observation
+
+
+def _chart_numeric_mismatch(
+    *,
+    fact_id: str,
+    reason: str,
+    observations: list[dict[str, Any]],
+    tolerance: float | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "fact_type": "chart_numeric_fact",
+        "fact_id": fact_id,
+        "reason": reason,
+        "observations": observations,
+    }
+    if tolerance is not None:
+        payload["tolerance"] = tolerance
+    return payload
+
+
 def _signal_fact_observation(fact: dict[str, Any], source: str) -> dict[str, Any]:
     observation = {
         "source": source,
@@ -564,6 +716,41 @@ def _latest_chart_signal_observation(
     return None
 
 
+def _latest_chart_numeric_observation(
+    charts: dict[str, Any] | list[Any],
+    *,
+    chart_id: str,
+    data_key: str,
+    source_prefix: str,
+) -> dict[str, Any] | None:
+    for candidate_id, chart in _iter_chart_items(charts):
+        if candidate_id != chart_id:
+            continue
+        chart_data = _as_mapping(chart)
+        if not chart_data:
+            return None
+        data = chart_data.get("data")
+        if not isinstance(data, list):
+            return None
+        matched = _latest_chart_signal_row(
+            data,
+            data_key=data_key,
+            as_of_date=None,
+        )
+        if matched is None:
+            return None
+        index, row, value = matched
+        observation = {
+            "source": f"{source_prefix}.{chart_id}.data[{index}].{data_key}",
+            "value": value,
+        }
+        row_date = _chart_row_date(row)
+        if row_date is not None:
+            observation["as_of_date"] = row_date
+        return observation
+    return None
+
+
 def _latest_chart_signal_row(
     rows: list[Any],
     *,
@@ -608,6 +795,12 @@ def _chart_row_date(row: dict[str, Any]) -> str | None:
         if value is not None and str(value).strip():
             return str(value).strip()
     return None
+
+
+def _dates_match(left: str, right: str) -> bool:
+    left_text = str(left).strip()
+    right_text = str(right).strip()
+    return left_text == right_text or left_text[:10] == right_text[:10]
 
 
 def _iter_chart_items(charts: dict[str, Any] | list[Any]) -> Iterable[tuple[str, Any]]:

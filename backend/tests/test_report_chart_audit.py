@@ -487,6 +487,58 @@ def test_report_chart_audit_rejects_current_signal_chart_mismatch(tmp_path):
     assert "current signal fact for sahm_rule" in audit["blockers"][0]
 
 
+def test_report_chart_audit_rejects_chart_linked_numeric_fact_mismatch(tmp_path):
+    report_path = _write_report(
+        tmp_path,
+        {
+            "id": "payrolls_yoy",
+            "type": "line",
+            "title": "Payrolls YoY",
+            "description": "Payroll growth over time.",
+            "xAxisKey": "date",
+            "series": [
+                {"dataKey": "payrolls_yoy", "label": "Payrolls YoY %", "color": "#f59e0b"}
+            ],
+            "data": [{"date": "2026-04", "payrolls_yoy": 0.16}],
+        },
+    )
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "chart_ids": ["payrolls_yoy"],
+                "numeric_facts": [
+                    {
+                        "id": "chart_latest.payrolls_yoy.payrolls_yoy",
+                        "label": "Latest Payrolls YoY from Payrolls YoY",
+                        "raw_value": 0.9,
+                        "display_value": "0.90%",
+                        "unit": "percent",
+                        "precision": 2,
+                        "tolerance": 0.005,
+                        "source_key": "chart_latest.payrolls_yoy.payrolls_yoy",
+                        "as_of_date": "2026-04",
+                        "metric": "payrolls_yoy",
+                        "chart_id": "payrolls_yoy",
+                        "data_key": "payrolls_yoy",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    audit = json.loads(run_report_chart_audit(str(report_path)))
+
+    assert audit["passes_audit"] is False
+    assert audit["artifact_fact_consistency"]["valid"] is False
+    assert (
+        audit["artifact_fact_consistency"]["chart_numeric_mismatches"][0]["reason"]
+        == "chart_latest_value_mismatch"
+    )
+    assert "chart-linked numeric fact" in audit["blockers"][0]
+
+
 def test_report_chart_audit_accepts_broad_governed_chart_families(tmp_path):
     charts = {
         "radar_profile": {

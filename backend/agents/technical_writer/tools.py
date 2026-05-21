@@ -31,6 +31,7 @@ from ..requested_coverage import (
 )
 from agents.quant_macro_stats.artifacts.numeric_fact_contracts import (
     normalize_numeric_facts,
+    numeric_fact_conflicting_current_value_contexts,
     numeric_fact_current_state_duration_misuse,
     numeric_fact_literal_required,
 )
@@ -2391,6 +2392,7 @@ def _numeric_fact_validation_blockers(
 
     query_and_markdown = f"{original_query}\n{markdown}".lower()
     missing: list[str] = []
+    contradictions: list[str] = []
     semantic_misuse: list[str] = []
     markdown_lower = markdown.lower()
     for fact in facts:
@@ -2410,6 +2412,9 @@ def _numeric_fact_validation_blockers(
             continue
         if not numeric_fact_literal_required(fact):
             continue
+        if numeric_fact_conflicting_current_value_contexts(markdown, fact):
+            contradictions.append(label)
+            continue
         if not _contains_numeric_fact_value(markdown, fact):
             missing.append(label)
 
@@ -2419,6 +2424,12 @@ def _numeric_fact_validation_blockers(
             f"durations for {', '.join(semantic_misuse[:8])}. Regenerate the "
             "affected prose from state_description instead of saying an episode "
             "lasted 0 days/weeks/months."
+        ]
+    if contradictions:
+        return [
+            "Report contradicts helper-produced chart-latest numeric_facts for "
+            f"{', '.join(contradictions[:8])}. Regenerate current-value prose "
+            "from the execution_summary display_value fields."
         ]
     if not missing:
         return []

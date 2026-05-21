@@ -7366,6 +7366,175 @@ def test_submit_quality_decision_rejects_current_signal_fact_mismatch(tmp_path):
     assert "current signal fact for sahm_rule" in payload["reason"]
 
 
+def test_submit_quality_decision_rejects_stale_chart_latest_numeric_fact(tmp_path):
+    report_path = tmp_path / "report.json"
+    chart = {
+        "id": "fed_funds",
+        "type": "line",
+        "title": "Fed Funds",
+        "description": "Fed funds over time.",
+        "xAxisKey": "date",
+        "series": [
+            {"dataKey": "fed_funds", "label": "Fed Funds (%)", "color": "#8b5cf6"}
+        ],
+        "data": [{"date": "2026-04", "fed_funds": 3.64}],
+    }
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "chart_ids": ["fed_funds"],
+                "numeric_facts": [
+                    {
+                        "id": "chart_latest.fed_funds.fed_funds",
+                        "label": "Latest Fed Funds from Fed Funds",
+                        "raw_value": 3.64,
+                        "display_value": "3.64%",
+                        "unit": "percent",
+                        "precision": 2,
+                        "tolerance": 0.005,
+                        "source_key": "chart_latest.fed_funds.fed_funds",
+                        "as_of_date": "2026-04",
+                        "metric": "fed_funds",
+                        "fact_origin": "chart_latest_point",
+                        "chart_id": "fed_funds",
+                        "data_key": "fed_funds",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "job_id": "qa-fed-funds",
+                "created_at": "2026-05-14T12:00:00Z",
+                "query": "Build a Fed funds watchlist chart report.",
+                "title": "Fed Funds Watchlist",
+                "executive_summary": "Policy is restrictive.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "Fed funds are about 4.3%, keeping policy restrictive.\n"
+                    "\n| Metric | Current |\n| --- | ---: |\n| Fed funds | 3.64% |\n"
+                    "<!-- CHART:fed_funds -->"
+                ),
+                "charts": {"fed_funds": chart},
+                "data_sources": [],
+                "metadata": {"analysis_type": "macro", "chart_count": 1, "word_count": 9},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "numeric_fact_mismatch"
+    assert payload["required_upstream"] == "technical-writer"
+    assert "contradicts" in payload["reason"]
+    assert "numeric_facts" in payload["reason"]
+    assert "fed_funds" in payload["reason"]
+
+
+def test_submit_quality_decision_rejects_stale_current_table_chart_latest_fact(tmp_path):
+    report_path = tmp_path / "report.json"
+    chart = {
+        "id": "payrolls_yoy",
+        "type": "line",
+        "title": "Payrolls YoY",
+        "description": "Payroll growth over time.",
+        "xAxisKey": "date",
+        "series": [
+            {
+                "dataKey": "payrolls_yoy",
+                "label": "Payrolls YoY (%)",
+                "color": "#22c55e",
+            }
+        ],
+        "data": [{"date": "2026-04", "payrolls_yoy": 0.16}],
+    }
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "chart_ids": ["payrolls_yoy"],
+                "numeric_facts": [
+                    {
+                        "id": "chart_latest.payrolls_yoy.payrolls_yoy",
+                        "label": "Latest Payrolls YoY from Payrolls YoY",
+                        "raw_value": 0.16,
+                        "display_value": "0.16%",
+                        "unit": "percent",
+                        "precision": 2,
+                        "tolerance": 0.005,
+                        "source_key": "chart_latest.payrolls_yoy.payrolls_yoy",
+                        "as_of_date": "2026-04",
+                        "metric": "payrolls_yoy",
+                        "fact_origin": "chart_latest_point",
+                        "chart_id": "payrolls_yoy",
+                        "data_key": "payrolls_yoy",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "job_id": "qa-payrolls-table",
+                "created_at": "2026-05-14T12:00:00Z",
+                "query": "Build a payrolls watchlist chart report.",
+                "title": "Payrolls Watchlist",
+                "executive_summary": "Labor momentum is soft.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "Payrolls YoY latest chart endpoint is 0.16%.\n\n"
+                    "| Metric | Current | Trigger |\n"
+                    "| --- | ---: | ---: |\n"
+                    "| Payrolls YoY | 0.90% | 0.50% |\n"
+                    "<!-- CHART:payrolls_yoy -->"
+                ),
+                "charts": {"payrolls_yoy": chart},
+                "data_sources": [],
+                "metadata": {
+                    "analysis_type": "macro",
+                    "chart_count": 1,
+                    "word_count": 9,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "numeric_fact_mismatch"
+    assert payload["required_upstream"] == "technical-writer"
+    assert "contradicts" in payload["reason"]
+    assert "payrolls_yoy" in payload["reason"]
+
+
 def test_submit_quality_decision_rejects_recession_probability_without_composite_diagnostics(tmp_path):
     report_path = tmp_path / "report.json"
     (tmp_path / "execution_summary.json").write_text(
