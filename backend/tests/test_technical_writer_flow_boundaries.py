@@ -749,6 +749,7 @@ def test_plan_report_structure_preserves_regional_state_context(tmp_path):
 
     draft = result["execution_summary_for_draft"]
     assert "Exact regional state consumer context from execution_summary.json" in draft
+    assert result["helper_evidence_for_draft"]["requested_geography_coverage"]["status"] == "covered"
     assert "California: population=39242785, median_income=96334, pct_of_national_median=128.0%" in draft
     assert "Texas: population=29640343, median_income=76292, pct_of_national_median=101.4%" in draft
     assert "Illinois: population=12692653, median_income=81702, pct_of_national_median=108.5%" in draft
@@ -3353,6 +3354,219 @@ def test_write_research_report_loads_job_execution_summary_when_omitted(tmp_path
     assert "scenario_score_rows" not in report
     assert gate["passes_gate"] is True
     assert gate["scenarios"]["row_count"] == 0
+
+
+def test_write_research_report_allows_non_us_directional_terms_without_geography_contract(
+    tmp_path,
+):
+    for index, query in enumerate(
+        (
+            "South Korea growth outlook",
+            "West Texas Intermediate oil outlook",
+            "western Europe manufacturing outlook",
+            "coastal shipping outlook",
+            "Are regional banks under stress?",
+        )
+    ):
+        output_dir = tmp_path / f"case-{index}"
+        output_dir.mkdir()
+        charts_path = output_dir / "charts.json"
+        charts_path.write_text("{}", encoding="utf-8")
+        runtime = SimpleNamespace(
+            context=SimpleNamespace(job_id=f"job-{index}", output_dir=str(output_dir))
+        )
+
+        result = json.loads(
+            write_research_report.func(
+                runtime=runtime,
+                markdown=(
+                    "## Executive Summary\n"
+                    "The outlook depends on growth, inflation, and policy.\n\n"
+                    "## Research Query\n"
+                    f"{query}"
+                ),
+                charts_json_path=str(charts_path),
+                original_query=query,
+                title="Macro Outlook",
+                executive_summary="The outlook depends on growth, inflation, and policy.",
+                analysis_type="macro_indicator",
+                execution_summary=json.dumps(
+                    {"statistical_summary": {"latest_growth": 2.1}}
+                ),
+            )
+        )
+
+        assert "status" not in result
+        assert (output_dir / "report.json").exists()
+
+
+def test_write_research_report_blocks_regional_query_without_structured_coverage(
+    tmp_path,
+):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text("{}", encoding="utf-8")
+    runtime = SimpleNamespace(context=SimpleNamespace(job_id="job-1", output_dir=str(tmp_path)))
+    query = "Which US regions look healthiest right now?"
+
+    result = json.loads(
+        write_research_report.func(
+            runtime=runtime,
+            markdown=(
+                "## Executive Summary\n"
+                "National indicators look mixed, but regional rankings are unavailable.\n\n"
+                "## Research Query\n"
+                f"{query}"
+            ),
+            charts_json_path=str(charts_path),
+            original_query=query,
+            title="US Regional Health",
+            executive_summary=(
+                "National indicators look mixed, but regional rankings are unavailable."
+            ),
+            analysis_type="macro_indicator",
+            execution_summary=json.dumps(
+                {"statistical_summary": {"latest_unemployment": 4.1}}
+            ),
+        )
+    )
+
+    assert result["status"] == "error"
+    assert result["failure_category"] == "requested_coverage_missing"
+    assert result["required_upstream"] == "quant-developer"
+    assert "requested_geography_coverage" in result["message"]
+    assert not (tmp_path / "report.json").exists()
+
+
+def test_write_research_report_blocks_single_state_numeric_fact_for_regional_query(
+    tmp_path,
+):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text("{}", encoding="utf-8")
+    runtime = SimpleNamespace(context=SimpleNamespace(job_id="job-1", output_dir=str(tmp_path)))
+    query = "Which US regions look healthiest right now?"
+
+    result = json.loads(
+        write_research_report.func(
+            runtime=runtime,
+            markdown=(
+                "## Executive Summary\n"
+                "California income is $91,120.\n\n"
+                "## Research Query\n"
+                f"{query}"
+            ),
+            charts_json_path=str(charts_path),
+            original_query=query,
+            title="US Regional Health",
+            executive_summary="California income is $91,120.",
+            analysis_type="macro_indicator",
+            execution_summary=json.dumps(
+                {
+                    "numeric_facts": [
+                        qms.numeric_fact(
+                            fact_id="state_comparison.CA.income",
+                            label="California income",
+                            raw_value=91120,
+                            unit="usd_per_person",
+                            precision=0,
+                            tolerance=1,
+                            source_key="state_comparison.CA.income",
+                        )
+                    ]
+                }
+            ),
+        )
+    )
+
+    assert result["status"] == "error"
+    assert result["failure_category"] == "requested_coverage_missing"
+    assert result["required_upstream"] == "quant-developer"
+    assert "at least two compatible geography entities" in result["message"]
+    assert not (tmp_path / "report.json").exists()
+
+
+def test_write_research_report_blocks_self_attested_regional_coverage(tmp_path):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text("{}", encoding="utf-8")
+    runtime = SimpleNamespace(context=SimpleNamespace(job_id="job-1", output_dir=str(tmp_path)))
+    query = "Which US regions look healthiest right now?"
+
+    result = json.loads(
+        write_research_report.func(
+            runtime=runtime,
+            markdown=(
+                "## Executive Summary\n"
+                "National indicators look mixed, but regional rankings are unavailable.\n\n"
+                "## Research Query\n"
+                f"{query}"
+            ),
+            charts_json_path=str(charts_path),
+            original_query=query,
+            title="US Regional Health",
+            executive_summary=(
+                "National indicators look mixed, but regional rankings are unavailable."
+            ),
+            analysis_type="macro_indicator",
+            execution_summary=json.dumps(
+                {
+                    "requested_geography_coverage": {
+                        "required": True,
+                        "status": "covered",
+                        "evidence_keys": ["state_comparison"],
+                    }
+                }
+            ),
+        )
+    )
+
+    assert result["status"] == "error"
+    assert result["failure_category"] == "requested_coverage_missing"
+    assert result["required_upstream"] == "quant-developer"
+    assert "source_coverage" in result["message"]
+    assert not (tmp_path / "report.json").exists()
+
+
+def test_write_research_report_allows_structured_regional_unavailable_coverage(
+    tmp_path,
+):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text("{}", encoding="utf-8")
+    runtime = SimpleNamespace(context=SimpleNamespace(job_id="job-1", output_dir=str(tmp_path)))
+    query = "Which US regions look healthiest right now?"
+    execution_summary = {
+        "source_coverage": {
+            "census_acs_state": {
+                "provider": "Census ACS",
+                "dimension": "state",
+                "status": "not_available",
+                "error": "Census state request failed.",
+            }
+        }
+    }
+
+    result = json.loads(
+        write_research_report.func(
+            runtime=runtime,
+            markdown=(
+                "## Executive Summary\n"
+                "Census state-level data were unavailable after the source request failed, "
+                "so regional rankings cannot be stated reliably.\n\n"
+                "## Research Query\n"
+                f"{query}"
+            ),
+            charts_json_path=str(charts_path),
+            original_query=query,
+            title="US Regional Health",
+            executive_summary=(
+                "Census state-level data were unavailable after the source request failed, "
+                "so regional rankings cannot be stated reliably."
+            ),
+            analysis_type="macro_indicator",
+            execution_summary=json.dumps(execution_summary),
+        )
+    )
+
+    assert "status" not in result
+    assert (tmp_path / "report.json").exists()
 
 
 def test_validate_research_report_file_allows_generic_scenario_markdown_value_drift(tmp_path):

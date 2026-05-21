@@ -62,6 +62,7 @@ _COMPACT_HANDOFF_KEYS = (
     "macro_overlay",
     "company_macro_sensitivity",
     "source_coverage",
+    "requested_geography_coverage",
     "source_snapshots",
     "source_unit_metadata",
     "unit_comparisons",

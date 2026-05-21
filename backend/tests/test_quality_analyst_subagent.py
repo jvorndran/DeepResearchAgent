@@ -2304,8 +2304,957 @@ def test_submit_quality_decision_rejects_missing_requested_group_place_coverage(
 
     assert payload["status"] == "rejected"
     assert payload["failure_category"] == "requested_coverage_missing"
+    assert payload["required_upstream"] == "quant-developer"
+    assert "requested_geography_coverage" in payload["reason"]
+
+
+def test_submit_quality_decision_rejects_national_substitute_for_regional_query(
+    tmp_path,
+):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "statistical_summary": {"latest_unemployment": 4.1},
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Which US regions look healthiest right now?",
+                "title": "National Economic Health",
+                "executive_summary": (
+                    "Regional rankings are unavailable, so this report uses "
+                    "national indicators instead."
+                ),
+                "markdown": (
+                    "## Executive Summary\n"
+                    "Regional rankings are unavailable, so this report uses national "
+                    "indicators instead. Consumer sentiment from the University of "
+                    "Michigan index remains below pre-pandemic levels."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 30},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "requested_coverage_missing"
+    assert payload["required_upstream"] == "quant-developer"
+    assert "requested_geography_coverage" in payload["reason"]
+    assert "University of Michigan" not in payload["reason"]
+
+
+def test_submit_quality_decision_rejects_single_state_numeric_fact_for_regional_query(
+    tmp_path,
+):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "numeric_facts": [
+                    {
+                        "id": "state_comparison.CA.income",
+                        "label": "California income",
+                        "subject": "California",
+                        "metric": "income",
+                        "raw_value": 91120,
+                        "display_value": "$91,120",
+                        "unit": "usd_per_person",
+                        "precision": 0,
+                        "tolerance": 1,
+                        "source_key": "state_comparison.CA.income",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Which US regions look healthiest right now?",
+                "title": "Regional Health",
+                "executive_summary": "California income is $91,120.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "California income is $91,120."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 8},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "requested_coverage_missing"
+    assert payload["required_upstream"] == "quant-developer"
+    assert "at least two compatible geography entities" in payload["reason"]
+
+
+def test_submit_quality_decision_rejects_named_state_query_without_coverage(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "statistical_summary": {"latest_unemployment": 4.1},
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "How healthy is California's economy right now?",
+                "title": "National Economic Health",
+                "executive_summary": "National indicators look mixed but stable.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "National indicators look mixed but stable. Unemployment and "
+                    "inflation are the main signals to watch."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 24},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "requested_coverage_missing"
+    assert payload["required_upstream"] == "quant-developer"
+    assert "requested_geography_coverage" in payload["reason"]
+
+
+def test_submit_quality_decision_rejects_covered_regional_evidence_without_report_use(
+    tmp_path,
+):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "state_comparison": [
+                    {"state": "California", "income": 91120},
+                    {"state": "Texas", "income": 72360},
+                    {"state": "Florida", "income": 68420},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Which US regions look healthiest right now?",
+                "title": "National Economic Health",
+                "executive_summary": "National indicators look mixed but broadly stable.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "National indicators look mixed but broadly stable. "
+                    "Unemployment and inflation are the main signals to watch."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 24},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "requested_coverage_missing"
     assert payload["required_upstream"] == "technical-writer"
-    assert "specific groups or places" in payload["reason"]
+    assert "structured geography evidence" in payload["reason"]
+
+
+def test_submit_quality_decision_rejects_single_row_use_for_plural_regional_query(
+    tmp_path,
+):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "state_comparison": [
+                    {"state": "California", "income": 91120},
+                    {"state": "Texas", "income": 72360},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Which US regions look healthiest right now?",
+                "title": "Regional Health",
+                "executive_summary": "California income is $91,120.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "California income is $91,120, making it the only place discussed."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 11},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "requested_coverage_missing"
+    assert payload["required_upstream"] == "technical-writer"
+    assert "does not use enough" in payload["reason"]
+
+
+def test_submit_quality_decision_rejects_unrequested_state_rows_for_named_query(
+    tmp_path,
+):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "state_comparison": [
+                    {"state": "California", "income": 91120},
+                    {"state": "Texas", "income": 72360},
+                    {"state": "Florida", "income": 68420},
+                    {"state": "New York", "income": 88850},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Compare California and Texas right now",
+                "title": "Wrong State Comparison",
+                "executive_summary": (
+                    "Florida income is 68,420, while New York income is 88,850."
+                ),
+                "markdown": (
+                    "## Executive Summary\n"
+                    "Florida income is 68,420, while New York income is 88,850."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 11},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "requested_coverage_missing"
+    assert payload["required_upstream"] == "technical-writer"
+    assert "does not use enough" in payload["reason"]
+
+
+def test_submit_quality_decision_accepts_terminal_period_state_row_values(
+    tmp_path,
+):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "state_comparison": [
+                    {"state": "California", "income": 91120},
+                    {"state": "Texas", "income": 72360},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Compare California and Texas right now",
+                "title": "State Income Comparison",
+                "executive_summary": (
+                    "California income is 91,120. Texas income is 72,360."
+                ),
+                "markdown": (
+                    "## Executive Summary\n"
+                    "California income is 91,120.\n"
+                    "Texas income is 72,360."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 9},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "approved"
+
+
+def test_submit_quality_decision_rejects_swapped_state_row_values(
+    tmp_path,
+):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "state_comparison": [
+                    {"state": "California", "income": 91120},
+                    {"state": "Texas", "income": 72360},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Compare California and Texas right now",
+                "title": "State Income Comparison",
+                "executive_summary": (
+                    "California income is 72,360, while Texas income is 91,120."
+                ),
+                "markdown": (
+                    "## Executive Summary\n"
+                    "California income is 72,360, while Texas income is 91,120."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 9},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "requested_coverage_missing"
+    assert payload["required_upstream"] == "technical-writer"
+    assert "does not use enough" in payload["reason"]
+
+
+def test_submit_quality_decision_rejects_state_row_metric_value_swap(
+    tmp_path,
+):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "state_comparison": [
+                    {
+                        "state": "California",
+                        "income": 91120,
+                        "unemployment_rate": 4.8,
+                    },
+                    {
+                        "state": "Texas",
+                        "income": 72360,
+                        "unemployment_rate": 4.1,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Compare California and Texas right now",
+                "title": "State Labor Comparison",
+                "executive_summary": (
+                    "California unemployment is 91,120, while Texas unemployment "
+                    "is 72,360."
+                ),
+                "markdown": (
+                    "## Executive Summary\n"
+                    "California unemployment is 91,120, while Texas unemployment "
+                    "is 72,360."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 10},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "requested_coverage_missing"
+    assert payload["required_upstream"] == "technical-writer"
+    assert "does not use enough" in payload["reason"]
+
+
+def test_submit_quality_decision_accepts_elided_metric_multi_metric_state_rows(
+    tmp_path,
+):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "state_comparison": [
+                    {
+                        "state": "California",
+                        "income": 91120,
+                        "unemployment_rate": 4.8,
+                    },
+                    {
+                        "state": "Texas",
+                        "income": 72360,
+                        "unemployment_rate": 4.1,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Compare California and Texas right now",
+                "title": "State Labor Comparison",
+                "executive_summary": (
+                    "California unemployment is 4.8%, while Texas is 4.1%."
+                ),
+                "markdown": (
+                    "## Executive Summary\n"
+                    "California unemployment is 4.8%, while Texas is 4.1%."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 9},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "approved"
+
+
+def test_submit_quality_decision_rejects_elided_metric_value_swap(
+    tmp_path,
+):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "state_comparison": [
+                    {
+                        "state": "California",
+                        "income": 91120,
+                        "unemployment_rate": 4.8,
+                    },
+                    {
+                        "state": "Texas",
+                        "income": 72360,
+                        "unemployment_rate": 4.1,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Compare California and Texas right now",
+                "title": "State Labor Comparison",
+                "executive_summary": (
+                    "California unemployment is 4.8%, while Texas is 72,360."
+                ),
+                "markdown": (
+                    "## Executive Summary\n"
+                    "California unemployment is 4.8%, while Texas is 72,360."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 9},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "requested_coverage_missing"
+    assert payload["required_upstream"] == "technical-writer"
+    assert "does not use enough" in payload["reason"]
+
+
+def test_submit_quality_decision_rejects_group_fact_substitute_for_regional_rows(
+    tmp_path,
+):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "state_comparison": [
+                    {"state": "California", "income": 91120},
+                    {"state": "Texas", "income": 72360},
+                    {"state": "Florida", "income": 68420},
+                ],
+                "numeric_facts": [
+                    {
+                        "id": "ny_fed.low_income.delinquency_pct",
+                        "label": "Low-income serious delinquency",
+                        "subject": "low-income households",
+                        "metric": "serious_delinquency_pct",
+                        "raw_value": 8.2,
+                        "display_value": "8.2%",
+                        "unit": "percent",
+                        "precision": 1,
+                        "tolerance": 0.01,
+                        "source_key": "ny_fed.segments.low_income.delinquency_pct",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Which US regions look healthiest right now?",
+                "title": "Consumer Segment Stress",
+                "executive_summary": (
+                    "Low-income households have an 8.2% serious delinquency rate."
+                ),
+                "markdown": (
+                    "## Executive Summary\n"
+                    "Low-income households have an 8.2% serious delinquency rate, "
+                    "which points to pressure below the national aggregate."
+                ),
+                "charts": [],
+                "data_sources": [
+                    {
+                        "provider": "New York Fed",
+                        "description": "Consumer delinquency by segment",
+                    }
+                ],
+                "metadata": {"word_count": 24},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "requested_coverage_missing"
+    assert payload["required_upstream"] == "technical-writer"
+    assert "structured geography evidence" in payload["reason"]
+
+
+def test_submit_quality_decision_rejects_placeholder_state_row_use(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "state_comparison": [
+                    {"state": "California"},
+                    {"state": "Texas", "unemployment_rate": 4.1},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Which US regions look healthiest right now?",
+                "title": "Regional Labor Market Comparison",
+                "executive_summary": (
+                    "California appears in the regional comparison table."
+                ),
+                "markdown": (
+                    "## Executive Summary\n"
+                    "California appears in the regional comparison table, which "
+                    "is treated as enough regional evidence."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 18},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "requested_coverage_missing"
+    assert payload["required_upstream"] == "quant-developer"
+    assert "at least two compatible geography entities" in payload["reason"]
+
+
+def test_submit_quality_decision_rejects_wrong_structured_state_row_values(
+    tmp_path,
+):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "state_comparison": [
+                    {"state": "California", "unemployment_rate": 4.8},
+                    {"state": "Texas", "unemployment_rate": 4.1},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Which US regions look healthiest right now?",
+                "title": "Regional Labor Market Comparison",
+                "executive_summary": (
+                    "California's unemployment rate is 14.8%, while Texas is 14.1%."
+                ),
+                "markdown": (
+                    "## Executive Summary\n"
+                    "California's unemployment rate is 14.8%, while Texas is 14.1%, "
+                    "using the state comparison table."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 21},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "requested_coverage_missing"
+    assert payload["required_upstream"] == "technical-writer"
+    assert "structured geography evidence" in payload["reason"]
+
+
+def test_submit_quality_decision_accepts_partial_state_rows_with_unavailable_caveat(
+    tmp_path,
+):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "state_comparison": [
+                    {"state": "California", "unemployment_rate": 4.8},
+                    {"state": "Texas", "unemployment_rate": 4.1},
+                ],
+                "source_coverage": {
+                    "census_acs_state_income": {
+                        "source": "Census ACS",
+                        "dimension": "state",
+                        "status": "not_available",
+                        "error": "Census state income request failed.",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Compare California and Texas right now",
+                "title": "Current Comparison",
+                "executive_summary": (
+                    "California's unemployment rate is 4.8%, while Texas is 4.1%."
+                ),
+                "markdown": (
+                    "## Executive Summary\n"
+                    "California's unemployment rate is 4.8%, while Texas is 4.1%, "
+                    "using the state comparison table. Census state-level income "
+                    "data were unavailable after the source request failed, so "
+                    "income rankings cannot be stated reliably."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 34},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "approved"
+
+
+def test_submit_quality_decision_rejects_state_rows_with_legacy_unavailable_limitations(
+    tmp_path,
+):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "state_comparison": [
+                    {"state": "California", "unemployment_rate": 4.8},
+                    {"state": "Texas", "unemployment_rate": 4.1},
+                ],
+                "limitations": [
+                    "Census state-level income data were unavailable after the source request failed."
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Compare California and Texas right now",
+                "title": "Current Comparison",
+                "executive_summary": (
+                    "California's unemployment rate is 4.8%, while Texas is 4.1%."
+                ),
+                "markdown": (
+                    "## Executive Summary\n"
+                    "California's unemployment rate is 4.8%, while Texas is 4.1%, "
+                    "using the state comparison table. Census state-level income "
+                    "data were unavailable after the source request failed, so "
+                    "income rankings cannot be stated reliably."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 34},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "requested_coverage_missing"
+    assert "unavailable-data caveat" in payload["reason"]
+    assert "source_coverage or metadata.fetch_errors" in payload["reason"]
+
+
+def test_submit_quality_decision_accepts_unavailable_regional_contract_with_provider_name(
+    tmp_path,
+):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "statistical_summary": {"latest_unemployment": 4.1},
+                "source_coverage": {
+                    "census_acs_state": {
+                        "source": "Census ACS",
+                        "dimension": "state",
+                        "status": "not_available",
+                        "error": "Census state request failed.",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Which US regions look healthiest right now?",
+                "title": "Regional Data Unavailable",
+                "executive_summary": (
+                    "Census state-level data were unavailable after the source "
+                    "request failed, so regional rankings cannot be stated reliably."
+                ),
+                "markdown": (
+                    "## Executive Summary\n"
+                    "Census state-level data were unavailable after the source "
+                    "request failed, so regional rankings cannot be stated reliably.\n"
+                    "Consumer sentiment from the University of Michigan index remains "
+                    "below pre-pandemic levels."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 36},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "approved"
 
 
 def test_submit_quality_decision_accepts_requested_group_place_evidence(tmp_path):
@@ -2572,6 +3521,78 @@ def test_submit_quality_decision_rejects_bare_group_place_unavailable_data_cavea
     assert payload["status"] == "rejected"
     assert payload["failure_category"] == "requested_coverage_missing"
     assert "source_coverage" in payload["reason"]
+
+
+def test_submit_quality_decision_rejects_legacy_regional_unavailable_metadata(
+    tmp_path,
+):
+    legacy_metadata_cases = [
+        {
+            "diagnostics": {
+                "census_acs_state": {
+                    "source": "Census ACS",
+                    "dimension": "state",
+                    "status": "not_available",
+                    "reason": "Census state-level request failed.",
+                }
+            }
+        },
+        {
+            "limitations": [
+                "Census state-level data were unavailable after the source request failed."
+            ]
+        },
+    ]
+
+    for index, summary_fields in enumerate(legacy_metadata_cases, start=1):
+        report_path = tmp_path / f"report-{index}.json"
+        (tmp_path / "execution_summary.json").write_text(
+            json.dumps(
+                {
+                    "status": "success",
+                    "statistical_summary": {},
+                    **summary_fields,
+                }
+            ),
+            encoding="utf-8",
+        )
+        report_path.write_text(
+            json.dumps(
+                {
+                    "query": "Which US regions look healthiest right now?",
+                    "title": "Regional Data Unavailable",
+                    "executive_summary": (
+                        "Census state-level data were unavailable after the "
+                        "source request failed."
+                    ),
+                    "markdown": (
+                        "## Hidden Stress By Place\n"
+                        "Census state-level data were unavailable after the "
+                        "source request failed, so regional rankings cannot be "
+                        "stated reliably."
+                    ),
+                    "charts": [],
+                    "data_sources": [],
+                    "metadata": {"word_count": 24},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        payload = json.loads(
+            submit_quality_decision.invoke(
+                {
+                    "decision": "approve",
+                    "report_path": str(report_path),
+                    "notes": "Looks acceptable.",
+                }
+            )
+        )
+
+        assert payload["status"] == "rejected"
+        assert payload["failure_category"] == "requested_coverage_missing"
+        assert payload["required_upstream"] == "quant-developer"
+        assert "source_coverage" in payload["reason"]
 
 
 def test_submit_quality_decision_accepts_artifact_backed_group_place_unavailable_caveat(
@@ -2951,7 +3972,7 @@ def test_submit_quality_decision_accepts_artifact_backed_group_dimension_unavail
                 {
                     "query": (
                         "Check whether national aggregates hide stress in specific "
-                        "groups or places."
+                        "consumer groups."
                     ),
                     "title": "Consumer Stress By Group",
                     "executive_summary": (

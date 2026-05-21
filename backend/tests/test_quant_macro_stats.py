@@ -1900,6 +1900,500 @@ def test_save_quant_outputs_writes_generic_evidence_payload(tmp_path):
     assert "preserved_report_aligned_charts" not in handoff
 
 
+def test_requested_geography_coverage_contract_and_handoff_preservation(tmp_path):
+    summary = {
+        "state_comparison": [
+            {"state": "California", "income": 91120},
+            {"state": "Texas", "income": 72360},
+        ],
+        "numeric_facts": [
+            qms.numeric_fact(
+                fact_id="state_comparison.CA.income",
+                label="California income",
+                raw_value=91120,
+                unit="usd_per_person",
+                precision=0,
+                tolerance=1,
+                source_key="state_comparison.CA.income",
+            )
+        ],
+    }
+    contract = qms.requested_geography_coverage(
+        "Which US regions look healthiest right now?",
+        summary,
+    )
+    summary["requested_geography_coverage"] = contract
+
+    handoff = qms.save_quant_outputs(
+        tmp_path,
+        charts={},
+        execution_summary=summary,
+    )
+    saved_summary = json.loads((tmp_path / "execution_summary.json").read_text())
+
+    assert contract["required"] is True
+    assert contract["status"] == "covered"
+    assert "state_comparison" in contract["evidence_keys"]
+    assert handoff["requested_geography_coverage"]["status"] == "covered"
+    assert saved_summary["requested_geography_coverage"]["requested_dimensions"] == [
+        "regional",
+        "place",
+    ]
+
+
+def test_requested_geography_coverage_rejects_single_numeric_fact_for_ranking_query():
+    single_fact = qms.numeric_fact(
+        fact_id="state_comparison.CA.income",
+        label="California income",
+        raw_value=91120,
+        unit="usd_per_person",
+        precision=0,
+        tolerance=1,
+        source_key="state_comparison.CA.income",
+    )
+    contract = qms.requested_geography_coverage(
+        "Which US regions look healthiest right now?",
+        {"numeric_facts": [single_fact]},
+    )
+    unavailable_contract = qms.requested_geography_coverage(
+        "Which US regions look healthiest right now?",
+        {
+            "numeric_facts": [single_fact],
+            "source_coverage": {
+                "census_acs_state": {
+                    "dimension": "state",
+                    "status": "not_available",
+                    "error": "Census state request failed.",
+                }
+            },
+        },
+    )
+    covered_contract = qms.requested_geography_coverage(
+        "Which US regions look healthiest right now?",
+        {
+            "numeric_facts": [
+                single_fact,
+                qms.numeric_fact(
+                    fact_id="state_comparison.TX.income",
+                    label="Texas income",
+                    raw_value=72360,
+                    unit="usd_per_person",
+                    precision=0,
+                    tolerance=1,
+                    source_key="state_comparison.TX.income",
+                ),
+            ]
+        },
+    )
+
+    assert contract["required"] is True
+    assert contract["status"] == "missing"
+    assert contract["evidence_keys"] == []
+    assert "at least two compatible geography entities" in contract["blocker"]
+    assert unavailable_contract["status"] == "unavailable"
+    assert covered_contract["status"] == "covered"
+    assert covered_contract["evidence_keys"] == ["numeric_facts"]
+
+
+def test_requested_geography_coverage_rejects_placeholder_rows_without_metrics():
+    contract = qms.requested_geography_coverage(
+        "Which US regions look healthiest right now?",
+        {
+            "state_comparison": [
+                {"state": "California"},
+                {"state": "Texas", "state_code": "TX"},
+            ],
+            "regional_top10": [{"region": "South"}],
+            "consumer_stress": {
+                "regional_context": [{"region": "Midwest", "source": "Census ACS"}]
+            },
+        },
+    )
+
+    assert contract["required"] is True
+    assert contract["status"] == "missing"
+    assert contract["evidence_keys"] == []
+    assert "matching structured geography evidence" in contract["blocker"]
+
+
+def test_requested_geography_coverage_ignores_self_attested_status():
+    self_reported_covered = qms.requested_geography_coverage(
+        "Which US regions look healthiest right now?",
+        {
+            "requested_geography_coverage": {
+                "required": True,
+                "status": "covered",
+                "evidence_keys": ["state_comparison"],
+            }
+        },
+    )
+    self_reported_unavailable = qms.requested_geography_coverage(
+        "Which US regions look healthiest right now?",
+        {
+            "requested_geography_coverage": {
+                "required": True,
+                "status": "unavailable",
+                "unavailable_sources": ["metadata.fetch_errors.census_acs_state"],
+            },
+            "limitations": ["Census state-level data were unavailable."],
+        },
+    )
+
+    assert self_reported_covered["status"] == "missing"
+    assert self_reported_covered["evidence_keys"] == []
+    assert self_reported_unavailable["status"] == "missing"
+    assert self_reported_unavailable["unavailable_sources"] == []
+    assert "source_coverage" in self_reported_unavailable["blocker"]
+
+
+def test_requested_geography_coverage_requires_nonempty_unavailable_signal():
+    query = "Which US regions look healthiest right now?"
+    empty_error_cases = [
+        {
+            "source_coverage": {
+                "census_acs_state": {
+                    "dimension": "state",
+                    "error": "",
+                }
+            }
+        },
+        {
+            "source_coverage": {
+                "census_acs_state": {
+                    "dimension": "state",
+                    "error": None,
+                }
+            }
+        },
+        {
+            "source_coverage": {
+                "census_acs_state": {
+                    "dimension": "state",
+                    "fetch_errors": [],
+                }
+            }
+        },
+        {
+            "metadata": {
+                "fetch_errors": {
+                    "census_acs_state": "",
+                }
+            }
+        },
+        {
+            "metadata": {
+                "fetch_errors": {
+                    "census_acs_state": None,
+                }
+            }
+        },
+        {
+            "source_coverage": {
+                "census_acs_state": {
+                    "dimension": "state",
+                    "error": "none",
+                }
+            }
+        },
+        {
+            "source_coverage": {
+                "census_acs_state": {
+                    "dimension": "state",
+                    "fetch_errors": ["ok"],
+                }
+            }
+        },
+        {
+            "metadata": {
+                "fetch_errors": {
+                    "census_acs_state": "ok",
+                }
+            }
+        },
+    ]
+
+    for summary in empty_error_cases:
+        contract = qms.requested_geography_coverage(query, summary)
+
+        assert contract["status"] == "missing"
+        assert contract["unavailable_sources"] == []
+        assert "source_coverage" in contract["blocker"]
+
+    nonempty_error = qms.requested_geography_coverage(
+        query,
+        {
+            "source_coverage": {
+                "census_acs_state": {
+                    "dimension": "state",
+                    "error": "Census state request failed.",
+                }
+            }
+        },
+    )
+    unavailable_status = qms.requested_geography_coverage(
+        query,
+        {
+            "source_coverage": {
+                "census_acs_state": {
+                    "dimension": "state",
+                    "status": "not_available",
+                    "error": "",
+                }
+            }
+        },
+    )
+    unavailable_flag = qms.requested_geography_coverage(
+        query,
+        {
+            "source_coverage": {
+                "census_acs_state": {
+                    "dimension": "state",
+                    "available": False,
+                    "error": None,
+                }
+            }
+        },
+    )
+    metadata_error = qms.requested_geography_coverage(
+        query,
+        {
+            "metadata": {
+                "fetch_errors": {
+                    "census_acs_state": "Census state request failed.",
+                }
+            }
+        },
+    )
+
+    assert nonempty_error["status"] == "unavailable"
+    assert unavailable_status["status"] == "unavailable"
+    assert unavailable_flag["status"] == "unavailable"
+    assert metadata_error["status"] == "unavailable"
+
+
+def test_requested_geography_coverage_ignores_ordinary_state_language():
+    for query in (
+        "What is the state of the economy?",
+        "What safeguards are in place for recession risk?",
+        "United States outlook for growth and inflation",
+    ):
+        contract = qms.requested_geography_coverage(
+            query,
+            {"state_comparison": [{"state": "California", "income": 91120}]},
+        )
+
+        assert contract["required"] is False
+        assert contract["requested_dimensions"] == []
+        assert contract["status"] == "not_required"
+        assert contract["evidence_keys"] == []
+
+    single_state_contract = qms.requested_geography_coverage(
+        "Which US states look healthiest right now?",
+        {"state_comparison": [{"state": "California", "income": 91120}]},
+    )
+    state_contract = qms.requested_geography_coverage(
+        "Which US states look healthiest right now?",
+        {
+            "state_comparison": [
+                {"state": "California", "income": 91120},
+                {"state": "Texas", "income": 72360},
+            ]
+        },
+    )
+
+    assert single_state_contract["required"] is True
+    assert single_state_contract["status"] == "missing"
+    assert state_contract["required"] is True
+    assert state_contract["requested_dimensions"] == ["state", "place"]
+    assert state_contract["status"] == "covered"
+
+
+def test_requested_geography_coverage_detects_named_and_ranked_state_requests():
+    for query in (
+        "How healthy is California's economy right now?",
+        "Compare California and Texas right now",
+        "Compare US states by unemployment",
+        "Rank states by unemployment",
+    ):
+        contract = qms.requested_geography_coverage(query, {})
+
+        assert contract["required"] is True
+        assert contract["requested_dimensions"] == ["state", "place"]
+        assert contract["status"] == "missing"
+
+
+def test_requested_geography_coverage_requires_named_state_entities():
+    mismatched_contract = qms.requested_geography_coverage(
+        "Compare California and Texas right now",
+        {
+            "state_comparison": [
+                {"state": "Florida", "income": 68420},
+                {"state": "New York", "income": 88850},
+            ]
+        },
+    )
+    mismatched_numeric_contract = qms.requested_geography_coverage(
+        "Compare California and Texas right now",
+        {
+            "numeric_facts": [
+                qms.numeric_fact(
+                    fact_id="state_comparison.FL.income",
+                    label="Florida income",
+                    raw_value=68420,
+                    unit="usd_per_person",
+                    precision=0,
+                    tolerance=1,
+                    source_key="state_comparison.FL.income",
+                ),
+                qms.numeric_fact(
+                    fact_id="state_comparison.NY.income",
+                    label="New York income",
+                    raw_value=88850,
+                    unit="usd_per_person",
+                    precision=0,
+                    tolerance=1,
+                    source_key="state_comparison.NY.income",
+                ),
+            ]
+        },
+    )
+    covered_contract = qms.requested_geography_coverage(
+        "Compare California and Texas right now",
+        {
+            "state_comparison": [
+                {"state": "California", "income": 91120},
+                {"state": "Texas", "income": 72360},
+                {"state": "Florida", "income": 68420},
+            ]
+        },
+    )
+
+    assert mismatched_contract["required"] is True
+    assert mismatched_contract["requested_entities"] == ["california", "texas"]
+    assert mismatched_contract["status"] == "missing"
+    assert mismatched_contract["evidence_keys"] == []
+    assert mismatched_numeric_contract["status"] == "missing"
+    assert mismatched_numeric_contract["evidence_keys"] == []
+    assert covered_contract["status"] == "covered"
+    assert covered_contract["requested_entities"] == ["california", "texas"]
+
+
+def test_requested_geography_coverage_requires_peer_entity_for_named_ranking():
+    single_structured = qms.requested_geography_coverage(
+        "Rank California among states by income",
+        {"state_comparison": [{"state": "California", "income": 91120}]},
+    )
+    single_numeric = qms.requested_geography_coverage(
+        "Rank California among states by income",
+        {
+            "numeric_facts": [
+                qms.numeric_fact(
+                    fact_id="state_comparison.CA.income",
+                    label="California income",
+                    raw_value=91120,
+                    unit="usd_per_person",
+                    precision=0,
+                    tolerance=1,
+                    source_key="state_comparison.CA.income",
+                )
+            ]
+        },
+    )
+    covered_contract = qms.requested_geography_coverage(
+        "Rank California among states by income",
+        {
+            "state_comparison": [
+                {"state": "California", "income": 91120},
+                {"state": "Texas", "income": 72360},
+            ]
+        },
+    )
+
+    assert single_structured["required"] is True
+    assert single_structured["requested_entities"] == ["california"]
+    assert single_structured["status"] == "missing"
+    assert single_structured["evidence_keys"] == []
+    assert single_numeric["status"] == "missing"
+    assert single_numeric["evidence_keys"] == []
+    assert covered_contract["status"] == "covered"
+
+
+def test_requested_geography_coverage_ignores_non_us_directional_terms():
+    for query in (
+        "South Korea growth outlook",
+        "West Texas Intermediate oil outlook",
+        "western Europe manufacturing outlook",
+        "coastal shipping outlook",
+        "Are regional banks under stress?",
+    ):
+        contract = qms.requested_geography_coverage(query, {})
+
+        assert contract["required"] is False
+        assert contract["requested_dimensions"] == []
+        assert contract["status"] == "not_required"
+
+    single_regional_contract = qms.requested_geography_coverage(
+        "Compare the South versus the Midwest right now",
+        {"regional_top10": [{"region": "South", "score": 72}]},
+    )
+    regional_contract = qms.requested_geography_coverage(
+        "Compare the South versus the Midwest right now",
+        {
+            "regional_top10": [
+                {"region": "South", "score": 72},
+                {"region": "Midwest", "score": 68},
+            ]
+        },
+    )
+
+    assert single_regional_contract["required"] is True
+    assert single_regional_contract["status"] == "missing"
+    assert regional_contract["required"] is True
+    assert regional_contract["requested_dimensions"] == ["regional", "place"]
+    assert regional_contract["status"] == "covered"
+
+
+def test_requested_geography_coverage_requires_matching_dimension():
+    county_contract = qms.requested_geography_coverage(
+        "Which counties look healthiest right now?",
+        {
+            "regional_top10": [{"state": "California", "score": 92}],
+            "state_comparison": [{"state": "California", "income": 91120}],
+            "source_coverage": {
+                "census_acs_state": {
+                    "dimension": "state",
+                    "status": "not_available",
+                    "error": "State request failed.",
+                }
+            },
+        },
+    )
+
+    assert county_contract["required"] is True
+    assert county_contract["requested_dimensions"] == ["county"]
+    assert county_contract["status"] == "missing"
+    assert county_contract["evidence_keys"] == []
+    assert county_contract["unavailable_sources"] == []
+    assert "matching structured geography evidence" in county_contract["blocker"]
+
+    county_unavailable = qms.requested_geography_coverage(
+        "Which counties look healthiest right now?",
+        {
+            "source_coverage": {
+                "census_acs_county": {
+                    "dimension": "county",
+                    "status": "not_available",
+                    "error": "County request failed.",
+                }
+            }
+        },
+    )
+
+    assert county_unavailable["status"] == "unavailable"
+    assert "source_coverage.census_acs_county" in county_unavailable["unavailable_sources"]
+    assert all("state" not in source for source in county_unavailable["unavailable_sources"])
+
+
 def test_save_quant_outputs_writes_artifact_fingerprint_manifest(tmp_path):
     source_path = tmp_path / "fred_unrate.csv"
     source_path.write_text("date,value\n2024-01,1.0\n", encoding="utf-8")

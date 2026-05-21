@@ -17,3 +17,9 @@ Use this skill for requests asking whether US consumers are under stress "region
 
 - Keep regional context compact. Prefer summary rows and a small state ranking table over wide state-by-month panels.
 - Preserve Census metadata and row counts in `execution_summary` for writer source coverage.
+- For any state, regional, or place-specific request, preserve
+  `requested_geography_coverage` in `execution_summary` using structured
+  regional evidence (`regional_top10`, `state_comparison`, or
+  `consumer_stress.regional_context`) or structured unavailable-source evidence
+  from `source_coverage` / `metadata.fetch_errors`; do not rely on a freeform
+  caveat string alone.

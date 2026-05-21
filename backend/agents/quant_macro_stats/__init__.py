@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from ..requested_coverage import requested_geography_coverage
 from .artifacts import (
     chart_provenance,
     display_value,
@@ -188,6 +189,7 @@ __all__ = [
     "recession_bands",
     "recession_window_summary",
     "requested_company_tickers",
+    "requested_geography_coverage",
     "resolve_company_fact_sources",
     "resolve_series_sources",
     "rolling_correlation",

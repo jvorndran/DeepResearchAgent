@@ -59,6 +59,22 @@ QUANT_HELPER_CATALOG: tuple[QuantHelperCategory, ...] = (
                 ),
                 preserves=("date", "named feature columns", "source-period freshness"),
             ),
+            QuantHelperSpec(
+                name="requested_geography_coverage",
+                import_path="agents.quant_macro_stats",
+                signature="requested_geography_coverage(query, execution_summary)",
+                use_when=(
+                    "Attach the requested_geography_coverage contract for "
+                    "state, regional, or place-specific prompts before saving "
+                    "quant artifacts."
+                ),
+                preserves=(
+                    "required",
+                    "requested_dimensions",
+                    "evidence_keys",
+                    "unavailable_sources",
+                ),
+            ),
         ),
     ),
     QuantHelperCategory(

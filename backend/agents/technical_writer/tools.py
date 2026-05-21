@@ -22,6 +22,10 @@ from ..artifact_fact_consistency import (
     artifact_fact_consistency_blocker,
     artifact_fact_consistency_dict,
 )
+from ..requested_coverage import (
+    compact_requested_geography_coverage,
+    requested_geography_coverage_blocker,
+)
 from agents.quant_macro_stats.artifacts.numeric_fact_contracts import (
     normalize_numeric_facts,
     numeric_fact_current_state_duration_misuse,
@@ -1049,6 +1053,7 @@ def _resolve_charts_json_path(
 def _compact_execution_summary(
     runtime: ToolRuntime[ResearchContext],
     execution_summary: str,
+    original_query: str = "",
 ) -> str:
     """Return writer-useful summary text from inline JSON or a job-local JSON path."""
     value = (execution_summary or "").strip()
@@ -1062,7 +1067,9 @@ def _compact_execution_summary(
     else:
         if isinstance(parsed, dict):
             return _append_source_context_summary(
-                _compact_execution_summary_payload(parsed), runtime, parsed
+                _compact_execution_summary_payload(parsed, original_query=original_query),
+                runtime,
+                parsed,
             )
         return json.dumps(parsed, ensure_ascii=False)[:4000]
 
@@ -1104,7 +1111,9 @@ def _compact_execution_summary(
 
     if isinstance(parsed, dict):
         return _append_source_context_summary(
-            _compact_execution_summary_payload(parsed), runtime, parsed
+            _compact_execution_summary_payload(parsed, original_query=original_query),
+            runtime,
+            parsed,
         )
     return json.dumps(parsed, ensure_ascii=False)[:4000]
 
@@ -1892,11 +1901,18 @@ def _is_non_empty_payload(value: Any) -> bool:
     return value is not None and value != ""
 
 
-def _helper_evidence_for_draft(parsed: dict[str, Any]) -> dict[str, Any]:
+def _helper_evidence_for_draft(
+    parsed: dict[str, Any],
+    original_query: str = "",
+) -> dict[str, Any]:
     evidence: dict[str, Any] = {}
     facts = _numeric_facts_from_summary(parsed)
     if facts:
         evidence["numeric_facts"] = facts
+
+    requested_geo = compact_requested_geography_coverage(original_query, parsed)
+    if requested_geo:
+        evidence["requested_geography_coverage"] = requested_geo
 
     for key in (
         "source_coverage",
@@ -1941,8 +1957,11 @@ def _render_mapping_fields(row: dict[str, Any], keys: tuple[str, ...]) -> list[s
     return fields
 
 
-def _compact_helper_evidence_payload(parsed: dict[str, Any]) -> str | None:
-    evidence = _helper_evidence_for_draft(parsed)
+def _compact_helper_evidence_payload(
+    parsed: dict[str, Any],
+    original_query: str = "",
+) -> str | None:
+    evidence = _helper_evidence_for_draft(parsed, original_query=original_query)
     if not evidence:
         return None
 
@@ -1968,6 +1987,29 @@ def _compact_helper_evidence_payload(parsed: dict[str, Any]) -> str | None:
                 rendered.append(f"{key}: " + "; ".join(fields))
         if rendered:
             lines.append("- source_coverage: " + " | ".join(rendered))
+
+    requested_geo = evidence.get("requested_geography_coverage")
+    if isinstance(requested_geo, dict):
+        fields = []
+        for key in ("required", "status", "scope"):
+            if key in requested_geo:
+                fields.append(f"{key}={requested_geo[key]}")
+        dimensions = requested_geo.get("requested_dimensions")
+        if isinstance(dimensions, list) and dimensions:
+            fields.append("requested_dimensions=" + ", ".join(str(item) for item in dimensions[:8]))
+        evidence_keys = requested_geo.get("evidence_keys")
+        if isinstance(evidence_keys, list) and evidence_keys:
+            fields.append("evidence_keys=" + ", ".join(str(item) for item in evidence_keys[:8]))
+        unavailable = requested_geo.get("unavailable_sources")
+        if isinstance(unavailable, list) and unavailable:
+            fields.append(
+                "unavailable_sources=" + ", ".join(str(item) for item in unavailable[:8])
+            )
+        blocker = requested_geo.get("blocker")
+        if isinstance(blocker, str) and blocker.strip():
+            fields.append("blocker=" + blocker.strip())
+        if fields:
+            lines.append("- requested_geography_coverage: " + "; ".join(fields))
 
     methods = evidence.get("methods_used")
     if isinstance(methods, list) and methods:
@@ -2594,7 +2636,11 @@ def _compact_validation_and_simulation_payload(parsed: dict) -> str | None:
     )
 
 
-def _compact_execution_summary_payload(parsed: dict) -> str:
+def _compact_execution_summary_payload(
+    parsed: dict,
+    *,
+    original_query: str = "",
+) -> str:
     parts: list[str] = []
     compact_limit = 4000
     stats = parsed.get("statistical_summary")
@@ -2605,7 +2651,10 @@ def _compact_execution_summary_payload(parsed: dict) -> str:
         parts.append(source_unit_summary)
         compact_limit = max(compact_limit, 8000)
 
-    helper_evidence_summary = _compact_helper_evidence_payload(parsed)
+    helper_evidence_summary = _compact_helper_evidence_payload(
+        parsed,
+        original_query=original_query,
+    )
     if helper_evidence_summary:
         parts.append(helper_evidence_summary)
         compact_limit = max(compact_limit, 9000)
@@ -2940,7 +2989,10 @@ def plan_report_structure(
     """
     charts_json_path = _resolve_charts_json_path(runtime, charts_json_path)
     execution_payload = _execution_summary_payload(runtime, execution_summary)
-    helper_evidence_for_draft = _helper_evidence_for_draft(execution_payload)
+    helper_evidence_for_draft = _helper_evidence_for_draft(
+        execution_payload,
+        original_query=original_query,
+    )
     _save_plan_context(
         runtime,
         charts_json_path=charts_json_path,
@@ -2989,7 +3041,11 @@ def plan_report_structure(
             "Use `chart_facts_for_draft` as the controlling chart contract; do not describe chart series, overlays, reference bands, rankings, nodes, or fields that are absent from those facts."
         )
 
-    execution_summary_for_draft = _compact_execution_summary(runtime, execution_summary)
+    execution_summary_for_draft = _compact_execution_summary(
+        runtime,
+        execution_summary,
+        original_query=original_query,
+    )
     if chart_facts_for_draft:
         execution_summary_for_draft = (
             chart_facts_for_draft
@@ -3172,6 +3228,7 @@ def write_research_report(
         if isinstance(helper_evidence, dict):
             for key in (
                 "numeric_facts",
+                "requested_geography_coverage",
                 "source_coverage",
                 "methods_used",
                 "chart_ids",
@@ -3187,6 +3244,22 @@ def write_research_report(
                 execution_payload.setdefault(key, value)
             for key, value in (helper_evidence.get("diagnostics") or {}).items():
                 execution_payload.setdefault(key, value)
+    requested_geography_blocker = requested_geography_coverage_blocker(
+        original_query,
+        execution_payload,
+    )
+    if requested_geography_blocker:
+        return json.dumps(
+            {
+                "status": "error",
+                "error": "requested_coverage_missing",
+                "failure_category": "requested_coverage_missing",
+                "required_upstream": "quant-developer",
+                "report_path": report_path,
+                "blockers": [requested_geography_blocker],
+                "message": requested_geography_blocker,
+            }
+        )
     artifact_fact_consistency = artifact_fact_consistency_dict(
         execution_summary=execution_payload,
         charts=charts_on_disk,

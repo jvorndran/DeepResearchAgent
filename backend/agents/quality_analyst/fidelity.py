@@ -13,6 +13,16 @@ from ..artifact_fact_consistency import (
     artifact_fact_consistency_blocker,
     artifact_fact_consistency_dict,
 )
+from ..requested_coverage import (
+    assess_requested_geography_coverage,
+    numeric_fact_geography_entity_keys,
+    numeric_fact_has_requested_geography_evidence,
+    query_requests_geography_coverage,
+    requested_geography_entity_keys,
+    requested_geography_minimum_entity_count,
+    structured_geography_row_entity_key,
+    structured_geography_row_metric_items,
+)
 from agents.quant_macro_stats.artifacts.numeric_fact_contracts import (
     normalize_numeric_facts,
     numeric_fact_current_state_duration_misuse,
@@ -113,7 +123,11 @@ _SHARE_COUNT_LIMITATION_ACK_RE = re.compile(
 _GROUP_PLACE_QUERY_RE = re.compile(
     r"\b(?:specific\s+groups?|groups?|subgroups?|cohorts?|"
     r"consumer\s+segments?|places?|"
-    r"geograph(?:y|ic|ical)?|regions?|regional|states|state[-\s]level|"
+    r"geograph(?:y|ic|ical)?|regions?|regionally|"
+    r"regional\s+(?:comparisons?|rankings?|break(?:out|down)s?|"
+    r"coverage|context|data|evidence|conditions?|stress|health|"
+    r"econom(?:y|ies)|labor\s+markets?|housing\s+markets?|"
+    r"consumer(?:s)?|households?)|states|state[-\s]level|"
     r"metros?|cities|"
     r"counties|zip\s*codes?|localities)\b",
     re.IGNORECASE,
@@ -201,7 +215,7 @@ _US_STATE_PLACE_RE = re.compile(
     re.IGNORECASE,
 )
 _GROUP_PLACE_PROVIDER_NAME_RE = re.compile(
-    r"\b(?:new\s+york\s+fed|ny\s+fed|"
+    r"\b(?:university\s+of\s+michigan|new\s+york\s+fed|ny\s+fed|"
     r"federal\s+reserve\s+bank\s+of\s+new\s+york|"
     r"new\s+york\s+federal\s+reserve)\b",
     re.IGNORECASE,
@@ -393,6 +407,12 @@ _GROUP_PLACE_METADATA_RECORD_KEYS = {
 _GROUP_PLACE_CLAUSE_BOUNDARY_RE = re.compile(
     r"(?<=[.!?])\s+|\s*[;|:]\s*|\s+(?:--?|-)\s+|"
     r"\s+\b(?:but|however|nevertheless|nonetheless|yet|so|therefore|thus)\b\s+",
+    re.IGNORECASE,
+)
+_STRUCTURED_GEOGRAPHY_ROW_CLAUSE_BOUNDARY_RE = re.compile(
+    r"(?<=[.!?])\s+|\s*[;|]\s*|\s+(?:--?|-)\s+|"
+    r"\s+\b(?:and|while|whereas|but|however|versus|vs\.?)\b\s+|"
+    r",\s+(?=[A-Za-z])",
     re.IGNORECASE,
 )
 _REAL_WAGE_NEGATIVE_CLAIM_RE = re.compile(
@@ -1331,10 +1351,13 @@ def _numeric_text_variants(value: object) -> set[str]:
 
 def _contains_numeric_variant(text: str, value: object) -> bool:
     variants = _numeric_text_variants(value)
-    return bool(variants) and any(variant in text for variant in variants)
+    return bool(variants) and any(
+        re.search(rf"(?<![\w.]){re.escape(variant)}(?![\w]|\.\d)", text)
+        for variant in variants
+    )
 
 
-_NUMERIC_TOKEN_RE = re.compile(r"(?<![\w.])-?\$?\d[\d,]*(?:\.\d+)?%?(?![\w.])")
+_NUMERIC_TOKEN_RE = re.compile(r"(?<![\w.])-?\$?\d[\d,]*(?:\.\d+)?%?(?![\w]|\.\d)")
 
 
 def _numeric_candidates(text: str) -> list[float]:
@@ -1863,7 +1886,10 @@ def _report_review_lines(report_data: dict[str, object]) -> list[str]:
 
 
 def _query_requests_group_place_coverage(query: object) -> bool:
-    return bool(_GROUP_PLACE_QUERY_RE.search(str(query or "")))
+    return bool(
+        _GROUP_PLACE_QUERY_RE.search(str(query or ""))
+        or query_requests_geography_coverage(query)
+    )
 
 
 def _strip_group_place_provider_names(text: str) -> str:
@@ -1953,6 +1979,344 @@ def _report_has_artifact_backed_group_place_evidence(
         for fact in facts
         for line in lines
     )
+
+
+def _normalized_requested_geography_entity_key(value: object) -> str | None:
+    text = str(value or "").strip().lower()
+    if not text:
+        return None
+    return re.sub(r"[-\s]+", "_", text)
+
+
+def _report_used_requested_geography_entity_keys(
+    summary: dict[str, object],
+    lines: list[str],
+    evidence_keys: tuple[str, ...],
+    requested_dimensions: tuple[str, ...],
+    minimum_entity_count: int,
+) -> set[str]:
+    entity_keys: set[str] = set()
+    if "numeric_facts" in evidence_keys:
+        for fact in _numeric_facts_from_summary(summary):
+            if not numeric_fact_has_requested_geography_evidence(
+                fact,
+                requested_dimensions,
+            ):
+                continue
+            if not any(
+                _line_matches_group_place_numeric_fact(line, fact) for line in lines
+            ):
+                continue
+            keys = numeric_fact_geography_entity_keys(fact)
+            if keys:
+                entity_keys.update(keys)
+                continue
+            if minimum_entity_count <= 1 and not entity_keys:
+                fallback_key = _normalized_requested_geography_entity_key(
+                    fact.get("subject")
+                    or fact.get("label")
+                    or fact.get("id")
+                    or fact.get("source_key")
+                )
+                if fallback_key:
+                    entity_keys.add(fallback_key)
+
+    for row in _iter_structured_geography_evidence_rows(summary, evidence_keys):
+        if not any(
+            _line_matches_structured_geography_row(line, row) for line in lines
+        ):
+            continue
+        entity_key = structured_geography_row_entity_key(row)
+        if entity_key:
+            entity_keys.add(entity_key)
+            continue
+        fallback_key = _normalized_requested_geography_entity_key(
+            _structured_geography_row_name(row)
+        )
+        if fallback_key:
+            entity_keys.add(fallback_key)
+    return entity_keys
+
+
+_GEOGRAPHY_ROW_NAME_KEYS = (
+    "state",
+    "state_name",
+    "region",
+    "region_name",
+    "name",
+    "subject",
+)
+
+
+def _iter_structured_geography_rows(value: object) -> Iterable[dict[str, object]]:
+    if isinstance(value, dict):
+        if any(str(value.get(key) or "").strip() for key in _GEOGRAPHY_ROW_NAME_KEYS):
+            yield value
+        for child in value.values():
+            if isinstance(child, (dict, list, tuple)):
+                yield from _iter_structured_geography_rows(child)
+        return
+    if isinstance(value, (list, tuple)):
+        for child in value:
+            yield from _iter_structured_geography_rows(child)
+
+
+def _structured_geography_row_name(row: dict[str, object]) -> str | None:
+    for key in _GEOGRAPHY_ROW_NAME_KEYS:
+        value = row.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+_STRUCTURED_GEOGRAPHY_METRIC_MARKER_MAP = {
+    "income": (
+        "income",
+        "median income",
+        "per capita income",
+        "personal income",
+    ),
+    "median_income": ("median income", "income"),
+    "per_capita_personal_income": (
+        "per capita personal income",
+        "personal income",
+        "per capita income",
+        "income",
+    ),
+    "unemployment_rate": (
+        "unemployment rate",
+        "unemployment",
+        "jobless rate",
+        "joblessness",
+    ),
+}
+_STRUCTURED_GEOGRAPHY_GENERIC_METRIC_TOKENS = {
+    "current",
+    "display",
+    "latest",
+    "metric",
+    "pct",
+    "percent",
+    "raw",
+    "rate",
+    "value",
+}
+
+
+def _structured_geography_metric_markers(metric_key: object) -> tuple[str, ...]:
+    metric_text = str(metric_key or "").strip().lower()
+    normalized = re.sub(r"[^a-z0-9]+", "_", metric_text).strip("_")
+    markers = list(_STRUCTURED_GEOGRAPHY_METRIC_MARKER_MAP.get(normalized, ()))
+    phrase = normalized.replace("_", " ").strip()
+    if phrase and phrase not in _STRUCTURED_GEOGRAPHY_GENERIC_METRIC_TOKENS:
+        markers.append(phrase)
+    for token in re.split(r"[^a-z0-9]+", metric_text):
+        if (
+            len(token) > 2
+            and token not in _STRUCTURED_GEOGRAPHY_GENERIC_METRIC_TOKENS
+        ):
+            markers.append(token)
+    return tuple(dict.fromkeys(markers))
+
+
+def _text_mentions_structured_geography_metric(
+    text: str,
+    metric_key: object,
+) -> bool:
+    return any(
+        re.search(rf"(?<!\w){re.escape(marker)}(?!\w)", text, re.IGNORECASE)
+        for marker in _structured_geography_metric_markers(metric_key)
+    )
+
+
+def _text_mentions_any_structured_geography_metric(
+    text: str,
+    metric_items: tuple[tuple[str, object], ...],
+) -> bool:
+    return any(
+        _text_mentions_structured_geography_metric(text, metric_key)
+        for metric_key, _ in metric_items
+    )
+
+
+def _structured_geography_numeric_values(value: object) -> tuple[float, ...]:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        candidates = [float(value)]
+    else:
+        candidates = _numeric_candidates(str(value or ""))
+
+    values: set[float] = set()
+    for candidate in candidates:
+        values.update({candidate, round(candidate, 1), round(candidate, 2)})
+        if abs(candidate) < 1:
+            percent_candidate = candidate * 100
+            values.update(
+                {
+                    percent_candidate,
+                    round(percent_candidate, 1),
+                    round(percent_candidate, 2),
+                }
+            )
+    return tuple(values)
+
+
+def _line_contains_structured_geography_value(line: str, value: object) -> bool:
+    expected_values = _structured_geography_numeric_values(value)
+    if not expected_values:
+        return False
+    return any(
+        abs(candidate - expected) <= 1e-9
+        for candidate in _numeric_candidates(line)
+        for expected in expected_values
+    )
+
+
+def _line_contains_structured_geography_name(line: str, name: str) -> bool:
+    return bool(
+        re.search(rf"(?<!\w){re.escape(name.strip())}(?!\w)", line, re.IGNORECASE)
+    )
+
+
+def _structured_geography_metric_value_is_unique(
+    metric_items: tuple[tuple[str, object], ...],
+    metric_index: int,
+    value: object,
+) -> bool:
+    expected_values = set(_structured_geography_numeric_values(value))
+    if not expected_values:
+        return False
+    for other_index, (_, other_value) in enumerate(metric_items):
+        if other_index == metric_index:
+            continue
+        if expected_values & set(_structured_geography_numeric_values(other_value)):
+            return False
+    return True
+
+
+def _structured_geography_row_candidate_segments(
+    line: str,
+    name: str,
+) -> tuple[str, ...]:
+    segments = [
+        segment.strip(" ,:-")
+        for segment in _STRUCTURED_GEOGRAPHY_ROW_CLAUSE_BOUNDARY_RE.split(line)
+        if segment.strip(" ,:-")
+    ]
+    matching_segments = tuple(
+        segment
+        for segment in segments
+        if _line_contains_structured_geography_name(segment, name)
+    )
+    if matching_segments:
+        return matching_segments
+    return (line,) if _line_contains_structured_geography_name(line, name) else ()
+
+
+def _line_matches_structured_geography_row(
+    line: str,
+    row: dict[str, object],
+    *,
+    context_line: str | None = None,
+) -> bool:
+    name = _structured_geography_row_name(row)
+    if not name or not _line_contains_structured_geography_name(line, name):
+        return False
+    metric_items = structured_geography_row_metric_items(row)
+    if not metric_items:
+        return False
+    context = context_line or line
+    for segment in _structured_geography_row_candidate_segments(line, name):
+        if not _line_has_group_place_evidence(segment):
+            continue
+        segment_mentions_metric = _text_mentions_any_structured_geography_metric(
+            segment,
+            metric_items,
+        )
+        context_mentions_metric = _text_mentions_any_structured_geography_metric(
+            context,
+            metric_items,
+        )
+        for metric_index, (metric_key, value) in enumerate(metric_items):
+            if not _line_contains_structured_geography_value(segment, value):
+                continue
+            if _text_mentions_structured_geography_metric(segment, metric_key):
+                return True
+            if (
+                not segment_mentions_metric
+                and context_mentions_metric
+                and _text_mentions_structured_geography_metric(context, metric_key)
+                and _structured_geography_metric_value_is_unique(
+                    metric_items,
+                    metric_index,
+                    value,
+                )
+            ):
+                return True
+    return False
+
+
+def _iter_structured_geography_evidence_rows(
+    summary: dict[str, object],
+    evidence_keys: tuple[str, ...] | None,
+) -> Iterable[dict[str, object]]:
+    enabled_keys = (
+        set(evidence_keys)
+        if evidence_keys is not None
+        else {"state_comparison", "regional_top10", "consumer_stress.regional_context"}
+    )
+    table_payloads: list[object] = []
+    if "state_comparison" in enabled_keys:
+        table_payloads.append(summary.get("state_comparison"))
+    if "regional_top10" in enabled_keys:
+        table_payloads.append(summary.get("regional_top10"))
+    if "consumer_stress.regional_context" in enabled_keys:
+        consumer = summary.get("consumer_stress")
+        if isinstance(consumer, dict):
+            table_payloads.append(consumer.get("regional_context"))
+
+    for payload in table_payloads:
+        yield from _iter_structured_geography_rows(payload)
+
+
+def _line_matches_structured_geography_evidence(
+    line: str,
+    summary: dict[str, object],
+    evidence_keys: tuple[str, ...] | None,
+    *,
+    context_line: str | None = None,
+) -> bool:
+    return any(
+        _line_matches_structured_geography_row(
+            line,
+            row,
+            context_line=context_line,
+        )
+        for row in _iter_structured_geography_evidence_rows(summary, evidence_keys)
+    )
+
+
+def _report_uses_requested_geography_evidence(
+    query: object,
+    summary: dict[str, object],
+    lines: list[str],
+    evidence_keys: tuple[str, ...],
+    requested_dimensions: tuple[str, ...],
+) -> bool:
+    minimum_entity_count = requested_geography_minimum_entity_count(
+        query,
+        requested_dimensions,
+    )
+    used_entities = _report_used_requested_geography_entity_keys(
+        summary,
+        lines,
+        evidence_keys,
+        requested_dimensions,
+        minimum_entity_count,
+    )
+    required_entities = requested_geography_entity_keys(query)
+    if required_entities and not set(required_entities).issubset(used_entities):
+        return False
+    return len(used_entities) >= minimum_entity_count
 
 
 def _normalized_group_place_metadata_key(value: object) -> str:
@@ -2311,6 +2675,7 @@ def _split_group_place_claim_clauses(line: str) -> list[str]:
 def _unsupported_specific_group_place_claim_lines(
     lines: list[str],
     summary: dict[str, object],
+    evidence_keys: tuple[str, ...] | None = None,
 ) -> list[str]:
     unsupported: list[str] = []
     facts = _numeric_facts_from_summary(summary)
@@ -2325,6 +2690,13 @@ def _unsupported_specific_group_place_claim_lines(
                 for fact in facts
             ):
                 continue
+            if _line_matches_structured_geography_evidence(
+                clause,
+                summary,
+                evidence_keys,
+                context_line=line,
+            ):
+                continue
             unsupported.append(clause)
             break
     return unsupported
@@ -2337,10 +2709,122 @@ def _requested_group_place_coverage_blocker(
     if not _query_requests_group_place_coverage(report_data.get("query")):
         return None
 
+    geography_coverage = assess_requested_geography_coverage(
+        report_data.get("query"),
+        summary,
+    )
     lines = _report_review_lines(report_data)
     caveat_lines = [
         line for line in lines if _line_has_group_place_unavailable_caveat(line)
     ]
+    if geography_coverage.required:
+        if geography_coverage.status == "missing":
+            if caveat_lines:
+                unsupported_lines = _unsupported_specific_group_place_claim_lines(
+                    lines,
+                    summary,
+                    geography_coverage.evidence_keys,
+                )
+                if unsupported_lines:
+                    examples = "; ".join(unsupported_lines[:3])
+                    return (
+                        "Report pairs an unavailable-data caveat with unsupported "
+                        "specific group/place claims. Remove or qualify the unsupported "
+                        f"claims before approval. Examples: {examples}"
+                    )
+            return geography_coverage.blocker
+
+        if geography_coverage.status == "unavailable":
+            if not caveat_lines:
+                return (
+                    "User query asks for state, regional, or place-specific "
+                    "coverage and execution_summary.json preserves structured "
+                    "unavailable-source evidence, but the report does not state "
+                    "the matching regional-data caveat. Add the artifact-backed "
+                    "unavailable-data caveat or regenerate with usable regional "
+                    "evidence."
+                )
+            unsupported_lines = _unsupported_specific_group_place_claim_lines(
+                lines,
+                summary,
+                geography_coverage.evidence_keys,
+            )
+            if unsupported_lines:
+                examples = "; ".join(unsupported_lines[:3])
+                return (
+                    "Report pairs an unavailable-data caveat with unsupported "
+                    "specific group/place claims. Remove or qualify the unsupported "
+                    f"claims before approval. Examples: {examples}"
+                )
+            return None
+
+        if geography_coverage.status in {"covered", "partial"}:
+            if not _report_uses_requested_geography_evidence(
+                report_data.get("query"),
+                summary,
+                lines,
+                geography_coverage.evidence_keys,
+                geography_coverage.requested_dimensions,
+            ):
+                evidence = ", ".join(geography_coverage.evidence_keys[:4])
+                return (
+                    "User query asks for state, regional, or place-specific "
+                    "coverage and execution_summary.json has structured geography "
+                    f"evidence ({evidence}), but the report does not use enough "
+                    "artifact-backed regional/state structured geography evidence. "
+                    "Regenerate the report from the requested geography evidence "
+                    "instead of delivering a national-only substitute."
+                )
+            if not caveat_lines:
+                if any(
+                    (
+                        _GROUP_PLACE_SELF_MISSING_RE.search(line)
+                        or _GROUP_PLACE_SCOPE_DRIFT_RE.search(line)
+                    )
+                    and _line_mentions_group_place_dimension(line)
+                    for line in lines
+                ):
+                    pass
+                else:
+                    return None
+            if geography_coverage.unavailable_sources:
+                unsupported_lines = _unsupported_specific_group_place_claim_lines(
+                    lines,
+                    summary,
+                    geography_coverage.evidence_keys,
+                )
+                if unsupported_lines:
+                    examples = "; ".join(unsupported_lines[:3])
+                    return (
+                        "Report pairs an unavailable-data caveat with unsupported "
+                        "specific group/place claims. Remove or qualify the unsupported "
+                        f"claims before approval. Examples: {examples}"
+                    )
+                return None
+            if caveat_lines:
+                unsupported_lines = _unsupported_specific_group_place_claim_lines(
+                    lines,
+                    summary,
+                    geography_coverage.evidence_keys,
+                )
+                if unsupported_lines:
+                    examples = "; ".join(unsupported_lines[:3])
+                    return (
+                        "Report pairs an unavailable-data caveat with unsupported "
+                        "specific group/place claims. Remove or qualify the unsupported "
+                        f"claims before approval. Examples: {examples}"
+                    )
+                return (
+                    "Report pairs structured geography evidence with an "
+                    "unavailable-data caveat, but execution_summary.json does not "
+                    "preserve matching structured unavailable-source evidence in "
+                    "source_coverage or metadata.fetch_errors. Preserve the matching "
+                    "source failure metadata or remove the unavailable-data caveat."
+                )
+            return None
+        else:
+            return None
+
     if caveat_lines:
         unsupported_lines = _unsupported_specific_group_place_claim_lines(
             lines,
@@ -4005,10 +4489,19 @@ def _approval_failure_metadata(report_path: str) -> dict[str, str]:
             "failure_category": "unsupported_share_count_claim",
             "required_upstream": "technical-writer",
         }
-    if _requested_group_place_coverage_blocker(data, summary):
+    requested_coverage = _requested_group_place_coverage_blocker(data, summary)
+    if requested_coverage:
+        geography_coverage = assess_requested_geography_coverage(
+            data.get("query"),
+            summary,
+        )
         return {
             "failure_category": "requested_coverage_missing",
-            "required_upstream": "technical-writer",
+            "required_upstream": (
+                "quant-developer"
+                if geography_coverage.required and geography_coverage.status == "missing"
+                else "technical-writer"
+            ),
         }
     if _statistical_summary_assessment_blocker(summary):
         return {
