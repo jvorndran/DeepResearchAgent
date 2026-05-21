@@ -1859,6 +1859,7 @@ _HELPER_DIAGNOSTIC_KEYS = (
     "validation_diagnostics",
     "event_backtest_metrics",
     "signal_validation_metrics",
+    "share_count_diagnostics",
     "latest_signal_observation",
     "signal_design",
     "forecast_origin",
@@ -1972,7 +1973,38 @@ def _compact_helper_evidence_payload(parsed: dict[str, Any]) -> str | None:
 
     diagnostics = evidence.get("diagnostics")
     if isinstance(diagnostics, dict):
+        rendered_diagnostic_keys: set[str] = set()
+        share_count_diagnostics = diagnostics.get("share_count_diagnostics")
+        if isinstance(share_count_diagnostics, dict) and share_count_diagnostics:
+            rendered_diagnostic_keys.add("share_count_diagnostics")
+            rendered = []
+            for ticker, diagnostic in list(share_count_diagnostics.items())[:10]:
+                if not isinstance(diagnostic, dict):
+                    continue
+                label = diagnostic.get("ticker") or ticker
+                fields = _render_mapping_fields(
+                    diagnostic,
+                    (
+                        "status",
+                        "comparability",
+                        "full_window_start_year",
+                        "full_window_end_year",
+                        "full_window_trend",
+                        "latest_comparable_start_year",
+                        "latest_comparable_end_year",
+                        "latest_comparable_trend",
+                        "latest_comparable_change_pct",
+                        "limitation",
+                    ),
+                )
+                if fields:
+                    rendered.append(f"{label}: " + "; ".join(fields))
+            if rendered:
+                lines.append("- share_count_diagnostics: " + " | ".join(rendered))
+
         for diagnostic_key, diagnostic in diagnostics.items():
+            if diagnostic_key in rendered_diagnostic_keys:
+                continue
             if not isinstance(diagnostic, dict) or not diagnostic:
                 continue
             diagnostic_keys = [

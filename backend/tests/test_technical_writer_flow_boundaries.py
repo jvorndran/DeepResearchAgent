@@ -2469,6 +2469,47 @@ def test_plan_report_structure_compacts_top_level_helper_evidence(tmp_path):
     assert result["helper_evidence_for_draft"]["tables"]["analog_similarity_ranking"][0]["label"] == "2001 recession"
 
 
+def test_plan_report_structure_surfaces_share_count_diagnostics(tmp_path):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text("{}", encoding="utf-8")
+
+    result = json.loads(
+        plan_report_structure.func(
+            query_type="company_fundamental_research",
+            charts_json_path=str(charts_path),
+            execution_summary=json.dumps(
+                {
+                    "share_count_diagnostics": {
+                        "AAPL": {
+                            "ticker": "AAPL",
+                            "status": "split_affected",
+                            "comparability": "raw_full_series_uncomparable",
+                            "full_window_start_year": 2019,
+                            "full_window_end_year": 2021,
+                            "full_window_trend": "raw_full_series_uncomparable",
+                            "latest_comparable_start_year": 2020,
+                            "latest_comparable_end_year": 2021,
+                            "latest_comparable_trend": "buyback",
+                            "latest_comparable_change_pct": -3.43,
+                            "limitation": (
+                                "Raw SEC share counts have large adjacent "
+                                "discontinuities consistent with stock splits."
+                            ),
+                        }
+                    }
+                }
+            ),
+            original_query="Assess Apple fundamentals and buyback durability.",
+            runtime=_Runtime(),
+        )
+    )
+
+    draft = result["execution_summary_for_draft"]
+    assert "share_count_diagnostics: AAPL" in draft
+    assert "comparability=raw_full_series_uncomparable" in draft
+    assert "latest_comparable_trend=buyback" in draft
+
+
 def test_plan_report_structure_preserves_combined_consumer_acceptance_schema(tmp_path):
     charts_path = tmp_path / "charts.json"
     charts_path.write_text("{}", encoding="utf-8")

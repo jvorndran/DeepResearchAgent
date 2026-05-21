@@ -14,6 +14,15 @@ from mcp_clients.market_data_provider import DisabledMarketDataProvider
 from mcp_clients.sec_edgar_contract import SEC_COMPANY_FACT_PROVENANCE_CONTRACT
 
 from ..artifacts.numeric_fact_contracts import numeric_fact
+from ..share_count_diagnostics import (
+    SHARE_COUNT_COMPARABILITY_COMPARABLE,
+    SHARE_COUNT_COMPARABILITY_UNCOMPARABLE,
+    SHARE_COUNT_SPLIT_LIMITATION,
+    SHARE_COUNT_STATUS_COMPARABLE,
+    SHARE_COUNT_STATUS_SPLIT_AFFECTED,
+    SHARE_COUNT_TREND_UNCOMPARABLE,
+    share_count_trend_from_change_pct,
+)
 from .._utils import (
     METHOD_SEC_COMPANY_FACTS_SUMMARY,
     _finite_float,
@@ -48,6 +57,7 @@ _COMPANY_NAME_ALIASES = {
     "TSLA": ("tesla",),
 }
 _matching_key = partial(find_data_file_key, allow_prefix=True)
+_SHARE_COUNT_DISCONTINUITY_RATIO = 1.8
 
 
 def summarize_sec_company_facts(
@@ -660,6 +670,116 @@ def _company_history_rows(ticker: str, frame: pd.DataFrame) -> list[dict[str, An
     return rows
 
 
+def _share_count_values(
+    history_rows: list[dict[str, Any]],
+) -> list[tuple[int, float]]:
+    values: list[tuple[int, float]] = []
+    for row in history_rows:
+        shares = _finite(row.get("shares_b"))
+        fiscal_year = _finite(row.get("fiscal_year"))
+        if shares is None or fiscal_year is None or shares <= 0:
+            continue
+        values.append((int(fiscal_year), float(shares)))
+    return values
+
+
+def _share_count_change_pct(values: list[tuple[int, float]]) -> float | None:
+    if len(values) < 2:
+        return None
+    start = values[0][1]
+    end = values[-1][1]
+    if start <= 0:
+        return None
+    return (end / start - 1.0) * 100.0
+
+
+def _share_count_discontinuities(
+    values: list[tuple[int, float]],
+) -> list[dict[str, Any]]:
+    discontinuities: list[dict[str, Any]] = []
+    lower_bound = 1.0 / _SHARE_COUNT_DISCONTINUITY_RATIO
+    for (from_year, from_shares), (to_year, to_shares) in zip(values, values[1:]):
+        if from_shares <= 0:
+            continue
+        ratio = to_shares / from_shares
+        if lower_bound < ratio < _SHARE_COUNT_DISCONTINUITY_RATIO:
+            continue
+        discontinuities.append(
+            {
+                "from_fiscal_year": from_year,
+                "to_fiscal_year": to_year,
+                "from_shares_b": _round(from_shares, 3),
+                "to_shares_b": _round(to_shares, 3),
+                "ratio": _round(ratio, 3),
+                "change_pct": _round((ratio - 1.0) * 100.0, 2),
+                "direction": "increase" if ratio > 1.0 else "decrease",
+            }
+        )
+    return discontinuities
+
+
+def _latest_comparable_share_segment(
+    values: list[tuple[int, float]],
+    discontinuities: list[dict[str, Any]],
+) -> list[tuple[int, float]]:
+    if not discontinuities:
+        return values
+    latest_start_year = discontinuities[-1].get("to_fiscal_year")
+    if latest_start_year is None:
+        return values[-1:]
+    return [
+        (year, shares)
+        for year, shares in values
+        if year >= int(latest_start_year)
+    ]
+
+
+def _share_count_diagnostic(
+    ticker: str,
+    history_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    values = _share_count_values(history_rows)
+    if not values:
+        return {
+            "ticker": ticker,
+            "metric": "shares_b",
+            "status": "not_available",
+            "comparability": "not_available",
+            "limitation": "SEC company-facts rows do not include usable raw share-count values.",
+        }
+
+    discontinuities = _share_count_discontinuities(values)
+    full_change = _share_count_change_pct(values)
+    latest_segment = _latest_comparable_share_segment(values, discontinuities)
+    latest_change = _share_count_change_pct(latest_segment)
+    split_affected = bool(discontinuities)
+    diagnostic = {
+        "ticker": ticker,
+        "metric": "shares_b",
+        "status": SHARE_COUNT_STATUS_SPLIT_AFFECTED
+        if split_affected
+        else SHARE_COUNT_STATUS_COMPARABLE,
+        "comparability": SHARE_COUNT_COMPARABILITY_UNCOMPARABLE
+        if split_affected
+        else SHARE_COUNT_COMPARABILITY_COMPARABLE,
+        "full_window_start_year": values[0][0],
+        "full_window_end_year": values[-1][0],
+        "full_window_periods": len(values),
+        "full_window_change_pct": None if split_affected else _round(full_change, 2),
+        "full_window_trend": SHARE_COUNT_TREND_UNCOMPARABLE
+        if split_affected
+        else share_count_trend_from_change_pct(full_change),
+        "latest_comparable_start_year": latest_segment[0][0],
+        "latest_comparable_end_year": latest_segment[-1][0],
+        "latest_comparable_periods": len(latest_segment),
+        "latest_comparable_change_pct": _round(latest_change, 2),
+        "latest_comparable_trend": share_count_trend_from_change_pct(latest_change),
+        "discontinuities": discontinuities,
+        "limitation": SHARE_COUNT_SPLIT_LIMITATION if split_affected else None,
+    }
+    return _drop_empty(diagnostic)
+
+
 def _latest_fundamentals(
     ticker: str,
     summary: dict[str, Any],
@@ -700,6 +820,7 @@ def _trend_diagnostics(
     ticker: str,
     latest: dict[str, Any],
     history_rows: list[dict[str, Any]],
+    share_count_diagnostic: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     last_three = history_rows[-3:]
     revenue_growth = [
@@ -709,7 +830,7 @@ def _trend_diagnostics(
     ]
     margin_rows = [row for row in last_three if row.get("net_margin_pct") is not None]
     fcf_rows = [row for row in last_three if row.get("free_cash_flow_margin_pct") is not None]
-    return {
+    diagnostics = {
         "ticker": ticker,
         "latest_fiscal_year": latest.get("fiscal_year"),
         "revenue_cagr_pct": latest.get("revenue_cagr_pct"),
@@ -733,6 +854,28 @@ def _trend_diagnostics(
         if len(fcf_rows) >= 2
         else None,
     }
+    if share_count_diagnostic:
+        diagnostics.update(
+            _drop_empty(
+                {
+                    "share_count_status": share_count_diagnostic.get("status"),
+                    "share_count_comparability": share_count_diagnostic.get(
+                        "comparability"
+                    ),
+                    "share_count_full_window_trend": share_count_diagnostic.get(
+                        "full_window_trend"
+                    ),
+                    "share_count_latest_comparable_trend": share_count_diagnostic.get(
+                        "latest_comparable_trend"
+                    ),
+                    "share_count_latest_comparable_change_pct": (
+                        share_count_diagnostic.get("latest_comparable_change_pct")
+                    ),
+                    "share_count_limitation": share_count_diagnostic.get("limitation"),
+                }
+            )
+        )
+    return diagnostics
 
 
 def _fiscal_window(row: dict[str, Any]) -> tuple[pd.Timestamp, pd.Timestamp]:
@@ -804,7 +947,13 @@ def _source_coverage(
     return {
         "sec_company_facts": {
             "status": "covered" if company_count else "not_available",
-            "evidence_keys": ["history_rows", "latest_fundamentals"] if company_count else [],
+            "evidence_keys": [
+                "history_rows",
+                "latest_fundamentals",
+                "share_count_diagnostics",
+            ]
+            if company_count
+            else [],
             "provider": "SEC EDGAR",
             "source": "SEC data.sec.gov companyfacts API",
             "frequency": "annual",
@@ -991,6 +1140,7 @@ def sec_company_facts_evidence(
     source_keys: dict[str, str] = {}
     fiscal_coverage: dict[str, Any] = {}
     trend_rows: list[dict[str, Any]] = []
+    share_count_diagnostics: dict[str, dict[str, Any]] = {}
     sec_fact_provenance: dict[str, Any] = {}
     provenance_by_ticker: dict[str, dict[str, dict[str, Any]]] = {}
     source_unit_metadata: list[dict[str, Any]] = []
@@ -1013,6 +1163,8 @@ def sec_company_facts_evidence(
             continue
         rows = _company_history_rows(ticker, frame)
         latest = _latest_fundamentals(ticker, summary, rows)
+        share_count_diagnostic = _share_count_diagnostic(ticker, rows)
+        share_count_diagnostics[ticker] = share_count_diagnostic
         provenance = _sec_fact_provenance_payload(ticker, source, frame)
         latest_metric_provenance = provenance.get("latest_metrics")
         if isinstance(latest_metric_provenance, dict):
@@ -1046,7 +1198,14 @@ def sec_company_facts_evidence(
             "source_key": source["source_key"],
             "path": source["path"],
         }
-        trend_rows.append(_trend_diagnostics(ticker, latest, rows))
+        trend_rows.append(
+            _trend_diagnostics(
+                ticker,
+                latest,
+                rows,
+                share_count_diagnostic=share_count_diagnostic,
+            )
+        )
 
     history_rows = sorted(history_rows, key=lambda row: (str(row["ticker"]), int(row["fiscal_year"])))
     if include_macro_overlay and history_rows:
@@ -1082,6 +1241,15 @@ def sec_company_facts_evidence(
         for key, payload in source_coverage.items()
         if isinstance(payload, dict) and payload.get("status") == "not_available"
     ]
+    limitations = [
+        "SEC company-facts evidence is annual standardized fundamentals; segment, customer, backlog, valuation, and management-guidance data are not included.",
+        "Fiscal-year macro overlay rows are contextual FRED evidence and are not a causal estimate or forecast of company performance.",
+    ]
+    if any(
+        diagnostic.get("status") == SHARE_COUNT_STATUS_SPLIT_AFFECTED
+        for diagnostic in share_count_diagnostics.values()
+    ):
+        limitations.append(SHARE_COUNT_SPLIT_LIMITATION)
 
     return {
         "schema_version": 1,
@@ -1100,6 +1268,7 @@ def sec_company_facts_evidence(
         "history_rows": history_rows,
         "latest_fundamentals": latest_by_ticker,
         "trend_diagnostics": trend_rows,
+        "share_count_diagnostics": share_count_diagnostics,
         "macro_overlay": macro_overlay,
         "company_macro_sensitivity": macro_sensitivity,
         "company_context_status": company_status,
@@ -1108,8 +1277,5 @@ def sec_company_facts_evidence(
         "unavailable_claim_categories": unavailable_claim_categories,
         "numeric_facts": numeric_facts,
         "methods_used": [_METHOD, _SEC_SUMMARY_METHOD],
-        "limitations": [
-            "SEC company-facts evidence is annual standardized fundamentals; segment, customer, backlog, valuation, and management-guidance data are not included.",
-            "Fiscal-year macro overlay rows are contextual FRED evidence and are not a causal estimate or forecast of company performance.",
-        ],
+        "limitations": limitations,
     }

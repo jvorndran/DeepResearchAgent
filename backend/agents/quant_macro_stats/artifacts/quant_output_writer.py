@@ -11,6 +11,11 @@ from ...artifact_fact_consistency import (
 from .chart_provenance import normalize_chart_provenance
 from .chart_source_validation import validate_chart_source_tables
 from .evidence_bundle import build_evidence_bundle
+from ..share_count_diagnostics import (
+    append_share_count_limitation,
+    source_series_uses_raw_shares,
+    split_affected_share_count_diagnostics,
+)
 from .artifact_fingerprints import (
     build_artifact_fingerprints,
     finalize_evidence_bundle_fingerprint_bytes,
@@ -70,6 +75,7 @@ def save_quant_outputs(
     _preserve_source_unit_contract(summary)
     _attach_generated_by(summary, output_path)
     _preserve_chart_provenance(chart_map, summary, chart_ids)
+    _attach_raw_share_chart_limitations(chart_map, summary, chart_ids)
 
     summary["charts_json"] = str(charts_path)
     summary["execution_summary_json"] = str(summary_path)
@@ -180,6 +186,42 @@ def _preserve_chart_provenance(
         summary["chart_provenance"] = preserved
     else:
         summary.pop("chart_provenance", None)
+
+
+def _attach_raw_share_chart_limitations(
+    chart_map: dict[str, Any],
+    summary: dict[str, Any],
+    chart_ids: list[str],
+) -> None:
+    """Mark raw share-count charts when helper diagnostics flag split effects."""
+
+    if not split_affected_share_count_diagnostics(summary.get("share_count_diagnostics")):
+        return
+
+    summary_provenance = summary.get("chart_provenance")
+    if not isinstance(summary_provenance, dict):
+        summary_provenance = {}
+
+    updated: dict[str, Any] = dict(summary_provenance)
+    for chart_id in chart_ids:
+        chart = chart_map.get(chart_id)
+        if not isinstance(chart, dict):
+            continue
+        provenance = chart.get("provenance")
+        if not isinstance(provenance, dict):
+            provenance = normalize_chart_provenance(summary_provenance.get(chart_id))
+        if not source_series_uses_raw_shares(provenance.get("source_series")):
+            continue
+
+        provenance = dict(provenance)
+        provenance["limitations"] = append_share_count_limitation(
+            provenance.get("limitations")
+        )
+        chart["provenance"] = provenance
+        updated[str(chart_id)] = provenance
+
+    if updated:
+        summary["chart_provenance"] = updated
 
 
 def _merge_chart_projection_transforms(

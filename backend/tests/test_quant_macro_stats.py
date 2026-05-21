@@ -1044,6 +1044,54 @@ def test_sec_company_facts_helpers_emit_generic_evidence_rows(tmp_path):
     assert "contract_type" not in evidence
 
 
+def test_sec_company_facts_share_count_diagnostics_flag_split_discontinuity(tmp_path):
+    sec_path = tmp_path / "aapl_sec_edgar_company_facts.csv"
+    pd.DataFrame(
+        _with_sec_test_provenance(
+            [
+                {
+                    "fiscal_year": 2019,
+                    "revenue": 100_000_000_000,
+                    "net_income": 20_000_000_000,
+                    "shares": 4_650_000_000,
+                },
+                {
+                    "fiscal_year": 2020,
+                    "revenue": 110_000_000_000,
+                    "net_income": 21_000_000_000,
+                    "shares": 17_500_000_000,
+                },
+                {
+                    "fiscal_year": 2021,
+                    "revenue": 120_000_000_000,
+                    "net_income": 22_000_000_000,
+                    "shares": 16_900_000_000,
+                },
+            ]
+        )
+    ).to_csv(sec_path, index=False)
+
+    evidence = qms.sec_company_facts_evidence(
+        {"AAPL_SEC": str(sec_path)},
+        query="Assess Apple share-count trend and buybacks.",
+        tickers=["AAPL"],
+        include_macro_overlay=False,
+    )
+
+    diagnostic = evidence["share_count_diagnostics"]["AAPL"]
+    assert diagnostic["status"] == "split_affected"
+    assert diagnostic["comparability"] == "raw_full_series_uncomparable"
+    assert diagnostic["full_window_trend"] == "raw_full_series_uncomparable"
+    assert diagnostic["latest_comparable_trend"] == "buyback"
+    assert diagnostic["discontinuities"][0]["from_fiscal_year"] == 2019
+    assert diagnostic["discontinuities"][0]["to_fiscal_year"] == 2020
+    assert diagnostic["discontinuities"][0]["ratio"] == pytest.approx(3.763)
+    trend = evidence["trend_diagnostics"][0]
+    assert trend["share_count_comparability"] == "raw_full_series_uncomparable"
+    assert trend["share_count_latest_comparable_trend"] == "buyback"
+    assert any("Raw SEC share counts" in item for item in evidence["limitations"])
+
+
 def test_sec_company_facts_helpers_omit_facts_with_partial_component_provenance(tmp_path):
     sec_path = tmp_path / "aapl_sec_edgar_company_facts.csv"
     rows = _with_sec_test_provenance(
@@ -2806,6 +2854,79 @@ def test_save_quant_outputs_auto_attaches_sec_helper_evidence(tmp_path):
     assert market_source["coverage"]["capability_list"]
     assert market_source["coverage"]["limitation"]
     assert handoff["latest_fundamentals"]["NVDA"]["revenue_b"] == pytest.approx(215.938)
+
+
+def test_save_quant_outputs_sanitizes_split_affected_share_trends(tmp_path):
+    sec_path = tmp_path / "AAPL_sec_edgar_company_facts.csv"
+    pd.DataFrame(
+        _with_sec_test_provenance(
+            [
+                {
+                    "fiscal_year": 2019,
+                    "revenue": 100_000_000_000,
+                    "net_income": 20_000_000_000,
+                    "shares": 4_650_000_000,
+                },
+                {
+                    "fiscal_year": 2020,
+                    "revenue": 110_000_000_000,
+                    "net_income": 21_000_000_000,
+                    "shares": 17_500_000_000,
+                },
+                {
+                    "fiscal_year": 2021,
+                    "revenue": 120_000_000_000,
+                    "net_income": 22_000_000_000,
+                    "shares": 16_900_000_000,
+                },
+            ]
+        )
+    ).to_csv(sec_path, index=False)
+    charts = {
+        "share_count_trend": {
+            "type": "line",
+            "title": "Shares Outstanding",
+            "data": [
+                {"fiscal_year": "2019", "AAPL": 4.65},
+                {"fiscal_year": "2020", "AAPL": 17.5},
+                {"fiscal_year": "2021", "AAPL": 16.9},
+            ],
+            "series": [{"dataKey": "AAPL", "name": "AAPL"}],
+            "xAxis": {"dataKey": "fiscal_year"},
+            **_chart_traceability(
+                "sec_company_facts",
+                "sec_share_count_trend",
+            ),
+            "provenance": qms.chart_provenance(source_series=["shares"]),
+        }
+    }
+
+    handoff = qms.save_quant_outputs(
+        tmp_path,
+        charts,
+        {
+            "source_files": {"sec_company_facts": str(sec_path)},
+            "quant_input_manifest": {"data_files": {"AAPL_SEC": str(sec_path)}},
+            "statistical_summary": {"AAPL": {"shares_trend": "dilution"}},
+        },
+    )
+    saved_summary = json.loads((tmp_path / "execution_summary.json").read_text())
+    saved_charts = json.loads((tmp_path / "charts.json").read_text())
+
+    diagnostic = saved_summary["share_count_diagnostics"]["AAPL"]
+    assert diagnostic["status"] == "split_affected"
+    assert saved_summary["statistical_summary"]["AAPL"]["shares_trend"] == (
+        "raw_full_series_uncomparable"
+    )
+    assert saved_summary["statistical_summary"]["AAPL"][
+        "shares_latest_comparable_trend"
+    ] == "buyback"
+    limitations = saved_summary["chart_provenance"]["share_count_trend"]["limitations"]
+    assert any("Raw SEC share counts" in item for item in limitations)
+    assert saved_charts["share_count_trend"]["provenance"]["limitations"] == limitations
+    assert handoff["share_count_diagnostics"]["AAPL"]["comparability"] == (
+        "raw_full_series_uncomparable"
+    )
 
 
 def test_save_quant_outputs_rejects_unbuildable_sec_helper_evidence(tmp_path):

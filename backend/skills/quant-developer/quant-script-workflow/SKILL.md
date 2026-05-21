@@ -112,9 +112,14 @@ report-specific shortcut tool.
 - For fuller company evidence, call `sec_company_facts_evidence(...)` with
   resolved SEC fact sources and optional macro overlay data. Use helper
   fields such as `latest_fundamentals`, `history_rows`, `trend_diagnostics`,
-  `macro_overlay`, `company_macro_sensitivity`, `numeric_facts`, and
-  `source_coverage`; `company_macro_sensitivity` is numeric/context evidence,
-  not a prewritten company risk narrative.
+  `share_count_diagnostics`, `macro_overlay`, `company_macro_sensitivity`,
+  `numeric_facts`, and `source_coverage`; `company_macro_sensitivity` is
+  numeric/context evidence, not a prewritten company risk narrative.
+- SEC company-facts share counts are raw. If `share_count_diagnostics` marks
+  a ticker's full raw series as `split_affected` or
+  `raw_full_series_uncomparable`, do not compute full-window buyback/dilution
+  labels from `shares`; use the latest comparable segment fields or state the
+  raw/split limitation.
 - For company projection or stress questions, compose projection/scenario rows
   in `analysis.py` from `latest_fundamentals`, `history_rows`,
   trend diagnostics, macro overlay rows, and explicit caller assumptions; save

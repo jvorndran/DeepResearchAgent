@@ -3620,6 +3620,180 @@ def test_submit_quality_decision_rejects_unsupported_valuation_claim(tmp_path):
     assert "valuation_market_data.status=not_available" in payload["reason"]
 
 
+def test_submit_quality_decision_rejects_split_affected_share_count_claim(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "chart_ids": [],
+                "latest_fundamentals": {"AAPL": {"revenue_b": 120.0}},
+                "source_coverage": {"sec_company_facts": {"status": "covered"}},
+                "share_count_diagnostics": {
+                    "AAPL": {
+                        "ticker": "AAPL",
+                        "status": "split_affected",
+                        "comparability": "raw_full_series_uncomparable",
+                        "latest_comparable_trend": "buyback",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "job_id": "qa-share-count-split",
+                "created_at": "2026-05-14T12:00:00Z",
+                "query": "Prepare an Apple fundamentals report with share-count trends.",
+                "title": "Apple Fundamentals",
+                "executive_summary": "AAPL shows dilution across the full period.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "AAPL's share count increased materially, showing dilution."
+                ),
+                "charts": {},
+                "data_sources": [],
+                "metadata": {"analysis_type": "earnings", "chart_count": 0, "word_count": 12},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "unsupported_share_count_claim"
+    assert payload["required_upstream"] == "technical-writer"
+    assert "share_count_diagnostics" in payload["reason"]
+
+
+def test_submit_quality_decision_accepts_split_aware_share_count_caveat(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "chart_ids": [],
+                "latest_fundamentals": {"AAPL": {"revenue_b": 120.0}},
+                "source_coverage": {"sec_company_facts": {"status": "covered"}},
+                "share_count_diagnostics": {
+                    "AAPL": {
+                        "ticker": "AAPL",
+                        "status": "split_affected",
+                        "comparability": "raw_full_series_uncomparable",
+                        "latest_comparable_trend": "buyback",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "job_id": "qa-share-count-caveat",
+                "created_at": "2026-05-14T12:00:00Z",
+                "query": "Prepare an Apple fundamentals report with share-count trends.",
+                "title": "Apple Fundamentals",
+                "executive_summary": "AAPL share-count evidence is caveated.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "AAPL's raw share-count series is split-affected and not "
+                    "comparable for full-period dilution; the latest comparable "
+                    "segment shows buybacks."
+                ),
+                "charts": {},
+                "data_sources": [],
+                "metadata": {"analysis_type": "earnings", "chart_count": 0, "word_count": 19},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Caveated share-count language.",
+            }
+        )
+    )
+
+    assert payload["status"] == "approved"
+
+
+def test_submit_quality_decision_accepts_split_affected_non_share_trend_buybacks(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "chart_ids": [],
+                "latest_fundamentals": {"AAPL": {"revenue_b": 120.0}},
+                "source_coverage": {"sec_company_facts": {"status": "covered"}},
+                "share_count_diagnostics": {
+                    "AAPL": {
+                        "ticker": "AAPL",
+                        "status": "split_affected",
+                        "comparability": "raw_full_series_uncomparable",
+                        "latest_comparable_trend": "buyback",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "job_id": "qa-share-count-buyback-capital-return",
+                "created_at": "2026-05-14T12:00:00Z",
+                "query": "Prepare an Apple fundamentals report.",
+                "title": "Apple Fundamentals",
+                "executive_summary": (
+                    "AAPL returns capital through buybacks while cash generation "
+                    "remains durable."
+                ),
+                "markdown": (
+                    "## Executive Summary\n"
+                    "AAPL returns capital through buybacks while cash generation "
+                    "remains durable."
+                ),
+                "charts": {},
+                "data_sources": [],
+                "metadata": {"analysis_type": "earnings", "chart_count": 0, "word_count": 15},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Capital-return buyback language, not a share-count trend.",
+            }
+        )
+    )
+
+    assert payload["status"] == "approved"
+
+
 def test_submit_quality_decision_rejects_manual_sec_facts_from_source_files(tmp_path):
     report_path = tmp_path / "report.json"
     (tmp_path / "execution_summary.json").write_text(

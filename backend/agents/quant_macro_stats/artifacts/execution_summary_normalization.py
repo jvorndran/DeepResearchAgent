@@ -8,6 +8,11 @@ from ..company.sec_company_facts_evidence import (
     is_sec_company_facts_file,
     sec_company_facts_evidence,
 )
+from ..share_count_diagnostics import (
+    SHARE_COUNT_COMPARABILITY_UNCOMPARABLE,
+    SHARE_COUNT_TREND_UNCOMPARABLE,
+    split_affected_share_count_diagnostics,
+)
 from .numeric_fact_contracts import normalize_numeric_facts
 from .source_unit_fidelity import normalize_source_unit_metadata
 
@@ -51,6 +56,7 @@ _COMPACT_HANDOFF_KEYS = (
     "company_history_rows",
     "sec_fact_provenance",
     "trend_diagnostics",
+    "share_count_diagnostics",
     "macro_overlay",
     "company_macro_sensitivity",
     "source_coverage",
@@ -86,6 +92,7 @@ _SEC_COMPANY_EVIDENCE_FIELD_MAP = {
     "latest_fundamentals": "latest_fundamentals",
     "sec_fact_provenance": "sec_fact_provenance",
     "trend_diagnostics": "trend_diagnostics",
+    "share_count_diagnostics": "share_count_diagnostics",
     "macro_overlay": "macro_overlay",
     "company_macro_sensitivity": "company_macro_sensitivity",
     "company_context_status": "company_context_status",
@@ -458,6 +465,57 @@ def _is_non_empty_contract_value(value: Any) -> bool:
     return value is not None and value != ""
 
 
+def _sanitize_split_affected_share_trends(summary: dict[str, Any]) -> None:
+    """Remove unsafe full-window share trend labels for split-affected raw series."""
+
+    diagnostics = split_affected_share_count_diagnostics(
+        summary.get("share_count_diagnostics")
+    )
+    if not diagnostics:
+        return
+
+    stats = summary.get("statistical_summary")
+    if not isinstance(stats, dict):
+        return
+
+    for ticker, diagnostic in diagnostics.items():
+        for target in _statistical_summary_share_targets(stats, ticker):
+            if "shares_trend" not in target:
+                continue
+            target["shares_trend"] = SHARE_COUNT_TREND_UNCOMPARABLE
+            target["shares_trend_raw_sec_comparability"] = (
+                SHARE_COUNT_COMPARABILITY_UNCOMPARABLE
+            )
+            if diagnostic.get("latest_comparable_trend") is not None:
+                target["shares_latest_comparable_trend"] = diagnostic.get(
+                    "latest_comparable_trend"
+                )
+            if diagnostic.get("latest_comparable_change_pct") is not None:
+                target["shares_latest_comparable_change_pct"] = diagnostic.get(
+                    "latest_comparable_change_pct"
+                )
+            if diagnostic.get("limitation"):
+                target["shares_trend_limitation"] = diagnostic.get("limitation")
+
+
+def _statistical_summary_share_targets(
+    stats: dict[str, Any],
+    ticker: str,
+) -> list[dict[str, Any]]:
+    targets: list[dict[str, Any]] = []
+    ticker_key = str(ticker).upper()
+    direct = stats.get(ticker_key)
+    if isinstance(direct, dict):
+        targets.append(direct)
+
+    for value in stats.values():
+        if not isinstance(value, dict) or value in targets:
+            continue
+        if str(value.get("ticker") or "").strip().upper() == ticker_key:
+            targets.append(value)
+    return targets
+
+
 def _collect_validation_methods(summary: dict[str, Any]) -> None:
     nested = _validation_source_payloads(summary)
     methods = summary.setdefault("methods_used", [])
@@ -715,6 +773,7 @@ def _iter_nested_mappings(*values: Any, max_depth: int = 3) -> Iterable[dict[str
 _SUMMARY_NORMALIZATION_RULES = (
     _drop_obsolete_preservation_flags,
     _preserve_sec_company_facts_contract,
+    _sanitize_split_affected_share_trends,
     _normalize_numeric_fact_contracts,
     _collect_validation_methods,
     _validate_current_signal_facts,

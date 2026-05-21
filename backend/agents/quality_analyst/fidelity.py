@@ -21,6 +21,12 @@ from agents.quant_macro_stats.artifacts.numeric_fact_contracts import (
 from agents.quant_macro_stats.artifacts.execution_summary_normalization import (
     normalize_quant_execution_summary,
 )
+from agents.quant_macro_stats.company.sec_company_facts_evidence import (
+    requested_company_tickers,
+)
+from agents.quant_macro_stats.share_count_diagnostics import (
+    split_affected_share_count_diagnostics,
+)
 from agents.quant_macro_stats.artifacts.artifact_fingerprints import (
     artifact_fingerprint_mismatches,
 )
@@ -65,6 +71,41 @@ _MARKET_VALUATION_AFFIRMATIVE_RE = re.compile(
     r"(?:\$\s?\d|\b\d+(?:\.\d+)?\s?(?:x|times|%|billion|bn|million|m)\b|"
     r"\b(?:premium|discount|undervalued|overvalued|cheap|expensive|"
     r"attractive|rich|reasonable|upside|downside)\b)",
+    re.IGNORECASE,
+)
+_SHARE_COUNT_SUBJECT_RE = re.compile(
+    r"\b(?:share\s+count|shares?\s+outstanding|outstanding\s+shares|"
+    r"share\s+base|diluted\s+shares|weighted[-\s]+average\s+shares)\b",
+    re.IGNORECASE,
+)
+_SHARE_COUNT_DIRECTION_RE = re.compile(
+    r"\b(?:buybacks?|repurchas(?:e|es|ed|ing)|dilut(?:e|es|ed|ion|ive)|"
+    r"issu(?:e|es|ed|ance|ing)|increas(?:e|es|ed|ing)|rose|rising|"
+    r"expand(?:s|ed|ing)?|decreas(?:e|es|ed|ing)|"
+    r"declin(?:e|es|ed|ing)|fell|fall(?:en|ing)?|"
+    r"reduc(?:e|es|ed|ing|tion)|shrink(?:s|ing)?|"
+    r"retir(?:e|es|ed|ing)|trend(?:s|ed|ing)?)\b",
+    re.IGNORECASE,
+)
+_SHARE_ACTIVITY_RE = re.compile(
+    r"\b(?:buybacks?|repurchas(?:e|es|ed|ing)|dilut(?:e|es|ed|ion|ive)|"
+    r"issuance|issued)\b",
+    re.IGNORECASE,
+)
+_FULL_PERIOD_SHARE_CONTEXT_RE = re.compile(
+    r"\b(?:full[-\s]?(?:period|window|series)|full\s+raw\s+series|"
+    r"raw\s+(?:share[-\s]?count\s+)?series|whole\s+period|"
+    r"across\s+the\s+(?:full\s+)?(?:period|window|series)|"
+    r"over\s+the\s+(?:full\s+)?(?:period|window|series)|"
+    r"multi[-\s]?year|since\s+(?:fy\s*)?\d{4}|"
+    r"from\s+(?:fy\s*)?\d{4}\s+(?:to|through|-)\s+(?:fy\s*)?\d{4}|"
+    r"\d{4}\s*(?:-|to|through)\s*\d{4}|trend(?:s|ed|ing)?)\b",
+    re.IGNORECASE,
+)
+_SHARE_COUNT_LIMITATION_ACK_RE = re.compile(
+    r"\b(?:split|split[-\s]?adjust(?:ed|ment)?|unadjusted|raw|not\s+comparable|"
+    r"uncomparable|basis\s+change|basis\s+discontinuity|"
+    r"share[-\s]?count\s+diagnostics?|comparable\s+segment)\b",
     re.IGNORECASE,
 )
 _GROUP_PLACE_QUERY_RE = re.compile(
@@ -522,6 +563,7 @@ def _load_sibling_execution_summary(report_path: Path) -> dict[str, object]:
         "latest_fundamentals",
         "company_history_rows",
         "trend_diagnostics",
+        "share_count_diagnostics",
         "macro_overlay",
         "company_macro_sensitivity",
         "diagnostics",
@@ -1248,6 +1290,69 @@ def _unsupported_market_valuation_claim_blocker(
         "not_available and no market valuation numeric_facts exist. State the "
         "market-data limitation or remove price, market cap, multiple, analyst "
         "estimate, estimate-revision, price-target, and upside/downside claims."
+    )
+
+
+def _line_mentions_share_diagnostic_ticker(
+    line: str,
+    ticker: str,
+    *,
+    available_tickers: set[str],
+) -> bool:
+    if re.search(rf"\b{re.escape(ticker)}\b", line, re.IGNORECASE):
+        return True
+    return ticker in requested_company_tickers(
+        line,
+        available_tickers=available_tickers,
+    )
+
+
+def _line_claims_uncaveated_share_count_trend(line: str) -> bool:
+    if _SHARE_COUNT_LIMITATION_ACK_RE.search(line):
+        return False
+    if _SHARE_COUNT_SUBJECT_RE.search(line) and _SHARE_COUNT_DIRECTION_RE.search(line):
+        return True
+    return bool(
+        _SHARE_ACTIVITY_RE.search(line)
+        and _FULL_PERIOD_SHARE_CONTEXT_RE.search(line)
+    )
+
+
+def _unsupported_split_affected_share_claim_blocker(
+    summary: dict[str, object],
+    report_data: dict[str, object],
+) -> str | None:
+    diagnostics = split_affected_share_count_diagnostics(
+        summary.get("share_count_diagnostics")
+    )
+    if not diagnostics:
+        return None
+
+    lines = _report_review_lines(report_data)
+    available_tickers = set(diagnostics)
+    unsupported: list[str] = []
+    for ticker in sorted(diagnostics):
+        for line in lines:
+            if not _line_mentions_share_diagnostic_ticker(
+                line,
+                ticker,
+                available_tickers=available_tickers,
+            ):
+                continue
+            if _line_claims_uncaveated_share_count_trend(line):
+                unsupported.append(f"{ticker}: {line}")
+                break
+
+    if not unsupported:
+        return None
+    return (
+        "Report makes buyback, dilution, or share-count trend claims for "
+        "tickers whose SEC raw share-count diagnostics mark the full raw series "
+        "as split-affected/uncomparable. Qualify those claims with split/raw "
+        "share-count limitations, use the latest comparable segment from "
+        "share_count_diagnostics, or remove the full-period share trend claim. "
+        "Examples: "
+        + "; ".join(unsupported[:3])
     )
 
 
@@ -2807,6 +2912,12 @@ def _execution_summary_fidelity_blockers(
     unsupported_valuation = _unsupported_market_valuation_claim_blocker(summary, report_data)
     if unsupported_valuation:
         blockers.append(unsupported_valuation)
+    unsupported_share_claim = _unsupported_split_affected_share_claim_blocker(
+        summary,
+        report_data,
+    )
+    if unsupported_share_claim:
+        blockers.append(unsupported_share_claim)
     blockers.extend(_source_unit_fidelity_blockers(summary, markdown, report_data))
     blockers.extend(_state_comparison_fidelity_blockers(summary, markdown))
     requested_coverage = _requested_group_place_coverage_blocker(
@@ -3195,6 +3306,11 @@ def _approval_failure_metadata(report_path: str) -> dict[str, str]:
     if _unsupported_market_valuation_claim_blocker(summary, data):
         return {
             "failure_category": "unsupported_valuation_claim",
+            "required_upstream": "technical-writer",
+        }
+    if _unsupported_split_affected_share_claim_blocker(summary, data):
+        return {
+            "failure_category": "unsupported_share_count_claim",
             "required_upstream": "technical-writer",
         }
     if _requested_group_place_coverage_blocker(data, summary):

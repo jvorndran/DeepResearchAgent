@@ -24,7 +24,10 @@ Use current available company filing data only. Do not add macroeconomic, region
 4. **Cash generation:** Calculate operating cash flow margin, capex intensity, free-cash-flow proxy as operating cash flow minus capital expenditures, and free-cash-flow margin.
 5. **Balance sheet:** Calculate cash and securities trend, current debt, long-term debt, total debt, debt/assets, liabilities/assets, and equity/assets.
 6. **Efficiency:** Calculate asset turnover if revenue and assets exist.
-7. **Share count:** Calculate share-count trend and dilution/buyback proxy.
+7. **Share count:** Use `share_count_diagnostics` from the SEC helper before
+   writing a dilution/buyback proxy. Raw SEC share counts are not split-adjusted;
+   when diagnostics mark the full series as split-affected or uncomparable, do
+   not ask for or accept a full-period buyback/dilution label.
 8. **Diagnostics:** Include filing coverage, period coverage, and missing-field diagnostics in the execution summary.
 9. **Charts:**
    - `income_statement_trend`: Revenue, gross profit, operating income, and net income.
