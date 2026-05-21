@@ -3260,6 +3260,1042 @@ def test_submit_quality_decision_rejects_statistical_summary_direction_reversals
     )
 
 
+def test_submit_quality_decision_rejects_freeform_statistical_assessment(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "statistical_summary": {
+                    "current_unrate": 4.3,
+                    "assessment": "Real wages are still growing.",
+                },
+                "numeric_facts": [
+                    {
+                        "id": "macro.current_unrate",
+                        "label": "Current unemployment rate",
+                        "raw_value": 4.3,
+                        "display_value": "4.3%",
+                        "unit": "percent",
+                        "precision": 1,
+                        "tolerance": 0.05,
+                        "source_key": "UNRATE",
+                        "as_of_date": "2026-04-01",
+                        "metric": "current_unrate",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Explain whether the labor market is weakening.",
+                "title": "Labor Market Check",
+                "executive_summary": "The unemployment rate is 4.3%.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "The unemployment rate is 4.3%.\n\n"
+                    "## Research Query\nExplain whether the labor market is weakening."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 20},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "execution_summary_contract"
+    assert "statistical_summary.assessment" in payload["reason"]
+
+
+def test_submit_quality_decision_rejects_unavailable_current_scalar_claim(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "statistical_summary": {
+                    "current_jtsjol": None,
+                },
+                "source_coverage": {
+                    "JTSJOL": {
+                        "status": "not_available",
+                        "reason": "No finite current job-openings observation.",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Explain whether jobs are weakening or normalizing.",
+                "title": "Labor Market Check",
+                "executive_summary": (
+                    "Job openings still outnumber available workers."
+                ),
+                "markdown": (
+                    "## Executive Summary\n"
+                    "Job openings still outnumber available workers, so workers "
+                    "retain leverage.\n\n"
+                    "## Research Query\nExplain whether jobs are weakening or normalizing."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 22},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "unsupported_current_scalar_claim"
+    assert "statistical_summary.current_jtsjol" in payload["reason"]
+
+
+def test_submit_quality_decision_rejects_unavailable_underemployment_claim(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "statistical_summary": {
+                    "current_underemployment": None,
+                },
+                "source_coverage": {
+                    "LNS12032195": {
+                        "status": "not_fetched",
+                        "reason": (
+                            "No finite current part-time-for-economic-reasons "
+                            "observation."
+                        ),
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Explain whether the labor market is weakening.",
+                "title": "Labor Market Check",
+                "executive_summary": "Underemployment remains elevated.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "Underemployment remains elevated, so labor-market slack "
+                    "is still high.\n\n"
+                    "## Research Query\nExplain whether the labor market is weakening."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 20},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "unsupported_current_scalar_claim"
+    assert "statistical_summary.current_underemployment" in payload["reason"]
+
+
+def test_submit_quality_decision_rejects_unavailable_source_coverage_claim(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "source_coverage": {
+                    "JTSJOL": {
+                        "status": "not_available",
+                        "reason": "No finite current job-openings observation.",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Explain whether jobs are weakening or normalizing.",
+                "title": "Labor Market Check",
+                "executive_summary": (
+                    "Job openings still outnumber available workers."
+                ),
+                "markdown": (
+                    "## Executive Summary\n"
+                    "Job openings still outnumber available workers, so workers "
+                    "retain leverage.\n\n"
+                    "## Research Query\nExplain whether jobs are weakening or normalizing."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 22},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "unsupported_current_scalar_claim"
+    assert "source_coverage.JTSJOL" in payload["reason"]
+
+
+def test_submit_quality_decision_rejects_unavailable_caveat_then_current_claim(
+    tmp_path,
+):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "source_coverage": {
+                    "JTSJOL": {
+                        "status": "not_available",
+                        "reason": "No finite current job-openings observation.",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Explain whether jobs are weakening or normalizing.",
+                "title": "Labor Market Check",
+                "executive_summary": (
+                    "JOLTS job openings data are unavailable, but job openings "
+                    "still outnumber available workers."
+                ),
+                "markdown": (
+                    "## Executive Summary\n"
+                    "JOLTS job openings data are unavailable, but job openings "
+                    "still outnumber available workers.\n\n"
+                    "## Research Query\nExplain whether jobs are weakening or normalizing."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 20},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "unsupported_current_scalar_claim"
+    assert "source_coverage.JTSJOL" in payload["reason"]
+
+
+def test_submit_quality_decision_rejects_openings_workers_claim_without_comparison_fact(
+    tmp_path,
+):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "numeric_facts": [
+                    {
+                        "id": "macro.latest_job_openings",
+                        "label": "Latest job openings",
+                        "raw_value": 7.4,
+                        "display_value": "7.4 million",
+                        "unit": "million",
+                        "precision": 1,
+                        "tolerance": 0.05,
+                        "source_key": "JTSJOL",
+                        "as_of_date": "2026-04-01",
+                        "metric": "latest_job_openings",
+                    }
+                ],
+                "statistical_summary": {
+                    "latest_job_openings": 7.4,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Explain whether jobs are weakening or normalizing.",
+                "title": "Labor Market Check",
+                "executive_summary": (
+                    "Job openings are 7.4 million and still outnumber "
+                    "available workers."
+                ),
+                "markdown": (
+                    "## Executive Summary\n"
+                    "Job openings are 7.4 million and still outnumber "
+                    "available workers, so workers retain leverage.\n\n"
+                    "## Research Query\nExplain whether jobs are weakening or normalizing."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 24},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "unsupported_comparison_claim"
+    assert "openings-vs-workers" in payload["reason"]
+
+
+def test_submit_quality_decision_accepts_unavailable_openings_with_jobless_claims_prose(
+    tmp_path,
+):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "statistical_summary": {
+                    "latest_job_openings": None,
+                },
+                "source_coverage": {
+                    "JTSJOL": {
+                        "status": "not_available",
+                        "reason": "No finite current job-openings observation.",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Explain whether jobs are weakening or normalizing.",
+                "title": "Labor Market Check",
+                "executive_summary": (
+                    "JOLTS job openings data are unavailable. "
+                    "Jobless claims remain low."
+                ),
+                "markdown": (
+                    "## Executive Summary\n"
+                    "JOLTS job openings data are unavailable. "
+                    "Jobless claims remain low.\n\n"
+                    "## Research Query\nExplain whether jobs are weakening or normalizing."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 20},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "approved"
+
+
+def test_submit_quality_decision_accepts_unavailable_participation_with_labor_market_prose(
+    tmp_path,
+):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "statistical_summary": {
+                    "latest_labor_force_participation_rate": None,
+                },
+                "source_coverage": {
+                    "CIVPART": {
+                        "status": "not_available",
+                        "reason": "No finite current participation-rate observation.",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Explain whether the labor market is weakening.",
+                "title": "Labor Market Check",
+                "executive_summary": (
+                    "Labor force participation data are unavailable. "
+                    "The labor market is still normalizing."
+                ),
+                "markdown": (
+                    "## Executive Summary\n"
+                    "Labor force participation data are unavailable. "
+                    "The labor market is still normalizing.\n\n"
+                    "## Research Query\nExplain whether the labor market is weakening."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 20},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "approved"
+
+
+def test_submit_quality_decision_rejects_numeric_fact_signed_direction_reversal(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "numeric_facts": [
+                    {
+                        "id": "macro.real_ahe_12mo_chg_pct",
+                        "label": "Real wage 12-month change",
+                        "raw_value": -0.33,
+                        "display_value": "-0.33%",
+                        "unit": "percent",
+                        "precision": 2,
+                        "tolerance": 0.01,
+                        "source_key": "CES0500000003/CPIAUCSL",
+                        "as_of_date": "2026-04-01",
+                        "metric": "real_ahe_12mo_chg_pct",
+                        "operation": "pct_change_12mo",
+                        "transform_basis": "CPI-adjusted hourly earnings",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Explain whether real wages are weakening.",
+                "title": "Real Wage Check",
+                "executive_summary": "Real wages are still growing.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "Real wages are still growing and supporting purchasing power.\n\n"
+                    "## Research Query\nExplain whether real wages are weakening."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 18},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "numeric_fact_mismatch"
+    assert "signed numeric_facts direction" in payload["reason"]
+
+
+def test_submit_quality_decision_accepts_negated_positive_signed_direction(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "numeric_facts": [
+                    {
+                        "id": "macro.real_ahe_12mo_chg_pct",
+                        "label": "Real wage 12-month change",
+                        "raw_value": -0.33,
+                        "display_value": "-0.33%",
+                        "unit": "percent",
+                        "precision": 2,
+                        "tolerance": 0.01,
+                        "source_key": "CES0500000003/CPIAUCSL",
+                        "as_of_date": "2026-04-01",
+                        "metric": "real_ahe_12mo_chg_pct",
+                        "operation": "pct_change_12mo",
+                        "transform_basis": "CPI-adjusted hourly earnings",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Explain whether real wages are weakening.",
+                "title": "Real Wage Check",
+                "executive_summary": "Real wages are not growing.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "Real wages are not growing; the 12-month change is -0.33%.\n\n"
+                    "## Research Query\nExplain whether real wages are weakening."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 18},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "approved"
+
+
+def test_submit_quality_decision_rejects_positive_yield_curve_called_inverted(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "numeric_facts": [
+                    {
+                        "id": "macro.yield_curve_spread",
+                        "label": "Yield curve spread",
+                        "raw_value": 0.21,
+                        "display_value": "0.21 pp",
+                        "unit": "percentage_point",
+                        "precision": 2,
+                        "tolerance": 0.01,
+                        "source_key": "T10Y2Y",
+                        "as_of_date": "2026-04-01",
+                        "metric": "yield_curve_spread",
+                        "operation": "latest_spread",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Review whether the yield curve is currently inverted.",
+                "title": "Yield Curve Check",
+                "executive_summary": "The yield curve remains inverted.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "The yield curve remains inverted, keeping recession risk elevated.\n\n"
+                    "## Research Query\nReview whether the yield curve is currently inverted."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 18},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "numeric_fact_mismatch"
+    assert "signed numeric_facts direction" in payload["reason"]
+
+
+def test_submit_quality_decision_accepts_positive_yield_spread_fell_to_level(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "numeric_facts": [
+                    {
+                        "id": "macro.yield_curve_spread",
+                        "label": "Yield curve spread",
+                        "raw_value": 0.21,
+                        "display_value": "0.21 pp",
+                        "unit": "percentage_point",
+                        "precision": 2,
+                        "tolerance": 0.01,
+                        "source_key": "T10Y2Y",
+                        "as_of_date": "2026-04-01",
+                        "metric": "yield_curve_spread",
+                        "operation": "latest_spread",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Review whether the yield curve is currently inverted.",
+                "title": "Yield Curve Check",
+                "executive_summary": "The yield spread fell to 0.21 pp but remains positive.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "The yield spread fell to 0.21 pp but remains positive.\n\n"
+                    "## Research Query\nReview whether the yield curve is currently inverted."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 18},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "approved"
+
+
+def test_submit_quality_decision_rejects_negative_yield_curve_called_normalized(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "numeric_facts": [
+                    {
+                        "id": "macro.yield_curve_spread",
+                        "label": "Yield curve spread",
+                        "raw_value": -0.35,
+                        "display_value": "-0.35 pp",
+                        "unit": "percentage_point",
+                        "precision": 2,
+                        "tolerance": 0.01,
+                        "source_key": "T10Y2Y",
+                        "as_of_date": "2026-04-01",
+                        "metric": "yield_curve_spread",
+                        "operation": "latest_spread",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Review whether the yield curve is currently inverted.",
+                "title": "Yield Curve Check",
+                "executive_summary": "The yield curve has normalized.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "The yield curve has normalized, reducing recession risk.\n\n"
+                    "## Research Query\nReview whether the yield curve is currently inverted."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 16},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "numeric_fact_mismatch"
+    assert "signed numeric_facts direction" in payload["reason"]
+
+
+def test_submit_quality_decision_ignores_unrelated_real_macro_direction_language(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "numeric_facts": [
+                    {
+                        "id": "macro.real_ahe_12mo_chg_pct",
+                        "label": "Real wage 12-month change",
+                        "raw_value": -0.33,
+                        "display_value": "-0.33%",
+                        "unit": "percent",
+                        "precision": 2,
+                        "tolerance": 0.01,
+                        "source_key": "CES0500000003/CPIAUCSL",
+                        "as_of_date": "2026-04-01",
+                        "metric": "real_ahe_12mo_chg_pct",
+                        "operation": "pct_change_12mo",
+                        "transform_basis": "CPI-adjusted hourly earnings",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Explain whether real GDP is weakening.",
+                "title": "Real GDP Check",
+                "executive_summary": "Real GDP grew at a normal pace.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "Real GDP grew at a normal pace.\n\n"
+                    "## Research Query\nExplain whether real GDP is weakening."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 18},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "approved"
+
+
+def test_submit_quality_decision_accepts_percent_level_fact_direction_language(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "numeric_facts": [
+                    {
+                        "id": "macro.current_unrate",
+                        "label": "Current unemployment rate",
+                        "raw_value": 4.3,
+                        "display_value": "4.3%",
+                        "unit": "percent",
+                        "precision": 1,
+                        "tolerance": 0.05,
+                        "source_key": "UNRATE",
+                        "as_of_date": "2026-04-01",
+                        "metric": "current_unrate",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Explain whether the labor market is weakening.",
+                "title": "Labor Market Check",
+                "executive_summary": "The unemployment rate fell to 4.3%.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "The unemployment rate fell to 4.3%.\n\n"
+                    "## Research Query\nExplain whether the labor market is weakening."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 18},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "approved"
+
+
+def test_submit_quality_decision_accepts_real_level_fact_direction_language(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "numeric_facts": [
+                    {
+                        "id": "macro.real_ahe_level",
+                        "label": "Real average hourly earnings level",
+                        "raw_value": 100.4,
+                        "display_value": "100.4",
+                        "unit": "index",
+                        "precision": 1,
+                        "tolerance": 0.05,
+                        "source_key": "CES0500000003/CPIAUCSL",
+                        "as_of_date": "2026-04-01",
+                        "metric": "real_ahe_level",
+                        "operation": "latest",
+                        "transform_basis": "CPI-adjusted hourly earnings level",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Explain whether real earnings are weakening.",
+                "title": "Real Earnings Check",
+                "executive_summary": "Real average hourly earnings fell to 100.4.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "Real average hourly earnings fell to 100.4.\n\n"
+                    "## Research Query\nExplain whether real earnings are weakening."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 18},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "approved"
+
+
+def test_submit_quality_decision_rejects_source_id_ahe_fact_without_display_value(
+    tmp_path,
+):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "numeric_facts": [
+                    {
+                        "id": "fred.CES0500000003.latest",
+                        "label": "CES0500000003 latest",
+                        "raw_value": 37.41,
+                        "display_value": "$37.41",
+                        "unit": "usd",
+                        "precision": 2,
+                        "tolerance": 0.01,
+                        "source_key": "CES0500000003",
+                        "as_of_date": "2026-04-01",
+                        "metric": "CES0500000003",
+                        "operation": "latest_observation",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Explain whether real earnings are weakening.",
+                "title": "Hourly Earnings Check",
+                "executive_summary": "Average hourly earnings remain solid.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "Average hourly earnings remain solid in the latest data.\n\n"
+                    "## Research Query\nExplain whether real earnings are weakening."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 18},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "numeric_fact_mismatch"
+    assert "CES0500000003" in payload["reason"]
+
+
+def test_submit_quality_decision_rejects_source_id_duration_fact_without_display_value(
+    tmp_path,
+):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "numeric_facts": [
+                    {
+                        "id": "fred.UEMPMEAN.latest",
+                        "label": "UEMPMEAN latest",
+                        "raw_value": 24.4,
+                        "display_value": "24.4",
+                        "unit": "weeks",
+                        "precision": 1,
+                        "tolerance": 0.1,
+                        "source_key": "UEMPMEAN",
+                        "as_of_date": "2026-04-01",
+                        "metric": "UEMPMEAN",
+                        "operation": "latest_observation",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Explain whether unemployment duration is worsening.",
+                "title": "Unemployment Duration Check",
+                "executive_summary": "Unemployment duration remains elevated.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "Unemployment duration remains elevated in the latest data.\n\n"
+                    "## Research Query\nExplain whether unemployment duration is worsening."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 17},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "numeric_fact_mismatch"
+    assert "UEMPMEAN" in payload["reason"]
+
+
 def test_submit_quality_decision_accepts_statistical_summary_direction_language(tmp_path):
     report_path = tmp_path / "report.json"
     (tmp_path / "execution_summary.json").write_text(

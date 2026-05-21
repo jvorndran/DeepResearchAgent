@@ -19,6 +19,8 @@ from agents.quant_macro_stats.artifacts.numeric_fact_contracts import (
     numeric_fact_literal_required,
 )
 from agents.quant_macro_stats.artifacts.execution_summary_normalization import (
+    current_scalar_fact_slots,
+    current_scalar_semantic_tokens,
     normalize_quant_execution_summary,
 )
 from agents.quant_macro_stats.company.sec_company_facts_evidence import (
@@ -425,6 +427,268 @@ _REAL_WAGE_CLAUSE_BOUNDARY_RE = re.compile(
     r"drop(?:ped|s|ping)?|compress(?:ed|ion)|lag(?:ged|ging)?)\b))\s*",
     re.IGNORECASE,
 )
+_SIGNED_POSITIVE_STATE_RE = re.compile(
+    r"\b(?:positive|above\s+zero|greater\s+than\s+zero|over\s+zero|"
+    r"in\s+positive\s+territory)\b|"
+    r"\b(?:is|are|was|were|remain(?:s|ed|ing)?|still|continues?\s+to|"
+    r"continued\s+to)\s+(?:still\s+|currently\s+|now\s+|again\s+)?"
+    r"(?:grow(?:s|ing)?|increas(?:e|es|ed|ing)|expand(?:s|ed|ing)?|"
+    r"improv(?:e|es|ed|ing)|outpac(?:e|es|ed|ing))\b",
+    re.IGNORECASE,
+)
+_SIGNED_NEGATIVE_STATE_RE = re.compile(
+    r"\b(?:negative|below\s+zero|less\s+than\s+zero|under\s+zero|"
+    r"in\s+negative\s+territory|lost\s+purchasing\s+power)\b|"
+    r"\b(?:is|are|was|were|remain(?:s|ed|ing)?|still|continues?\s+to|"
+    r"continued\s+to)\s+(?:still\s+|currently\s+|now\s+|again\s+)?"
+    r"(?:contract(?:s|ed|ing)?|shrink(?:s|ing)?|erod(?:e|es|ed|ing)|"
+    r"deteriorat(?:e|es|ed|ing)|lag(?:s|ged|ging)?)\b",
+    re.IGNORECASE,
+)
+_SIGNED_DIRECTION_CLAUSE_BOUNDARY_RE = re.compile(
+    r"(?<=[.!?])\s+|\s*(?:;|\||:)\s*|"
+    r"\s+\b(?:but|while|although|though|whereas|however|yet)\b\s+",
+    re.IGNORECASE,
+)
+_SIGNED_DIRECTION_FACT_TOKENS = {
+    "chg",
+    "change",
+    "changed",
+    "growth",
+    "grow",
+    "yoy",
+    "qoq",
+    "mom",
+    "wow",
+    "delta",
+    "spread",
+    "gap",
+    "return",
+}
+_YIELD_CURVE_NEGATIVE_STATE_RE = re.compile(
+    r"\b(?:invert(?:ed|s|ing)?|inversion)\b",
+    re.IGNORECASE,
+)
+_YIELD_CURVE_POSITIVE_STATE_RE = re.compile(
+    r"\b(?:normaliz(?:e|es|ed|ing|ation)|normal\s+shape)\b",
+    re.IGNORECASE,
+)
+_YIELD_CURVE_STATE_NEGATION_RE = re.compile(
+    r"\b(?:not|no|does\s+not|doesn't|did\s+not|didn't|is\s+not|isn't|"
+    r"are\s+not|aren't|was\s+not|wasn't|were\s+not|weren't|without)\b"
+    r"[^\n.]{0,60}\b(?:invert(?:ed|s|ing)?|inversion|"
+    r"normaliz(?:e|es|ed|ing|ation)|normal\s+shape)\b",
+    re.IGNORECASE,
+)
+_GENERIC_FACT_MARKER_TOKENS = _SIGNED_DIRECTION_FACT_TOKENS | {
+    "annualized",
+    "avg",
+    "average",
+    "billion",
+    "billions",
+    "bps",
+    "current",
+    "dollar",
+    "dollars",
+    "index",
+    "indexed",
+    "latest",
+    "level",
+    "million",
+    "millions",
+    "nominal",
+    "pp",
+    "pct",
+    "percent",
+    "percentage",
+    "point",
+    "points",
+    "rate",
+    "real",
+    "recent",
+    "seasonally",
+    "thousand",
+    "thousands",
+    "today",
+    "usd",
+    "value",
+}
+_GENERIC_FACT_WINDOW_TOKEN_RE = re.compile(
+    r"^\d+(?:mo|m|month|months|q|quarter|quarters|yr|year|years)$"
+)
+_UNAVAILABLE_CURRENT_LIMITATION_RE = re.compile(
+    r"\b(?:unavailable|not\s+available|not\s+covered|missing|failed|"
+    r"insufficient|could\s+not|unable\s+to|no\s+reliable|not\s+reported|"
+    r"not\s+included|not\s+fetched|limitation)\b",
+    re.IGNORECASE,
+)
+_UNAVAILABLE_CURRENT_AFFIRMATIVE_RE = re.compile(
+    r"\b(?:stands?|stood|sits?|sat)\s+at\b|"
+    r"\b(?:rose|risen|rising|fell|fall(?:en|ing)?|declin(?:e|es|ed|ing)|"
+    r"increas(?:e|es|ed|ing)|decreas(?:e|es|ed|ing)|surged?|"
+    r"drop(?:ped|s|ping)?)\b|"
+    r"\b(?:outnumber(?:s|ed|ing)?|exceed(?:s|ed|ing)?|above|below|"
+    r"higher|lower)\b|"
+    r"\b(?:is|are|was|were|remain(?:s|ed|ing)?|still|stays?|"
+    r"stay(?:ed|ing)?)\s+(?:well\s+|still\s+|currently\s+|near\s+)?"
+    r"(?:above|below|higher|lower|elevated|high|low|tight|strong|weak|"
+    r"positive|negative)\b|"
+    r"\b\d[\d,.]*\s?(?:%|million|m|thousand|k|pp)?\b",
+    re.IGNORECASE,
+)
+_UNAVAILABLE_CURRENT_CLAUSE_BOUNDARY_RE = re.compile(
+    r"(?<=[.!?])\s+|\s*(?:;|\||:)\s*|"
+    r"\s+\b(?:but|while|although|though|whereas|however|yet|so|therefore|thus)\b\s+",
+    re.IGNORECASE,
+)
+_SOURCE_TOKEN_MARKERS = {
+    "jtsjol": ("jtsjol", "job openings", "openings"),
+    "openings": ("job openings", "openings"),
+    "jtsqur": ("jtsqur", "quits", "quit rate", "quits rate"),
+    "unrate": ("unrate", "unemployment"),
+    "payems": ("payems", "payroll", "payrolls"),
+    "civpart": ("civpart", "labor force participation", "participation rate"),
+    "participation": ("labor force participation", "participation rate"),
+    "icsa": ("icsa", "initial claims", "jobless claims"),
+    "uempm": ("uempm", "unemployment duration", "weeks unemployed"),
+    "usrec": ("usrec", "nber", "recession indicator"),
+}
+_CURRENT_SCALAR_SEMANTIC_MARKERS = {
+    "ahe": ("average hourly earnings", "hourly earnings", "wage", "wages"),
+    "ces0500000003": (
+        "average hourly earnings",
+        "hourly earnings",
+        "wage",
+        "wages",
+    ),
+    "lns12032195": (
+        "underemployment",
+        "part-time for economic reasons",
+        "part time for economic reasons",
+        "labor market slack",
+    ),
+    "slack": ("labor market slack",),
+    "uempmean": ("uempmean", "unemployment duration", "weeks unemployed"),
+    "underemployment": (
+        "underemployment",
+        "part-time for economic reasons",
+        "part time for economic reasons",
+        "labor market slack",
+    ),
+}
+_UNAVAILABLE_CURRENT_FIELD_PHRASE_MARKERS = (
+    (("job", "openings"), ("job openings", "openings")),
+    (
+        ("labor", "force", "participation"),
+        ("labor force participation", "participation rate"),
+    ),
+    (("initial", "claims"), ("initial claims", "jobless claims")),
+    (("jobless", "claims"), ("jobless claims", "initial claims")),
+    (("unemployment", "duration"), ("unemployment duration", "weeks unemployed")),
+    (("yield", "curve"), ("yield curve", "yield spread")),
+)
+_UNAVAILABLE_CURRENT_SINGLE_MARKER_TOKENS = {
+    "civpart",
+    "icsa",
+    "jtsjol",
+    "jtsqur",
+    "openings",
+    "payems",
+    "payroll",
+    "payrolls",
+    "quits",
+    "ahe",
+    "underemployment",
+    "unemployment",
+    "unrate",
+    "usrec",
+}
+_UNAVAILABLE_SOURCE_COVERAGE_STATUSES = {
+    "error",
+    "failed",
+    "insufficient",
+    "missing",
+    "no_data",
+    "not_available",
+    "not_covered",
+    "not_fetched",
+    "unavailable",
+}
+_OPENINGS_WORKERS_CLAUSE_BOUNDARY_RE = re.compile(
+    r"(?<=[.!?])\s+|\s*(?:;|\||:)\s*|"
+    r"\s+\b(?:but|while|although|though|whereas|however|yet|so|therefore|thus)\b\s+",
+    re.IGNORECASE,
+)
+_OPENINGS_WORKERS_OPENINGS_RE = re.compile(
+    r"\b(?:jolts|job\s+openings?|openings?|vacanc(?:y|ies))\b",
+    re.IGNORECASE,
+)
+_OPENINGS_WORKERS_WORKER_RE = re.compile(
+    r"\b(?:available\s+workers?|unemployed(?:\s+(?:workers?|people|persons?))?|"
+    r"job\s*seekers?|labor\s+supply|worker\s+supply)\b",
+    re.IGNORECASE,
+)
+_OPENINGS_WORKERS_COMPARISON_RE = re.compile(
+    r"\b(?:outnumber(?:s|ed|ing)?|exceed(?:s|ed|ing)?|more\s+than|"
+    r"greater\s+than|above|higher\s+than|per|ratio)\b",
+    re.IGNORECASE,
+)
+_OPENINGS_WORKERS_LIMITATION_RE = re.compile(
+    r"\b(?:no|not|without|missing|unavailable|insufficient|lacks?|lack|"
+    r"does\s+not|doesn't|could\s+not|unable\s+to)\b[^\n.]{0,80}"
+    r"\b(?:ratio|comparison|available\s+workers?|unemployed|job\s*seekers?)\b",
+    re.IGNORECASE,
+)
+_OPENINGS_WORKERS_FACT_OPENINGS_TOKENS = {
+    "jtsjol",
+    "opening",
+    "openings",
+    "vacancy",
+    "vacancies",
+}
+_OPENINGS_WORKERS_FACT_WORKER_TOKENS = {
+    "jobseeker",
+    "jobseekers",
+    "unemploy",
+    "unemployed",
+    "unemployment",
+    "unrate",
+    "worker",
+    "workers",
+}
+_OPENINGS_WORKERS_FACT_COMPARISON_TOKENS = {
+    "comparison",
+    "compared",
+    "divide",
+    "divided",
+    "exceed",
+    "exceeds",
+    "gap",
+    "leverage",
+    "multiple",
+    "outnumber",
+    "per",
+    "ratio",
+    "relative",
+    "spread",
+    "to",
+    "versus",
+    "vs",
+}
+_OPENINGS_WORKERS_FACT_COMPARISON_UNITS = {
+    "multiple",
+    "ratio",
+}
+
+
+def _current_scalar_source_markers(*values: object) -> tuple[str, ...]:
+    markers: list[str] = []
+    for token in sorted(current_scalar_semantic_tokens(*values)):
+        markers.extend(_SOURCE_TOKEN_MARKERS.get(token, ()))
+        markers.extend(_CURRENT_SCALAR_SEMANTIC_MARKERS.get(token, ()))
+    return tuple(dict.fromkeys(marker for marker in markers if len(marker) > 2))
+
+
 _PCE_AHEAD_OF_DPI_CLAIM_RE = re.compile(
     r"\b(?:pce|consumption|spending|expenditures?)\b[^\n.]{0,120}\b"
     r"(?:out(?:run|runs|ran|pace|paces|paced)|running\s+ahead|runs?\s+ahead|"
@@ -448,9 +712,14 @@ _DPI_AHEAD_OF_PCE_CLAIM_RE = re.compile(
 _DIRECTION_NEGATION_RE = re.compile(
     r"\b(?:not|no|does\s+not|doesn't|did\s+not|didn't|is\s+not|isn't|"
     r"are\s+not|aren't|without)\b[^\n.]{0,60}\b(?:"
+    r"rose|risen|rising|increas(?:e|es|ed|ing)|grew|grown|growing|"
+    r"growth|gain(?:ed|s|ing)?|positive|improv(?:e|es|ed|ing)|"
+    r"negative|contract(?:s|ed|ing|ion)|shrink(?:s|ing)?|"
     r"erod(?:e|es|ed|ing)|declin(?:e|es|ed|ing)|fell|fall(?:en|ing)?|"
     r"drop(?:ped|s|ping)?|compress(?:ed|ion)|lag(?:ged|ging)?|"
-    r"out(?:run|runs|ran|pace|paces|paced)|running\s+ahead|runs?\s+ahead|"
+    r"deteriorat(?:e|es|ed|ing)|"
+    r"out(?:run|runs|ran)|outpac(?:e|es|ed|ing)|"
+    r"running\s+ahead|runs?\s+ahead|"
     r"ahead|exceed(?:s|ed|ing)?|above|below)\b",
     re.IGNORECASE,
 )
@@ -1156,6 +1425,8 @@ def _state_comparison_fidelity_blockers(
 def _metric_markers_for_fact(fact: dict[str, object]) -> tuple[str, ...]:
     metric = str(fact.get("metric") or "").lower()
     label = str(fact.get("label") or "").lower()
+    source_key = str(fact.get("source_key") or "").lower()
+    fact_id = str(fact.get("id") or "").lower()
     marker_map = {
         "revenue_b": ("revenue", "sales", "growth narrative"),
         "net_income_b": ("net income", "profit", "earnings"),
@@ -1167,11 +1438,147 @@ def _metric_markers_for_fact(fact: dict[str, object]) -> tuple[str, ...]:
         "cash_and_securities_b": ("balance sheet", "cash", "liquidity"),
         "long_term_debt_b": ("balance sheet", "debt", "leverage"),
         "diluted_eps": ("eps", "earnings per share"),
+        "real_ahe_12mo_chg_pct": (
+            "real wage",
+            "real wages",
+            "real hourly earnings",
+            "real earnings",
+        ),
+        "real_wage_12mo_chg_pct": (
+            "real wage",
+            "real wages",
+            "real hourly earnings",
+            "real earnings",
+        ),
+        "yield_curve_spread": ("yield curve", "yield spread"),
+        "yield_curve_value": ("yield curve", "yield spread"),
     }
     markers = list(marker_map.get(metric, ()))
     markers.extend(token for token in re.split(r"[^a-z0-9]+", metric) if len(token) > 2)
     markers.extend(token for token in re.split(r"[^a-z0-9]+", label) if len(token) > 2)
+    markers.extend(_current_scalar_source_markers(source_key, fact_id))
     return tuple(dict.fromkeys(markers))
+
+
+def _marker_tokens(marker: str) -> tuple[str, ...]:
+    return tuple(token for token in re.split(r"[^a-z0-9]+", marker.lower()) if token)
+
+
+def _text_contains_marker(text: str, marker: str) -> bool:
+    text_tokens = _marker_tokens(text)
+    marker_tokens = _marker_tokens(marker)
+    if not text_tokens or not marker_tokens:
+        return False
+    if len(marker_tokens) == 1:
+        return marker_tokens[0] in set(text_tokens)
+    return " ".join(marker_tokens) in " ".join(text_tokens)
+
+
+def _is_generic_fact_marker(marker: str) -> bool:
+    tokens = _marker_tokens(marker)
+    return bool(tokens) and all(
+        token in _GENERIC_FACT_MARKER_TOKENS
+        or _GENERIC_FACT_WINDOW_TOKEN_RE.fullmatch(token)
+        for token in tokens
+    )
+
+
+def _fact_markers_for_matching(fact: dict[str, object]) -> tuple[str, ...]:
+    return tuple(
+        marker
+        for marker in _metric_markers_for_fact(fact)
+        if len(marker) > 2 and not _is_generic_fact_marker(marker)
+    )
+
+
+def _text_mentions_fact(text: str, fact: dict[str, object]) -> bool:
+    text_tokens = _marker_tokens(text)
+    if not text_tokens:
+        return False
+    normalized_text = " ".join(text_tokens)
+    for marker in _fact_markers_for_matching(fact):
+        if _text_contains_marker(normalized_text, marker):
+            return True
+    return False
+
+
+def _fact_tokens_for_direction(fact: dict[str, object]) -> set[str]:
+    return {
+        token
+        for token in re.split(
+            r"[^a-z0-9]+",
+            " ".join(
+                str(fact.get(key) or "").lower()
+                for key in ("id", "metric", "label", "source_key", "operation")
+            ),
+        )
+        if token
+    }
+
+
+def _is_signed_directional_fact(fact: dict[str, object]) -> bool:
+    value = _finite_number(fact.get("raw_value", fact.get("value")))
+    if value is None:
+        return False
+    tolerance = abs(_finite_number(fact.get("tolerance")) or 0.0)
+    if abs(value) <= max(tolerance, 1e-9):
+        return False
+    tokens = _fact_tokens_for_direction(fact)
+    unit = str(fact.get("unit") or "").strip().lower()
+    return bool(tokens & _SIGNED_DIRECTION_FACT_TOKENS) or unit == "correlation"
+
+
+def _line_mentions_fact(line: str, fact: dict[str, object]) -> bool:
+    return _text_mentions_fact(line, fact)
+
+
+def _numeric_fact_signed_direction_reversal(
+    fact: dict[str, object],
+    lines: Iterable[str],
+) -> bool:
+    if not _is_signed_directional_fact(fact):
+        return False
+    value = _finite_number(fact.get("raw_value", fact.get("value")))
+    if value is None:
+        return False
+    for line in lines:
+        for clause in _SIGNED_DIRECTION_CLAUSE_BOUNDARY_RE.split(line):
+            clause = clause.strip()
+            if not clause or not _line_mentions_fact(clause, fact):
+                continue
+            if _DIRECTION_NEGATION_RE.search(clause) or (
+                _is_yield_curve_fact(fact)
+                and _YIELD_CURVE_STATE_NEGATION_RE.search(clause)
+            ):
+                continue
+            if _yield_curve_state_direction_reversal(fact, clause, value):
+                return True
+            if value < 0 and _SIGNED_POSITIVE_STATE_RE.search(clause):
+                return True
+            if value > 0 and _SIGNED_NEGATIVE_STATE_RE.search(clause):
+                return True
+    return False
+
+
+def _is_yield_curve_fact(fact: dict[str, object]) -> bool:
+    tokens = _fact_tokens_for_direction(fact)
+    return "yield" in tokens and (
+        "curve" in tokens or "spread" in tokens or "10y2y" in tokens
+    )
+
+
+def _yield_curve_state_direction_reversal(
+    fact: dict[str, object],
+    clause: str,
+    value: float,
+) -> bool:
+    if not _is_yield_curve_fact(fact):
+        return False
+    if value > 0 and _YIELD_CURVE_NEGATIVE_STATE_RE.search(clause):
+        return True
+    if value < 0 and _YIELD_CURVE_POSITIVE_STATE_RE.search(clause):
+        return True
+    return False
 
 
 def _numeric_fact_fidelity_blockers(
@@ -1184,13 +1591,15 @@ def _numeric_fact_fidelity_blockers(
     markdown_lower = markdown.lower()
     missing: list[str] = []
     semantic_misuse: list[str] = []
+    direction_reversals: list[str] = []
+    review_lines = _markdown_review_lines(markdown)
     for fact in facts:
         subject = str(fact.get("subject") or "").strip()
         metric = str(fact.get("metric") or fact.get("id") or fact.get("source_key") or "").strip()
         if subject and subject.lower() not in markdown_lower:
             continue
-        markers = _metric_markers_for_fact(fact)
-        if markers and not any(marker in markdown_lower for marker in markers):
+        markers = _fact_markers_for_matching(fact)
+        if markers and not _text_mentions_fact(markdown_lower, fact):
             continue
         label = " ".join(part for part in (subject, metric) if part)
         label = label or str(
@@ -1198,6 +1607,9 @@ def _numeric_fact_fidelity_blockers(
         )
         if numeric_fact_current_state_duration_misuse(markdown, fact):
             semantic_misuse.append(label)
+            continue
+        if _numeric_fact_signed_direction_reversal(fact, review_lines):
+            direction_reversals.append(label)
             continue
         if not numeric_fact_literal_required(fact):
             continue
@@ -1210,6 +1622,13 @@ def _numeric_fact_fidelity_blockers(
             f"durations for {', '.join(semantic_misuse[:8])}. Regenerate the "
             "affected prose from state_description instead of saying an episode "
             "lasted 0 months."
+        ]
+    if direction_reversals:
+        return [
+            "Report reverses helper-produced signed numeric_facts direction for "
+            f"{', '.join(direction_reversals[:8])}. Regenerate the affected "
+            "prose from display_value, raw_value, and metric direction in "
+            "execution_summary.json."
         ]
     if not missing:
         return []
@@ -2376,6 +2795,213 @@ def _statistical_summary_direction_blockers(
     return blockers
 
 
+def _statistical_summary_assessment_blocker(
+    summary: dict[str, object],
+) -> str | None:
+    stats = summary.get("statistical_summary")
+    if not isinstance(stats, dict):
+        return None
+    assessment = stats.get("assessment")
+    if not isinstance(assessment, str) or not assessment.strip():
+        return None
+    return (
+        "execution_summary.json includes freeform statistical_summary.assessment "
+        "prose. Regenerate quant artifacts with report-facing current claims as "
+        "typed numeric_facts and keep statistical_summary to computed values."
+    )
+
+
+def _current_scalar_field_markers(field: str) -> tuple[str, ...]:
+    tokens = [
+        token
+        for token in re.split(r"[^a-z0-9]+", str(field).lower())
+        if token and token not in {"current", "latest", "last", "value", "rate", "pct"}
+    ]
+    markers: list[str] = []
+    for token in tokens:
+        markers.extend(_SOURCE_TOKEN_MARKERS.get(token, (token,)))
+    markers.extend(_current_scalar_source_markers(*tokens))
+    token_set = set(tokens)
+    for required_tokens, phrase_markers in _UNAVAILABLE_CURRENT_FIELD_PHRASE_MARKERS:
+        if set(required_tokens) <= token_set:
+            markers.extend(phrase_markers)
+    filtered_markers = []
+    for marker in markers:
+        marker_tokens = _marker_tokens(marker)
+        if not marker_tokens:
+            continue
+        if (
+            len(marker_tokens) > 1
+            or marker_tokens[0] in _UNAVAILABLE_CURRENT_SINGLE_MARKER_TOKENS
+        ):
+            filtered_markers.append(marker)
+    return tuple(
+        dict.fromkeys(marker for marker in filtered_markers if len(marker) > 2)
+    )
+
+
+def _source_coverage_current_markers(marker_seed: str) -> tuple[str, ...]:
+    return _current_scalar_source_markers(marker_seed)
+
+
+def _unavailable_source_coverage_targets(
+    summary: dict[str, object],
+) -> list[tuple[str, tuple[str, ...]]]:
+    coverage = summary.get("source_coverage")
+    if not isinstance(coverage, dict):
+        return []
+
+    targets: list[tuple[str, tuple[str, ...]]] = []
+
+    def walk(
+        value: object,
+        path: tuple[str, ...],
+        depth: int = 0,
+    ) -> None:
+        if depth > 4 or not isinstance(value, dict):
+            return
+        status = str(
+            value.get("status") or value.get("availability") or ""
+        ).strip().lower()
+        if status in _UNAVAILABLE_SOURCE_COVERAGE_STATUSES:
+            marker_seed = " ".join(
+                str(part)
+                for part in (
+                    *path,
+                    value.get("source_key"),
+                    value.get("series_id"),
+                    value.get("metric"),
+                    value.get("field"),
+                    value.get("label"),
+                    value.get("name"),
+                )
+                if part
+            )
+            markers = _source_coverage_current_markers(marker_seed)
+            if markers:
+                label = "source_coverage." + ".".join(path or ("<root>",))
+                targets.append((label, markers))
+        for child_key, child_value in value.items():
+            if isinstance(child_value, dict):
+                walk(child_value, (*path, str(child_key)), depth + 1)
+
+    walk(coverage, ())
+    return targets
+
+
+def _unavailable_current_scalar_claim_blocker(
+    summary: dict[str, object],
+    report_data: dict[str, object],
+) -> str | None:
+    targets: list[tuple[str, tuple[str, ...]]] = []
+    for container, fields in current_scalar_fact_slots(summary).items():
+        for field, value in fields.items():
+            if value is not None:
+                continue
+            markers = _current_scalar_field_markers(field)
+            if markers:
+                targets.append((f"{container}.{field}", markers))
+    targets.extend(_unavailable_source_coverage_targets(summary))
+    if not targets:
+        return None
+    lines = _report_review_lines(report_data)
+    unsupported: list[str] = []
+    for label, markers in targets:
+        for line in lines:
+            clauses = _UNAVAILABLE_CURRENT_CLAUSE_BOUNDARY_RE.split(line)
+            for clause in clauses:
+                if not any(_text_contains_marker(clause, marker) for marker in markers):
+                    continue
+                if _UNAVAILABLE_CURRENT_LIMITATION_RE.search(clause):
+                    continue
+                if not _UNAVAILABLE_CURRENT_AFFIRMATIVE_RE.search(clause):
+                    continue
+                unsupported.append(label)
+                break
+            if unsupported and unsupported[-1] == label:
+                break
+    if not unsupported:
+        return None
+    return (
+        "Report makes affirmative claims about unavailable current/latest "
+        "execution_summary scalar evidence for "
+        + ", ".join(unsupported[:8])
+        + ". State the source coverage limitation or remove the unsupported "
+        "current-value, direction, or comparison claim."
+    )
+
+
+def _line_claims_openings_workers_comparison(line: str) -> bool:
+    for clause in _OPENINGS_WORKERS_CLAUSE_BOUNDARY_RE.split(line):
+        clause = clause.strip()
+        if not clause or _OPENINGS_WORKERS_LIMITATION_RE.search(clause):
+            continue
+        if not _OPENINGS_WORKERS_OPENINGS_RE.search(clause):
+            continue
+        if not _OPENINGS_WORKERS_WORKER_RE.search(clause):
+            continue
+        if _OPENINGS_WORKERS_COMPARISON_RE.search(clause):
+            return True
+    return False
+
+
+def _openings_workers_fact_tokens(fact: dict[str, object]) -> set[str]:
+    text = " ".join(
+        str(fact.get(key) or "").lower()
+        for key in (
+            "id",
+            "metric",
+            "label",
+            "source_key",
+            "operation",
+            "semantic_role",
+            "transform_basis",
+        )
+    )
+    return {
+        token
+        for token in re.split(r"[^a-z0-9]+", text)
+        if token
+    }
+
+
+def _has_openings_workers_comparison_fact(summary: dict[str, object]) -> bool:
+    for fact in _numeric_facts_from_summary(summary):
+        tokens = _openings_workers_fact_tokens(fact)
+        unit = str(fact.get("unit") or "").strip().lower()
+        has_openings = bool(tokens & _OPENINGS_WORKERS_FACT_OPENINGS_TOKENS)
+        has_workers = (
+            bool(tokens & _OPENINGS_WORKERS_FACT_WORKER_TOKENS)
+            or {"labor", "supply"} <= tokens
+            or {"worker", "supply"} <= tokens
+        )
+        has_comparison = bool(
+            tokens & _OPENINGS_WORKERS_FACT_COMPARISON_TOKENS
+        ) or unit in _OPENINGS_WORKERS_FACT_COMPARISON_UNITS
+        if has_openings and has_workers and has_comparison:
+            return True
+    return False
+
+
+def _unsupported_openings_workers_comparison_blocker(
+    summary: dict[str, object],
+    report_data: dict[str, object],
+) -> str | None:
+    if _has_openings_workers_comparison_fact(summary):
+        return None
+    if not any(
+        _line_claims_openings_workers_comparison(line)
+        for line in _report_review_lines(report_data)
+    ):
+        return None
+    return (
+        "Report makes a job-openings-vs-available-workers comparison without "
+        "an execution_summary.json numeric_fact that combines openings with "
+        "unemployed or available workers as a ratio/comparison. Add a typed "
+        "comparison fact or remove the openings-vs-workers leverage claim."
+    )
+
+
 def _dict_rows(value: object) -> list[dict[str, object]]:
     if not isinstance(value, list):
         return []
@@ -2898,6 +3524,21 @@ def _execution_summary_fidelity_blockers(
 
     markdown = str(report_data.get("markdown", ""))
     blockers: list[str] = []
+    assessment_blocker = _statistical_summary_assessment_blocker(summary)
+    if assessment_blocker:
+        blockers.append(assessment_blocker)
+    unavailable_current_claim = _unavailable_current_scalar_claim_blocker(
+        summary,
+        report_data,
+    )
+    if unavailable_current_claim:
+        blockers.append(unavailable_current_claim)
+    unsupported_openings_workers = _unsupported_openings_workers_comparison_blocker(
+        summary,
+        report_data,
+    )
+    if unsupported_openings_workers:
+        blockers.append(unsupported_openings_workers)
     unsupported_analog = _unsupported_historical_analog_claim_blocker(summary, markdown)
     if unsupported_analog:
         blockers.append(unsupported_analog)
@@ -3316,6 +3957,21 @@ def _approval_failure_metadata(report_path: str) -> dict[str, str]:
     if _requested_group_place_coverage_blocker(data, summary):
         return {
             "failure_category": "requested_coverage_missing",
+            "required_upstream": "technical-writer",
+        }
+    if _statistical_summary_assessment_blocker(summary):
+        return {
+            "failure_category": "execution_summary_contract",
+            "required_upstream": "quantitative-developer",
+        }
+    if _unavailable_current_scalar_claim_blocker(summary, data):
+        return {
+            "failure_category": "unsupported_current_scalar_claim",
+            "required_upstream": "technical-writer",
+        }
+    if _unsupported_openings_workers_comparison_blocker(summary, data):
+        return {
+            "failure_category": "unsupported_comparison_claim",
             "required_upstream": "technical-writer",
         }
     if _statistical_summary_direction_blockers(summary, data):

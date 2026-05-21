@@ -1993,6 +1993,46 @@ def test_plan_report_structure_adds_zero_duration_state_guidance(tmp_path):
     assert result["helper_evidence_for_draft"]["numeric_facts"][0]["literal_required"] is False
 
 
+def test_plan_report_structure_surfaces_numeric_fact_metadata(tmp_path):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text("{}", encoding="utf-8")
+
+    result = json.loads(
+        plan_report_structure.func(
+            query_type="macro_indicator",
+            charts_json_path=str(charts_path),
+            execution_summary=json.dumps(
+                {
+                    "numeric_facts": [
+                        {
+                            "id": "macro.real_ahe_12mo_chg_pct",
+                            "label": "Real wage 12-month change",
+                            "raw_value": -0.33,
+                            "display_value": "-0.33%",
+                            "unit": "percent",
+                            "precision": 2,
+                            "tolerance": 0.01,
+                            "source_key": "CES0500000003/CPIAUCSL",
+                            "as_of_date": "2026-04-01",
+                            "metric": "real_ahe_12mo_chg_pct",
+                            "operation": "pct_change_12mo",
+                            "transform_basis": "CPI-adjusted hourly earnings",
+                        }
+                    ]
+                }
+            ),
+            original_query="Review whether real wages are weakening.",
+            runtime=_Runtime(),
+        )
+    )
+
+    draft = result["execution_summary_for_draft"]
+    assert "as_of=2026-04-01" in draft
+    assert "metric=real_ahe_12mo_chg_pct" in draft
+    assert "operation=pct_change_12mo" in draft
+    assert "transform_basis=CPI-adjusted hourly earnings" in draft
+
+
 def test_write_research_report_accepts_zero_duration_current_state_prose(tmp_path):
     charts_path = tmp_path / "charts.json"
     charts_path.write_text("{}", encoding="utf-8")

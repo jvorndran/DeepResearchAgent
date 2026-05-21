@@ -467,6 +467,371 @@ def test_normalize_quant_summary_requires_facts_for_latest_scalar_snapshot():
     assert "latest_numeric_fact(...)" in message
 
 
+def test_normalize_quant_summary_requires_matching_fact_for_current_scalar_snapshot():
+    with pytest.raises(ValueError) as error:
+        qms.normalize_quant_execution_summary(
+            {
+                "statistical_summary": {
+                    "current_unrate": 4.3,
+                },
+                "numeric_facts": [
+                    qms.numeric_fact(
+                        fact_id="macro.cpi.latest",
+                        label="Latest CPI",
+                        raw_value=4.3,
+                        unit="index",
+                        precision=1,
+                        tolerance=0.1,
+                        source_key="CPIAUCSL",
+                        as_of_date="2026-04-01",
+                        metric="cpi",
+                    )
+                ],
+            }
+        )
+
+    message = str(error.value)
+    assert "matching display-ready numeric_facts" in message
+    assert "statistical_summary.current_unrate" in message
+
+
+def test_normalize_quant_summary_rejects_scalar_fact_with_only_modifier_overlap():
+    with pytest.raises(ValueError) as error:
+        qms.normalize_quant_execution_summary(
+            {
+                "statistical_summary": {
+                    "real_gdp_12mo_chg_pct": -0.33,
+                },
+                "numeric_facts": [
+                    qms.numeric_fact(
+                        fact_id="macro.real_ahe_12mo_chg_pct",
+                        label="Real average hourly earnings 12-month change",
+                        raw_value=-0.33,
+                        unit="percent",
+                        precision=2,
+                        tolerance=0.01,
+                        source_key="CES0500000003/CPIAUCSL",
+                        as_of_date="2026-04-01",
+                        metric="real_ahe_12mo_chg_pct",
+                        operation="pct_change_12mo",
+                        transform_basis="CPI-adjusted hourly earnings, 12-month pct change",
+                    )
+                ],
+            }
+        )
+
+    message = str(error.value)
+    assert "matching display-ready numeric_facts" in message
+    assert "statistical_summary.real_gdp_12mo_chg_pct" in message
+
+
+@pytest.mark.parametrize("label", ["JTSJOL latest", "Job openings latest"])
+def test_normalize_quant_summary_rejects_scalar_fact_with_only_source_descriptor_overlap(
+    label,
+):
+    with pytest.raises(ValueError) as error:
+        qms.normalize_quant_execution_summary(
+            {
+                "statistical_summary": {
+                    "latest_job_growth": 7.4,
+                },
+                "numeric_facts": [
+                    qms.numeric_fact(
+                        fact_id="fred.JTSJOL.latest",
+                        label=label,
+                        raw_value=7.4,
+                        unit="million",
+                        precision=1,
+                        tolerance=0.01,
+                        source_key="JTSJOL",
+                        as_of_date="2026-04-01",
+                        metric="JTSJOL",
+                        operation="latest_observation",
+                    )
+                ],
+            }
+        )
+
+    message = str(error.value)
+    assert "matching display-ready numeric_facts" in message
+    assert "statistical_summary.latest_job_growth" in message
+
+
+def test_normalize_quant_summary_requires_current_scalar_fact_metadata():
+    with pytest.raises(ValueError) as error:
+        qms.normalize_quant_execution_summary(
+            {
+                "statistical_summary": {
+                    "real_ahe_12mo_chg_pct": -0.33,
+                },
+                "numeric_facts": [
+                    qms.numeric_fact(
+                        fact_id="macro.real_ahe_12mo_chg_pct",
+                        label="Real average hourly earnings 12-month change",
+                        raw_value=-0.33,
+                        unit="percent",
+                        precision=2,
+                        tolerance=0.01,
+                        source_key="CES0500000003/CPIAUCSL",
+                        as_of_date="2026-04-01",
+                        metric="real_ahe_12mo_chg_pct",
+                    )
+                ],
+            }
+        )
+
+    message = str(error.value)
+    assert "operation_or_transform_basis" in message
+    assert "macro.real_ahe_12mo_chg_pct" in message
+
+
+def test_normalize_quant_summary_accepts_current_scalars_with_typed_facts():
+    summary = qms.normalize_quant_execution_summary(
+        {
+            "statistical_summary": {
+                "current_unrate": 4.3,
+                "real_ahe_12mo_chg_pct": -0.33,
+            },
+            "numeric_facts": [
+                qms.numeric_fact(
+                    fact_id="macro.current_unrate",
+                    label="Current unemployment rate",
+                    raw_value=4.3,
+                    unit="percent",
+                    precision=1,
+                    tolerance=0.05,
+                    source_key="UNRATE",
+                    as_of_date="2026-04-01",
+                    metric="current_unrate",
+                ),
+                qms.numeric_fact(
+                    fact_id="macro.real_ahe_12mo_chg_pct",
+                    label="Real average hourly earnings 12-month change",
+                    raw_value=-0.33,
+                    unit="percent",
+                    precision=2,
+                    tolerance=0.01,
+                    source_key="CES0500000003/CPIAUCSL",
+                    as_of_date="2026-04-01",
+                    metric="real_ahe_12mo_chg_pct",
+                    operation="pct_change_12mo",
+                    transform_basis="CPI-adjusted hourly earnings, 12-month pct change",
+                ),
+            ],
+        }
+    )
+
+    assert summary["numeric_facts"][1]["operation"] == "pct_change_12mo"
+
+
+def test_normalize_quant_summary_matches_common_source_id_aliases():
+    summary = qms.normalize_quant_execution_summary(
+        {
+            "statistical_summary": {
+                "latest_unemployment_rate": 4.3,
+            },
+            "numeric_facts": [
+                qms.numeric_fact(
+                    fact_id="fred.UNRATE.latest",
+                    label="UNRATE latest",
+                    raw_value=4.3,
+                    unit="percent",
+                    precision=1,
+                    tolerance=0.05,
+                    source_key="UNRATE",
+                    as_of_date="2026-04-01",
+                    metric="UNRATE",
+                )
+            ],
+        }
+    )
+
+    assert summary["numeric_facts"][0]["source_key"] == "UNRATE"
+
+
+@pytest.mark.parametrize(
+    ("field", "source_key", "value", "unit"),
+    [
+        ("current_ahe", "CES0500000003", 37.41, "usd"),
+        ("current_uempm", "UEMPMEAN", 24.4, "weeks"),
+        ("current_underemployment", "LNS12032195", 3289, "thousands"),
+    ],
+)
+def test_normalize_quant_summary_matches_labor_source_id_semantics(
+    field,
+    source_key,
+    value,
+    unit,
+):
+    summary = qms.normalize_quant_execution_summary(
+        {
+            "statistical_summary": {
+                field: value,
+            },
+            "numeric_facts": [
+                qms.numeric_fact(
+                    fact_id=f"fred.{source_key}.latest",
+                    label=f"{source_key} latest",
+                    raw_value=value,
+                    unit=unit,
+                    precision=2,
+                    tolerance=0.01,
+                    source_key=source_key,
+                    as_of_date="2026-04-01",
+                    metric=source_key,
+                    operation="latest_observation",
+                )
+            ],
+        }
+    )
+
+    assert summary["numeric_facts"][0]["source_key"] == source_key
+
+
+@pytest.mark.parametrize(
+    ("field", "source_key", "value", "operation"),
+    [
+        ("latest_yield_spread", "T10Y2Y", 0.21, "latest_spread"),
+        ("latest_cpi_yoy", "CPIAUCSL", 3.0, "pct_change_yoy"),
+        ("latest_core_pce_yoy", "PCEPILFE", 2.8, "pct_change_yoy"),
+        ("latest_policy_rate", "FEDFUNDS", 3.64, "latest_observation"),
+        ("latest_job_openings", "JTSJOL", 7.4, "latest_observation"),
+        (
+            "latest_labor_force_participation_rate",
+            "CIVPART",
+            62.6,
+            "latest_observation",
+        ),
+    ],
+)
+def test_normalize_quant_summary_matches_common_fred_source_id_aliases(
+    field,
+    source_key,
+    value,
+    operation,
+):
+    summary = qms.normalize_quant_execution_summary(
+        {
+            "statistical_summary": {
+                field: value,
+            },
+            "numeric_facts": [
+                qms.numeric_fact(
+                    fact_id=f"fred.{source_key}.latest",
+                    label=f"{source_key} latest",
+                    raw_value=value,
+                    unit="percent",
+                    precision=2,
+                    tolerance=0.01,
+                    source_key=source_key,
+                    as_of_date="2026-04-01",
+                    metric=source_key,
+                    operation=operation,
+                )
+            ],
+        }
+    )
+
+    assert summary["numeric_facts"][0]["source_key"] == source_key
+
+
+def test_normalize_quant_summary_allows_null_current_scalar_with_unavailable_source():
+    summary = qms.normalize_quant_execution_summary(
+        {
+            "statistical_summary": {
+                "current_jtsjol": None,
+            },
+            "source_coverage": {
+                "JTSJOL": {
+                    "status": "not_available",
+                    "reason": "FRED returned no finite current job-openings observation.",
+                }
+            },
+        }
+    )
+
+    assert summary["statistical_summary"]["current_jtsjol"] is None
+
+
+@pytest.mark.parametrize("status", ["no_data", "not_fetched"])
+def test_normalize_quant_summary_allows_null_current_scalar_with_qa_unavailable_statuses(
+    status,
+):
+    summary = qms.normalize_quant_execution_summary(
+        {
+            "statistical_summary": {
+                "current_underemployment": None,
+            },
+            "source_coverage": {
+                "LNS12032195": {
+                    "status": status,
+                    "reason": "No finite current part-time-for-economic-reasons observation.",
+                }
+            },
+        }
+    )
+
+    assert summary["statistical_summary"]["current_underemployment"] is None
+
+
+def test_normalize_quant_summary_preserves_signal_fact_backed_sahm_scalar():
+    summary = qms.normalize_quant_execution_summary(
+        {
+            "statistical_summary": {
+                "sahm_value": 0.2,
+                "sahm_rule_triggered": False,
+            },
+            "current_signal_facts": [
+                {
+                    "signal_id": "sahm_rule",
+                    "label": "Sahm rule unemployment gap",
+                    "value": 0.2,
+                    "threshold": 0.5,
+                    "direction": "high",
+                    "triggered": False,
+                    "threshold_distance": -0.3,
+                    "as_of_date": "2026-04-01",
+                    "source_key": "UNRATE",
+                    "chart_id": "sahm_chart",
+                    "data_key": "sahm_gap",
+                    "unit": "percentage_point",
+                    "tolerance": 0.005,
+                }
+            ],
+        }
+    )
+
+    assert "numeric_facts" not in summary
+    assert summary["current_signal_facts"][0]["signal_id"] == "sahm_rule"
+
+
+def test_normalize_quant_summary_rejects_freeform_statistical_assessment():
+    with pytest.raises(ValueError) as error:
+        qms.normalize_quant_execution_summary(
+            {
+                "statistical_summary": {
+                    "current_unrate": 4.3,
+                    "assessment": "The labor market remains resilient.",
+                },
+                "numeric_facts": [
+                    qms.numeric_fact(
+                        fact_id="macro.current_unrate",
+                        label="Current unemployment rate",
+                        raw_value=4.3,
+                        unit="percent",
+                        precision=1,
+                        tolerance=0.05,
+                        source_key="UNRATE",
+                        as_of_date="2026-04-01",
+                        metric="current_unrate",
+                    )
+                ],
+            }
+        )
+
+    assert "statistical_summary.assessment is freeform" in str(error.value)
+
+
 def test_normalize_quant_summary_rejects_null_latest_scalar_slots_with_unrelated_fact():
     with pytest.raises(ValueError) as error:
         qms.normalize_quant_execution_summary(

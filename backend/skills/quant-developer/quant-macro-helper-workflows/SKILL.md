@@ -131,6 +131,15 @@ statistics inside `analysis.py`.
   so chart latest values and trigger state are checked against
   `current_signal_facts`; do not hand-roll a 12-month unemployment average and
   label it Sahm.
+- When you expose current/latest/window headline scalars in
+  `statistical_summary`, mirror each finite scalar as a typed `numeric_facts`
+  entry with `display_value`, `as_of_date`, `metric`, `source_key`, and
+  operation/transform metadata for derived changes, spreads, gaps, averages, or
+  real values. Do not put qualitative `assessment` text in
+  `statistical_summary`; build qualitative report language from these typed
+  facts. If a current/latest source has no finite observation, preserve explicit
+  `source_coverage` for that source instead of writing null current scalar
+  fields.
 - For composite predictive indicator prompts, call
   `build_composite_predictive_indicator(...)`. For composite recession-risk
   indicator prompts, use `target_col="USREC"` and `prediction_horizon=1`.

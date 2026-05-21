@@ -42,6 +42,9 @@ def test_quant_prompt_requires_analysis_script_not_prebuilt_report_tools():
     assert "latest_numeric_fact(panel, key" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "raw_value" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "display_value" in QUANT_DEVELOPER_SYSTEM_PROMPT
+    assert "current/latest/window headline scalar" in QUANT_DEVELOPER_SYSTEM_PROMPT
+    assert "statistical_summary`" in QUANT_DEVELOPER_SYSTEM_PROMPT
+    assert "qualitative `assessment` prose" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "Correlation, growth-rate, spread, and normalized-index" in (
         QUANT_DEVELOPER_SYSTEM_PROMPT
     )

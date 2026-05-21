@@ -1,4 +1,6 @@
 """Execution-summary validation and output-contract normalization."""
+
+import re
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Iterable
@@ -101,6 +103,177 @@ _NUMERIC_FACT_TEXT_FIELDS = ("id", "label", "display_value", "unit", "source_key
 _NUMERIC_FACT_FINITE_FIELDS = ("raw_value", "tolerance")
 _CURRENT_SCALAR_FACT_CONTAINERS = ("statistical_summary",)
 _CURRENT_SCALAR_DATE_FIELDS = ("latest_date",)
+_CURRENT_SCALAR_TEMPORAL_TOKENS = frozenset(
+    {
+        "current",
+        "latest",
+        "last",
+        "now",
+        "today",
+        "recent",
+        "asof",
+        "as",
+        "of",
+    }
+)
+_CURRENT_SCALAR_GENERIC_TOKENS = _CURRENT_SCALAR_TEMPORAL_TOKENS | frozenset(
+    {
+        "value",
+        "level",
+        "rate",
+        "pct",
+        "percent",
+        "percentage",
+        "point",
+        "points",
+    }
+)
+_CURRENT_SCALAR_IDENTITY_STOP_TOKENS = _CURRENT_SCALAR_GENERIC_TOKENS | frozenset(
+    {
+        "avg",
+        "average",
+        "billion",
+        "billions",
+        "bps",
+        "chg",
+        "change",
+        "changed",
+        "delta",
+        "dollar",
+        "dollars",
+        "gap",
+        "grow",
+        "growth",
+        "index",
+        "indexed",
+        "million",
+        "millions",
+        "mom",
+        "nominal",
+        "pp",
+        "qoq",
+        "ratio",
+        "real",
+        "rolling",
+        "spread",
+        "thousand",
+        "thousands",
+        "usd",
+        "window",
+        "wow",
+        "yoy",
+    }
+)
+_CURRENT_SCALAR_WINDOW_TOKEN_RE = re.compile(
+    r"^\d+(?:mo|m|month|months|q|quarter|quarters|yr|year|years)$"
+)
+_CURRENT_SCALAR_WINDOW_PHRASE_RE = re.compile(
+    r"\b(\d+)\s*[-_]?\s*(mo|m|month|months|q|quarter|quarters|yr|year|years)\b"
+)
+_CURRENT_SCALAR_FIELD_RE = re.compile(
+    r"(?:^|_)(?:current|latest|last|recent|now|today)(?:_|$)|"
+    r"(?:^|_)(?:yoy|qoq|mom|wow|year_over_year|month_over_month)(?:_|$)|"
+    r"(?:^|_)\d+(?:mo|m|month|months|q|quarter|quarters|yr|year|years)(?:_|$)|"
+    r"(?:^|_)(?:rolling|window|average|avg)(?:_|$)"
+)
+_DERIVED_CURRENT_SCALAR_FIELD_RE = re.compile(
+    r"(?:^|_)(?:yoy|qoq|mom|wow|chg|change|changed|growth|delta|spread|gap|"
+    r"ratio|real|avg|average|rolling|window|sahm|curve|indexed|index)(?:_|$)|"
+    r"(?:^|_)\d+(?:mo|m|month|months|q|quarter|quarters|yr|year|years)(?:_|$)"
+)
+_UNAVAILABLE_SOURCE_STATUSES = frozenset(
+    {
+        "failed",
+        "failure",
+        "error",
+        "missing",
+        "no_data",
+        "not_available",
+        "not_covered",
+        "not_fetched",
+        "unavailable",
+        "insufficient",
+    }
+)
+_CURRENT_SCALAR_TOKEN_ALIASES = {
+    "unrate": {"unrate", "unemployment"},
+    "unemployment": {"unrate", "unemployment"},
+    "payems": {"payems", "payroll", "payrolls"},
+    "payroll": {"payems", "payroll", "payrolls"},
+    "payrolls": {"payems", "payroll", "payrolls"},
+    "civpart": {"civpart", "participation"},
+    "participation": {"civpart", "participation"},
+    "jtsjol": {"jtsjol", "opening", "openings"},
+    "opening": {"jtsjol", "opening", "openings"},
+    "openings": {"jtsjol", "opening", "openings"},
+    "jtsqur": {"jtsqur", "quits"},
+    "quits": {"jtsqur", "quits"},
+    "icsa": {"icsa", "claims"},
+    "claims": {"icsa", "claims"},
+    "uempm": {"uempm", "duration"},
+    "duration": {"uempm", "duration"},
+    "usrec": {"usrec", "recession"},
+    "recession": {"usrec", "recession"},
+    "t10y2y": {"t10y2y", "yield", "curve", "treasury"},
+    "yield": {"t10y2y", "yield", "curve", "treasury"},
+    "curve": {"t10y2y", "yield", "curve", "treasury"},
+    "cpiaucsl": {"cpiaucsl", "cpi", "inflation"},
+    "cpi": {"cpiaucsl", "cpi", "inflation"},
+    "inflation": {"cpiaucsl", "cpi", "inflation"},
+    "pcepilfe": {"pcepilfe", "core", "pce", "inflation"},
+    "core": {"pcepilfe", "core", "pce", "inflation"},
+    "pce": {"pcepilfe", "core", "pce", "inflation"},
+    "fedfunds": {"fedfunds", "fed", "funds", "policy"},
+    "fed": {"fedfunds", "fed", "funds", "policy"},
+    "funds": {"fedfunds", "fed", "funds", "policy"},
+    "policy": {"fedfunds", "fed", "funds", "policy"},
+}
+_CURRENT_SCALAR_SOURCE_KEY_TOKENS = {
+    # Opaque FRED/BLS identifiers from labor-market helpers need semantic tokens;
+    # the source IDs themselves do not tokenize into useful field names.
+    "ces0500000003": {"ahe", "average", "hourly", "earnings", "wage", "wages"},
+    "uempm": {"uempm", "unemployment", "duration", "weeks", "unemployed"},
+    "uempmean": {"uempm", "unemployment", "duration", "weeks", "unemployed"},
+    "lns12032195": {
+        "underemployment",
+        "part",
+        "time",
+        "economic",
+        "reasons",
+        "slack",
+    },
+}
+_CURRENT_SCALAR_SOURCE_DESCRIPTOR_TOKENS = {
+    "civpart": {"labor", "force"},
+    "participation": {"labor", "force"},
+    "jtsjol": {"job", "jobs"},
+    "opening": {"job", "jobs"},
+    "openings": {"job", "jobs"},
+}
+_CURRENT_SCALAR_REQUIRED_MODIFIER_TOKENS = frozenset(
+    {
+        "average",
+        "change",
+        "delta",
+        "gap",
+        "growth",
+        "mom",
+        "qoq",
+        "ratio",
+        "real",
+        "rolling",
+        "spread",
+        "window",
+        "wow",
+        "yoy",
+    }
+)
+_CURRENT_SCALAR_MODIFIER_TOKEN_ALIASES = {
+    "avg": "average",
+    "chg": "change",
+    "changed": "change",
+    "grow": "growth",
+}
 _CURRENT_SIGNAL_REQUIRED_TEXT_FIELDS = (
     "signal_id",
     "direction",
@@ -545,6 +718,127 @@ def _is_current_scalar_fact_slot(value: Any) -> bool:
     return value is None or _finite(value) is not None
 
 
+def _semantic_tokens(*values: Any) -> tuple[str, ...]:
+    tokens: list[str] = []
+    for value in values:
+        text = str(value or "").lower()
+        for token in re.split(r"[^a-z0-9]+", text):
+            if token:
+                tokens.append(token)
+        for match in _CURRENT_SCALAR_WINDOW_PHRASE_RE.finditer(text):
+            amount, unit = match.groups()
+            if unit in {"mo", "m", "month", "months"}:
+                tokens.append(f"{amount}mo")
+            elif unit in {"q", "quarter", "quarters"}:
+                tokens.append(f"{amount}q")
+            else:
+                tokens.append(f"{amount}yr")
+    return tuple(tokens)
+
+
+def _field_core_tokens(field: str) -> set[str]:
+    return _expand_current_scalar_aliases({
+        token
+        for token in _semantic_tokens(field)
+        if token not in _CURRENT_SCALAR_GENERIC_TOKENS
+    })
+
+
+def _current_scalar_identity_tokens(*values: Any) -> set[str]:
+    return _expand_current_scalar_aliases({
+        token
+        for token in _semantic_tokens(*values)
+        if token not in _CURRENT_SCALAR_IDENTITY_STOP_TOKENS
+        and not _CURRENT_SCALAR_WINDOW_TOKEN_RE.fullmatch(token)
+    })
+
+
+def _current_scalar_modifier_tokens(*values: Any) -> set[str]:
+    modifiers: set[str] = set()
+    for token in _semantic_tokens(*values):
+        canonical = _CURRENT_SCALAR_MODIFIER_TOKEN_ALIASES.get(token, token)
+        if (
+            canonical in _CURRENT_SCALAR_REQUIRED_MODIFIER_TOKENS
+            or _CURRENT_SCALAR_WINDOW_TOKEN_RE.fullmatch(canonical)
+        ):
+            modifiers.add(canonical)
+    return modifiers
+
+
+def _expand_current_scalar_aliases(tokens: set[str]) -> set[str]:
+    expanded = set(tokens)
+    for token in tuple(tokens):
+        expanded.update(_CURRENT_SCALAR_TOKEN_ALIASES.get(token, ()))
+        expanded.update(_CURRENT_SCALAR_SOURCE_KEY_TOKENS.get(token, ()))
+    return expanded
+
+
+def current_scalar_semantic_tokens(*values: Any) -> set[str]:
+    """Return the semantic token aliases used for current-scalar matching."""
+
+    return _expand_current_scalar_aliases({
+        token for token in _semantic_tokens(*values) if token
+    })
+
+
+def _current_scalar_field_tokens_match_fact(
+    field_tokens: set[str],
+    fact_tokens: set[str],
+) -> bool:
+    if not field_tokens or not fact_tokens:
+        return False
+    if field_tokens <= fact_tokens:
+        return True
+    matched_tokens = field_tokens & fact_tokens
+    if not matched_tokens:
+        return False
+    allowed_descriptors: set[str] = set()
+    for token in matched_tokens:
+        allowed_descriptors.update(_CURRENT_SCALAR_SOURCE_DESCRIPTOR_TOKENS.get(token, ()))
+    return field_tokens - fact_tokens <= allowed_descriptors
+
+
+def _current_scalar_fact_covers_field_modifiers(
+    *,
+    field: str,
+    fact_values: Iterable[Any],
+) -> bool:
+    field_modifiers = _current_scalar_modifier_tokens(field)
+    if not field_modifiers:
+        return True
+    fact_modifiers = _current_scalar_modifier_tokens(*fact_values)
+    return field_modifiers <= fact_modifiers
+
+
+def _is_current_scalar_field_name(field: str, container: dict[str, Any]) -> bool:
+    normalized = "_".join(_semantic_tokens(field))
+    if not normalized:
+        return False
+    if _CURRENT_SCALAR_FIELD_RE.search(normalized):
+        return True
+    if normalized.endswith("_value"):
+        base = normalized[: -len("_value")]
+        normalized_siblings = {"_".join(_semantic_tokens(sibling)) for sibling in container}
+        return any(
+            sibling in normalized_siblings
+            or any(
+                candidate.startswith(f"{base}_") and candidate.endswith(sibling_suffix)
+                for candidate in normalized_siblings
+            )
+            for sibling, sibling_suffix in (
+                (f"{base}_status", "_status"),
+                (f"{base}_triggered", "_triggered"),
+                (f"{base}_state", "_state"),
+            )
+        )
+    return False
+
+
+def _is_derived_current_scalar_field(field: str) -> bool:
+    normalized = "_".join(_semantic_tokens(field))
+    return bool(_DERIVED_CURRENT_SCALAR_FIELD_RE.search(normalized))
+
+
 def _current_scalar_fact_slots(summary: dict[str, Any]) -> dict[str, dict[str, Any]]:
     containers: dict[str, dict[str, Any]] = {}
     for key in _CURRENT_SCALAR_FACT_CONTAINERS:
@@ -554,21 +848,43 @@ def _current_scalar_fact_slots(summary: dict[str, Any]) -> dict[str, dict[str, A
         has_current_date = any(
             value.get(date_field) is not None for date_field in _CURRENT_SCALAR_DATE_FIELDS
         )
-        if not has_current_date:
-            continue
         scalar_fact_slots = {
             field: field_value
             for field, field_value in value.items()
             if field not in _CURRENT_SCALAR_DATE_FIELDS
             and _is_current_scalar_fact_slot(field_value)
+            and (has_current_date or _is_current_scalar_field_name(str(field), value))
         }
         if scalar_fact_slots:
             containers[key] = scalar_fact_slots
     return containers
 
 
+def current_scalar_fact_slots(summary: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Return current/latest/window scalar slots controlled by numeric_facts."""
+
+    return deepcopy(_current_scalar_fact_slots(summary))
+
+
+def _current_scalar_fact_slots_requiring_facts(
+    summary: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    required: dict[str, dict[str, Any]] = {}
+    for container, fields in _current_scalar_fact_slots(summary).items():
+        required_fields: dict[str, Any] = {}
+        for field, value in fields.items():
+            if value is None:
+                continue
+            if _current_signal_facts_cover_scalar(summary, str(field), value):
+                continue
+            required_fields[field] = value
+        if required_fields:
+            required[container] = required_fields
+    return required
+
+
 def _current_scalar_fact_containers(summary: dict[str, Any]) -> list[str]:
-    return list(_current_scalar_fact_slots(summary))
+    return list(_current_scalar_fact_slots_requiring_facts(summary))
 
 
 def _format_container_fields(fields_by_container: dict[str, list[str]]) -> str:
@@ -581,7 +897,12 @@ def _format_container_fields(fields_by_container: dict[str, list[str]]) -> str:
 
 def _reject_null_current_scalar_slots(summary: dict[str, Any]) -> None:
     null_slots = {
-        container: [field for field, value in fields.items() if value is None]
+        container: [
+            field
+            for field, value in fields.items()
+            if value is None
+            and not _source_coverage_marks_unavailable(summary, container, field)
+        ]
         for container, fields in _current_scalar_fact_slots(summary).items()
     }
     null_slots = {container: fields for container, fields in null_slots.items() if fields}
@@ -593,9 +914,207 @@ def _reject_null_current_scalar_slots(summary: dict[str, Any]) -> None:
         "scalar fields: "
         + _format_container_fields(null_slots)
         + ". Use latest_numeric_fact(...) to emit latest finite observations with "
-        "their own as_of_date, or remove the null scalar fields before "
-        "save_quant_outputs(...)."
+        "their own as_of_date, or preserve explicit unavailable source_coverage "
+        "for missing current/latest sources before save_quant_outputs(...)."
     )
+
+
+def _source_coverage_marks_unavailable(
+    summary: dict[str, Any],
+    container: str,
+    field: str,
+) -> bool:
+    coverage = summary.get("source_coverage")
+    if not isinstance(coverage, dict):
+        return False
+    field_tokens = _field_core_tokens(field)
+    if not field_tokens:
+        return False
+
+    def walk(
+        value: Any,
+        path: tuple[str, ...] = (),
+        depth: int = 0,
+    ) -> Iterable[tuple[tuple[str, ...], dict[str, Any]]]:
+        if depth > 4 or not isinstance(value, dict):
+            return
+        yield path, value
+        for child_key, child_value in value.items():
+            if isinstance(child_value, dict):
+                yield from walk(child_value, (*path, str(child_key)), depth + 1)
+
+    for path, payload in walk(coverage):
+        status = str(payload.get("status") or payload.get("availability") or "").strip().lower()
+        if status not in _UNAVAILABLE_SOURCE_STATUSES:
+            continue
+        payload_tokens = _expand_current_scalar_aliases(
+            set(_semantic_tokens(container, *path, *payload.values()))
+        )
+        if field_tokens & payload_tokens:
+            return True
+    return False
+
+
+def _validate_no_freeform_statistical_assessment(summary: dict[str, Any]) -> None:
+    stats = summary.get("statistical_summary")
+    if not isinstance(stats, dict):
+        return
+    assessment = stats.get("assessment")
+    if isinstance(assessment, str) and assessment.strip():
+        raise ValueError(
+            "execution_summary.statistical_summary.assessment is freeform "
+            "qualitative prose. Move report-facing current claims into typed "
+            "numeric_facts with display_value, as_of_date, metric, source_key, "
+            "and operation/transform metadata, and keep statistical_summary to "
+            "computed values."
+        )
+
+
+def _fact_matches_current_scalar(
+    fact: dict[str, Any],
+    *,
+    field: str,
+    value: Any,
+) -> bool:
+    number = _finite(value)
+    fact_value = _finite(fact.get("raw_value", fact.get("value")))
+    if number is None or fact_value is None:
+        return False
+    tolerance = _finite(fact.get("tolerance"))
+    if tolerance is None:
+        tolerance = 0.0
+    if abs(float(fact_value) - float(number)) > max(float(tolerance), 1e-9):
+        return False
+
+    field_tokens = _current_scalar_identity_tokens(field)
+    fact_tokens = _current_scalar_identity_tokens(
+        fact.get("id"),
+        fact.get("label"),
+        fact.get("metric"),
+        fact.get("source_key"),
+    )
+    if not field_tokens or not fact_tokens:
+        return False
+    return _current_scalar_field_tokens_match_fact(
+        field_tokens,
+        fact_tokens,
+    ) and _current_scalar_fact_covers_field_modifiers(
+        field=field,
+        fact_values=(
+            fact.get("id"),
+            fact.get("label"),
+            fact.get("metric"),
+            fact.get("source_key"),
+            fact.get("operation"),
+            fact.get("transform_basis"),
+        ),
+    )
+
+
+def _current_signal_fact_matches_current_scalar(
+    fact: dict[str, Any],
+    *,
+    field: str,
+    value: Any,
+) -> bool:
+    number = _finite(value)
+    signal_value = _finite(fact.get("value"))
+    if number is None or signal_value is None:
+        return False
+    tolerance = _finite(fact.get("tolerance"))
+    if tolerance is None:
+        tolerance = 0.0
+    if abs(float(signal_value) - float(number)) > max(float(tolerance), 1e-9):
+        return False
+
+    field_tokens = _current_scalar_identity_tokens(field)
+    fact_tokens = _current_scalar_identity_tokens(
+        fact.get("signal_id"),
+        fact.get("label"),
+        fact.get("source_key"),
+        fact.get("data_key"),
+        fact.get("method"),
+    )
+    if not field_tokens or not fact_tokens:
+        return False
+    return _current_scalar_field_tokens_match_fact(
+        field_tokens,
+        fact_tokens,
+    ) and _current_scalar_fact_covers_field_modifiers(
+        field=field,
+        fact_values=(
+            fact.get("signal_id"),
+            fact.get("label"),
+            fact.get("source_key"),
+            fact.get("data_key"),
+            fact.get("method"),
+        ),
+    )
+
+
+def _current_signal_facts_cover_scalar(
+    summary: dict[str, Any],
+    field: str,
+    value: Any,
+) -> bool:
+    facts = summary.get("current_signal_facts")
+    if not isinstance(facts, list):
+        return False
+    return any(
+        isinstance(fact, dict)
+        and _current_signal_fact_matches_current_scalar(fact, field=field, value=value)
+        for fact in facts
+    )
+
+
+def _validate_current_scalar_fact_coverage(
+    summary: dict[str, Any],
+    facts: list[dict[str, Any]],
+) -> None:
+    missing: list[str] = []
+    malformed: list[str] = []
+    for container, slots in _current_scalar_fact_slots_requiring_facts(summary).items():
+        for field, value in slots.items():
+            matches = [
+                fact
+                for fact in facts
+                if _fact_matches_current_scalar(fact, field=field, value=value)
+            ]
+            if not matches:
+                missing.append(f"{container}.{field}")
+                continue
+            fact = matches[0]
+            missing_fields = [
+                field_name
+                for field_name in ("as_of_date", "metric", "source_key")
+                if not _non_empty_text(fact.get(field_name))
+            ]
+            if _is_derived_current_scalar_field(field) and not (
+                _non_empty_text(fact.get("operation"))
+                or _non_empty_text(fact.get("transform_basis"))
+            ):
+                missing_fields.append("operation_or_transform_basis")
+            if missing_fields:
+                label = str(fact.get("id") or fact.get("source_key") or field)
+                malformed.append(f"{label}: missing {', '.join(missing_fields)}")
+
+    if missing:
+        raise ValueError(
+            "execution_summary current/latest/window scalar snapshots require "
+            "matching display-ready numeric_facts for "
+            + ", ".join(missing[:12])
+            + ". Build those facts with latest_numeric_fact(...) or "
+            "numeric_fact(...), using metric/source_key values that identify the "
+            "controlled scalar."
+        )
+    if malformed:
+        raise ValueError(
+            "execution_summary current/latest/window scalar numeric_facts are "
+            "missing required metadata: "
+            + "; ".join(malformed[:12])
+            + ". Include as_of_date, metric, source_key, and operation or "
+            "transform_basis for derived window/change/spread facts."
+        )
 
 
 def _validate_numeric_facts(summary: dict[str, Any]) -> None:
@@ -661,6 +1180,7 @@ def _validate_numeric_facts(summary: dict[str, Any]) -> None:
             "display_value, tolerance, and source_key; keep numeric_facts empty "
             "only when no scalar fact evidence is required."
         )
+    _validate_current_scalar_fact_coverage(summary, facts)
 
 
 def _validate_current_signal_facts(summary: dict[str, Any]) -> None:
@@ -774,6 +1294,7 @@ _SUMMARY_NORMALIZATION_RULES = (
     _drop_obsolete_preservation_flags,
     _preserve_sec_company_facts_contract,
     _sanitize_split_affected_share_trends,
+    _validate_no_freeform_statistical_assessment,
     _normalize_numeric_fact_contracts,
     _collect_validation_methods,
     _validate_current_signal_facts,

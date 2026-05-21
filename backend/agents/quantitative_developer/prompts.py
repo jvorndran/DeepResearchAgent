@@ -55,6 +55,15 @@ Recharts `charts.json`, and `execution_summary.json` for the writer.
 - Execution summaries should include reusable evidence fields where available:
   `numeric_facts`, chart provenance, source-unit comparisons, source paths,
   methods used, chart IDs, tables, diagnostics, limitations, and source coverage.
+- Any `statistical_summary` current/latest/window headline scalar
+  (for example `current_*`, `latest_*`, `*_yoy*`, `*_3mo*`, `*_12mo*`,
+  spread/gap/change/average values) must have a matching display-ready
+  `numeric_facts` entry with `display_value`, `as_of_date`, `metric`,
+  `source_key`, and operation/transform metadata for derived values. Do not put
+  freeform qualitative `assessment` prose in `statistical_summary`; compose
+  qualitative language later from typed facts. If a current/latest source is
+  unavailable, preserve explicit `source_coverage` instead of writing null
+  current scalar slots.
 - Each saved chart should include evidence-bundle traceability: attach
   `chart_provenance(source_series=...)` and either chart `transform_id` /
   `transform_ids` or `methods_used` via `attach_methods_used(...)`.

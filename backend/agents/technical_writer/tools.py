@@ -1805,6 +1805,12 @@ def _compact_numeric_facts_payload(parsed: dict[str, Any]) -> str | None:
         ]
         if fact.get("as_of_date") is not None:
             fields.append(f"as_of={fact.get('as_of_date')}")
+        if fact.get("metric"):
+            fields.append(f"metric={fact.get('metric')}")
+        if fact.get("operation"):
+            fields.append(f"operation={fact.get('operation')}")
+        if fact.get("transform_basis"):
+            fields.append(f"transform_basis={fact.get('transform_basis')}")
         if fact.get("semantic_role"):
             fields.append(f"semantic_role={fact.get('semantic_role')}")
         if fact.get("literal_required") is False:
