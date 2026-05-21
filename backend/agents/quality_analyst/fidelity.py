@@ -15,11 +15,13 @@ from ..artifact_fact_consistency import (
 )
 from ..requested_coverage import (
     assess_requested_geography_coverage,
+    assess_requested_subject_evidence,
     numeric_fact_geography_entity_keys,
     numeric_fact_has_requested_geography_evidence,
     query_requests_geography_coverage,
     requested_geography_entity_keys,
     requested_geography_minimum_entity_count,
+    requested_subject_evidence_report_blocker,
     structured_geography_row_entity_key,
     structured_geography_row_metric_items,
 )
@@ -2871,6 +2873,17 @@ def _requested_group_place_coverage_blocker(
     )
 
 
+def _requested_subject_evidence_blocker(
+    report_data: dict[str, object],
+    summary: dict[str, object],
+) -> str | None:
+    return requested_subject_evidence_report_blocker(
+        report_data.get("query"),
+        summary,
+        _report_claim_text(report_data),
+    )
+
+
 def _report_claims_company_fundamental_analysis(report_data: dict[str, object]) -> bool:
     lowered = _report_claim_text(report_data).lower()
     return any(
@@ -4102,6 +4115,9 @@ def _execution_summary_fidelity_blockers(
     )
     if requested_coverage:
         blockers.append(requested_coverage)
+    requested_subject = _requested_subject_evidence_blocker(report_data, summary)
+    if requested_subject:
+        blockers.append(requested_subject)
     blockers.extend(_statistical_summary_direction_blockers(summary, report_data))
     blockers.extend(_numeric_fact_fidelity_blockers(summary, markdown))
 
@@ -4500,6 +4516,20 @@ def _approval_failure_metadata(report_path: str) -> dict[str, str]:
             "required_upstream": (
                 "quant-developer"
                 if geography_coverage.required and geography_coverage.status == "missing"
+                else "technical-writer"
+            ),
+        }
+    requested_subject = _requested_subject_evidence_blocker(data, summary)
+    if requested_subject:
+        subject_assessment = assess_requested_subject_evidence(
+            data.get("query"),
+            summary,
+        )
+        return {
+            "failure_category": "requested_coverage_missing",
+            "required_upstream": (
+                "quant-developer"
+                if subject_assessment.status == "missing"
                 else "technical-writer"
             ),
         }

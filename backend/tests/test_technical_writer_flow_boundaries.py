@@ -756,6 +756,198 @@ def test_plan_report_structure_preserves_regional_state_context(tmp_path):
     assert "do not estimate or round them differently" in draft
 
 
+def test_plan_report_structure_requires_typed_requested_subject_proxy_contract(tmp_path):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text("{}", encoding="utf-8")
+    execution_summary = {
+        "statistical_summary": {
+            "business_loan_delinquency_pct": 1.42,
+            "consumer_sentiment_index": 74.0,
+        }
+    }
+
+    result = json.loads(
+        plan_report_structure.func(
+            query_type="macro_indicator",
+            charts_json_path=str(charts_path),
+            execution_summary=json.dumps(execution_summary),
+            original_query="Are small businesses under pressure?",
+            runtime=SimpleNamespace(context=SimpleNamespace(output_dir=str(tmp_path))),
+        )
+    )
+
+    subject = result["helper_evidence_for_draft"]["requested_subject_evidence"]
+    assert subject["status"] == "missing"
+    assert subject["requested_subjects"] == ["small_businesses"]
+    assert subject["proxy_evidence_keys"] == []
+    assert "neither direct subject evidence" in subject["blocker"]
+    assert "requested_subject_evidence" in result["execution_summary_for_draft"]
+
+
+def test_plan_report_structure_surfaces_declared_subject_proxy_contract(tmp_path):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text("{}", encoding="utf-8")
+    execution_summary = {
+        "numeric_facts": [
+            {
+                "id": "fred.business_loan_delinquency",
+                "label": "Small business loan delinquency proxy",
+                "subject": "small businesses",
+                "metric": "business_loan_delinquency_pct",
+                "raw_value": 1.42,
+                "display_value": "1.42%",
+                "evidence_directness": "proxy",
+            }
+        ]
+    }
+
+    result = json.loads(
+        plan_report_structure.func(
+            query_type="macro_indicator",
+            charts_json_path=str(charts_path),
+            execution_summary=json.dumps(execution_summary),
+            original_query="Are small businesses under pressure?",
+            runtime=SimpleNamespace(context=SimpleNamespace(output_dir=str(tmp_path))),
+        )
+    )
+
+    subject = result["helper_evidence_for_draft"]["requested_subject_evidence"]
+    assert subject["status"] == "proxy_only"
+    assert subject["requested_subjects"] == ["small_businesses"]
+    assert subject["proxy_evidence_keys"] == ["numeric_facts"]
+    assert "blocker" not in subject
+
+
+def test_plan_report_structure_surfaces_subject_proxy_wording_without_directness(tmp_path):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text("{}", encoding="utf-8")
+    execution_summary = {
+        "numeric_facts": [
+            {
+                "id": "fred.business_loan_delinquency",
+                "label": "Small business loan delinquency proxy",
+                "subject": "small businesses",
+                "metric": "business_loan_delinquency_pct",
+                "raw_value": 1.42,
+                "display_value": "1.42%",
+            }
+        ]
+    }
+
+    result = json.loads(
+        plan_report_structure.func(
+            query_type="macro_indicator",
+            charts_json_path=str(charts_path),
+            execution_summary=json.dumps(execution_summary),
+            original_query="Are small businesses under pressure?",
+            runtime=SimpleNamespace(context=SimpleNamespace(output_dir=str(tmp_path))),
+        )
+    )
+
+    subject = result["helper_evidence_for_draft"]["requested_subject_evidence"]
+    assert subject["status"] == "proxy_only"
+    assert subject["requested_subjects"] == ["small_businesses"]
+    assert subject["proxy_evidence_keys"] == ["numeric_facts"]
+    assert "blocker" not in subject
+
+
+def test_plan_report_structure_treats_subject_named_composite_as_proxy(tmp_path):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text("{}", encoding="utf-8")
+    execution_summary = {
+        "numeric_facts": [
+            {
+                "id": "composite.small_business_pressure_index",
+                "label": "Composite Small Business Pressure Index",
+                "subject": "small businesses",
+                "metric": "pressure_score",
+                "raw_value": 58.2,
+                "display_value": "58.2/100",
+                "source_key": "composite",
+            }
+        ]
+    }
+
+    result = json.loads(
+        plan_report_structure.func(
+            query_type="macro_indicator",
+            charts_json_path=str(charts_path),
+            execution_summary=json.dumps(execution_summary),
+            original_query="Are small businesses under pressure?",
+            runtime=SimpleNamespace(context=SimpleNamespace(output_dir=str(tmp_path))),
+        )
+    )
+
+    subject = result["helper_evidence_for_draft"]["requested_subject_evidence"]
+    assert subject["status"] == "proxy_only"
+    assert subject["requested_subjects"] == ["small_businesses"]
+    assert subject["direct_evidence_keys"] == []
+    assert subject["proxy_evidence_keys"] == ["numeric_facts"]
+    assert "blocker" not in subject
+
+
+def test_plan_report_structure_surfaces_unavailable_subject_sources(tmp_path):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text("{}", encoding="utf-8")
+    execution_summary = {
+        "source_coverage": {
+            "nfib_small_business_optimism": {
+                "source": "NFIB Small Business Optimism Index",
+                "evidence_directness": "unavailable",
+                "reason": "Current release could not be fetched.",
+            },
+            "sba_small_business_credit_survey": {
+                "source": "SBA Small Business Credit Survey",
+                "subject_evidence": "missing",
+                "reason": "No current table was available.",
+            },
+        }
+    }
+
+    result = json.loads(
+        plan_report_structure.func(
+            query_type="macro_indicator",
+            charts_json_path=str(charts_path),
+            execution_summary=json.dumps(execution_summary),
+            original_query="Are small businesses under pressure?",
+            runtime=SimpleNamespace(context=SimpleNamespace(output_dir=str(tmp_path))),
+        )
+    )
+
+    subject = result["helper_evidence_for_draft"]["requested_subject_evidence"]
+    assert subject["status"] == "unavailable"
+    assert "source_coverage.nfib_small_business_optimism" in subject["unavailable_sources"]
+    assert "source_coverage.sba_small_business_credit_survey" in subject["unavailable_sources"]
+
+
+def test_plan_report_structure_preserves_requested_subject_contract_only_proxy(tmp_path):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text("{}", encoding="utf-8")
+    execution_summary = {
+        "requested_subject_evidence": {
+            "required": True,
+            "requested_subjects": ["small_businesses"],
+            "status": "proxy_only",
+            "proxy_evidence_keys": ["macro_pressure_dashboard"],
+        }
+    }
+
+    result = json.loads(
+        plan_report_structure.func(
+            query_type="macro_indicator",
+            charts_json_path=str(charts_path),
+            execution_summary=json.dumps(execution_summary),
+            original_query="Are small businesses under pressure?",
+            runtime=SimpleNamespace(context=SimpleNamespace(output_dir=str(tmp_path))),
+        )
+    )
+
+    subject = result["helper_evidence_for_draft"]["requested_subject_evidence"]
+    assert subject["status"] == "proxy_only"
+    assert subject["proxy_evidence_keys"] == ["macro_pressure_dashboard"]
+    assert "blocker" not in subject
+
+
 def test_plan_report_structure_summarizes_source_context_files(tmp_path):
     charts_path = tmp_path / "charts.json"
     charts_path.write_text('{"macro_chart": {"id": "macro_chart"}}', encoding="utf-8")
@@ -3435,6 +3627,351 @@ def test_write_research_report_blocks_regional_query_without_structured_coverage
     assert result["required_upstream"] == "quant-developer"
     assert "requested_geography_coverage" in result["message"]
     assert not (tmp_path / "report.json").exists()
+
+
+def test_write_research_report_blocks_untyped_subject_aggregate_evidence(tmp_path):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text("{}", encoding="utf-8")
+    runtime = SimpleNamespace(context=SimpleNamespace(job_id="job-1", output_dir=str(tmp_path)))
+    query = "Are small businesses under pressure?"
+
+    result = json.loads(
+        write_research_report.func(
+            runtime=runtime,
+            markdown=(
+                "## Executive Summary\n"
+                "Small businesses are under moderate pressure because business "
+                "loan delinquencies are elevated and consumers are cautious.\n\n"
+                "## Research Query\n"
+                f"{query}"
+            ),
+            charts_json_path=str(charts_path),
+            original_query=query,
+            title="Small Business Pressure",
+            executive_summary=(
+                "Small businesses are under moderate pressure because broad "
+                "credit and consumer gauges are mixed."
+            ),
+            analysis_type="macro_indicator",
+            execution_summary=json.dumps(
+                {
+                    "statistical_summary": {
+                        "business_loan_delinquency_pct": 1.42,
+                        "consumer_sentiment_index": 74.0,
+                    }
+                }
+            ),
+        )
+    )
+
+    assert result["status"] == "error"
+    assert result["failure_category"] == "requested_coverage_missing"
+    assert result["required_upstream"] == "quant-developer"
+    assert "neither direct subject evidence" in result["message"]
+    assert not (tmp_path / "report.json").exists()
+
+
+def test_write_research_report_honors_declared_subject_proxy_directness(tmp_path):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text("{}", encoding="utf-8")
+    runtime = SimpleNamespace(context=SimpleNamespace(job_id="job-1", output_dir=str(tmp_path)))
+    query = "Are small businesses under pressure?"
+
+    result = json.loads(
+        write_research_report.func(
+            runtime=runtime,
+            markdown=(
+                "## Executive Summary\n"
+                "Small businesses are under pressure because small-business "
+                "loan delinquency is elevated.\n\n"
+                "## Research Query\n"
+                f"{query}"
+            ),
+            charts_json_path=str(charts_path),
+            original_query=query,
+            title="Small Business Pressure",
+            executive_summary="Small businesses are under pressure.",
+            analysis_type="macro_indicator",
+            execution_summary=json.dumps(
+                {
+                    "numeric_facts": [
+                        {
+                            "id": "fred.business_loan_delinquency",
+                            "label": "Small business loan delinquency proxy",
+                            "subject": "small businesses",
+                            "metric": "business_loan_delinquency_pct",
+                            "raw_value": 1.42,
+                            "display_value": "1.42%",
+                            "evidence_directness": "proxy",
+                        }
+                    ]
+                }
+            ),
+        )
+    )
+
+    assert result["status"] == "error"
+    assert result["required_upstream"] == "technical-writer"
+    assert "requested_subject_evidence=small_businesses" in result["message"]
+    assert "proxy/indirect" in result["message"]
+    assert not (tmp_path / "report.json").exists()
+
+
+def test_write_research_report_routes_subject_proxy_wording_to_writer(tmp_path):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text("{}", encoding="utf-8")
+    runtime = SimpleNamespace(context=SimpleNamespace(job_id="job-1", output_dir=str(tmp_path)))
+    query = "Are small businesses under pressure?"
+
+    result = json.loads(
+        write_research_report.func(
+            runtime=runtime,
+            markdown=(
+                "## Executive Summary\n"
+                "Small businesses are under pressure because small-business "
+                "loan delinquency is elevated.\n\n"
+                "## Research Query\n"
+                f"{query}"
+            ),
+            charts_json_path=str(charts_path),
+            original_query=query,
+            title="Small Business Pressure",
+            executive_summary="Small businesses are under pressure.",
+            analysis_type="macro_indicator",
+            execution_summary=json.dumps(
+                {
+                    "numeric_facts": [
+                        {
+                            "id": "fred.business_loan_delinquency",
+                            "label": "Small business loan delinquency proxy",
+                            "subject": "small businesses",
+                            "metric": "business_loan_delinquency_pct",
+                            "raw_value": 1.42,
+                            "display_value": "1.42%",
+                        }
+                    ]
+                }
+            ),
+        )
+    )
+
+    assert result["status"] == "error"
+    assert result["required_upstream"] == "technical-writer"
+    assert "requested_subject_evidence=small_businesses" in result["message"]
+    assert "proxy/indirect" in result["message"]
+    assert not (tmp_path / "report.json").exists()
+
+
+def test_write_research_report_routes_subject_named_composite_proxy_to_writer(tmp_path):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text("{}", encoding="utf-8")
+    runtime = SimpleNamespace(context=SimpleNamespace(job_id="job-1", output_dir=str(tmp_path)))
+    query = "Are small businesses under pressure?"
+
+    result = json.loads(
+        write_research_report.func(
+            runtime=runtime,
+            markdown=(
+                "## Executive Summary\n"
+                "Small businesses are under pressure because the composite "
+                "pressure index is elevated.\n\n"
+                "## Research Query\n"
+                f"{query}"
+            ),
+            charts_json_path=str(charts_path),
+            original_query=query,
+            title="Small Business Pressure",
+            executive_summary="Small businesses are under pressure.",
+            analysis_type="macro_indicator",
+            execution_summary=json.dumps(
+                {
+                    "numeric_facts": [
+                        {
+                            "id": "composite.small_business_pressure_index",
+                            "label": "Composite Small Business Pressure Index",
+                            "subject": "small businesses",
+                            "metric": "pressure_score",
+                            "raw_value": 58.2,
+                            "display_value": "58.2/100",
+                            "source_key": "composite",
+                        }
+                    ]
+                }
+            ),
+        )
+    )
+
+    assert result["status"] == "error"
+    assert result["required_upstream"] == "technical-writer"
+    assert "requested_subject_evidence=small_businesses" in result["message"]
+    assert "proxy/indirect" in result["message"]
+    assert not (tmp_path / "report.json").exists()
+
+
+def test_write_research_report_routes_contract_only_subject_proxy_to_writer(tmp_path):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text("{}", encoding="utf-8")
+    runtime = SimpleNamespace(context=SimpleNamespace(job_id="job-1", output_dir=str(tmp_path)))
+    query = "Are small businesses under pressure?"
+
+    result = json.loads(
+        write_research_report.func(
+            runtime=runtime,
+            markdown=(
+                "## Executive Summary\n"
+                "Small businesses are under moderate pressure.\n\n"
+                "## Research Query\n"
+                f"{query}"
+            ),
+            charts_json_path=str(charts_path),
+            original_query=query,
+            title="Small Business Pressure",
+            executive_summary="Small businesses are under moderate pressure.",
+            analysis_type="macro_indicator",
+            execution_summary=json.dumps(
+                {
+                    "requested_subject_evidence": {
+                        "required": True,
+                        "requested_subjects": ["small_businesses"],
+                        "status": "proxy_only",
+                        "proxy_evidence_keys": ["macro_pressure_dashboard"],
+                    }
+                }
+            ),
+        )
+    )
+
+    assert result["status"] == "error"
+    assert result["required_upstream"] == "technical-writer"
+    assert "macro_pressure_dashboard" in result["message"]
+    assert "proxy/indirect" in result["message"]
+    assert not (tmp_path / "report.json").exists()
+
+
+def test_write_research_report_blocks_unkeyed_direct_subject_contract(tmp_path):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text("{}", encoding="utf-8")
+    runtime = SimpleNamespace(context=SimpleNamespace(job_id="job-1", output_dir=str(tmp_path)))
+    query = "Are small businesses under pressure?"
+
+    result = json.loads(
+        write_research_report.func(
+            runtime=runtime,
+            markdown=(
+                "## Executive Summary\n"
+                "Small businesses are under pressure based on direct evidence.\n\n"
+                "## Research Query\n"
+                f"{query}"
+            ),
+            charts_json_path=str(charts_path),
+            original_query=query,
+            title="Small Business Pressure",
+            executive_summary=(
+                "Small businesses are under pressure based on direct evidence."
+            ),
+            analysis_type="macro_indicator",
+            execution_summary=json.dumps(
+                {
+                    "requested_subject_evidence": {
+                        "required": True,
+                        "requested_subjects": ["small_businesses"],
+                        "status": "direct",
+                    }
+                }
+            ),
+        )
+    )
+
+    assert result["status"] == "error"
+    assert result["required_upstream"] == "quant-developer"
+    assert "neither direct subject evidence" in result["message"]
+    assert not (tmp_path / "report.json").exists()
+
+
+def test_write_research_report_routes_unavailable_subject_sources_to_writer(tmp_path):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text("{}", encoding="utf-8")
+    runtime = SimpleNamespace(context=SimpleNamespace(job_id="job-1", output_dir=str(tmp_path)))
+    query = "Are small businesses under pressure?"
+
+    result = json.loads(
+        write_research_report.func(
+            runtime=runtime,
+            markdown=(
+                "## Executive Summary\n"
+                "Small businesses are under moderate pressure.\n\n"
+                "## Research Query\n"
+                f"{query}"
+            ),
+            charts_json_path=str(charts_path),
+            original_query=query,
+            title="Small Business Pressure",
+            executive_summary="Small businesses are under moderate pressure.",
+            analysis_type="macro_indicator",
+            execution_summary=json.dumps(
+                {
+                    "source_coverage": {
+                        "nfib_small_business_optimism": {
+                            "source": "NFIB Small Business Optimism Index",
+                            "evidence_directness": "unavailable",
+                            "reason": "Current release could not be fetched.",
+                        }
+                    }
+                }
+            ),
+        )
+    )
+
+    assert result["status"] == "error"
+    assert result["required_upstream"] == "technical-writer"
+    assert "direct subject-evidence limitation" in result["message"]
+    assert not (tmp_path / "report.json").exists()
+
+
+def test_write_research_report_allows_labeled_subject_proxy_evidence(tmp_path):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text("{}", encoding="utf-8")
+    runtime = SimpleNamespace(context=SimpleNamespace(job_id="job-1", output_dir=str(tmp_path)))
+    query = "Are small businesses under pressure?"
+
+    result = json.loads(
+        write_research_report.func(
+            runtime=runtime,
+            markdown=(
+                "## Executive Summary\n"
+                "Broad aggregate credit and sentiment gauges are proxy and "
+                "indirect evidence, not direct small-business-specific evidence. "
+                "They suggest moderate pressure, but the report cannot conclude "
+                "small-business stress directly without NFIB or comparable small "
+                "business data. Confidence is medium because the sources are "
+                "recent but indirect; the conclusion would change if direct small "
+                "business credit or optimism data deteriorated materially.\n\n"
+                "## Research Query\n"
+                f"{query}"
+            ),
+            charts_json_path=str(charts_path),
+            original_query=query,
+            title="Small Business Pressure",
+            executive_summary=(
+                "Broad aggregate gauges are proxy evidence, so confidence is "
+                "medium rather than high."
+            ),
+            analysis_type="macro_indicator",
+            execution_summary=json.dumps(
+                {
+                    "requested_subject_evidence": {
+                        "required": True,
+                        "requested_subjects": ["small_businesses"],
+                        "status": "proxy_only",
+                        "proxy_evidence_keys": ["macro_pressure_dashboard"],
+                    }
+                }
+            ),
+        )
+    )
+
+    assert "status" not in result
+    assert (tmp_path / "report.json").exists()
 
 
 def test_write_research_report_blocks_single_state_numeric_fact_for_regional_query(

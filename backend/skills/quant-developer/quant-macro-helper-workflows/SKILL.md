@@ -140,6 +140,13 @@ statistics inside `analysis.py`.
   facts. If a current/latest source has no finite observation, preserve explicit
   `source_coverage` for that source instead of writing null current scalar
   fields.
+- For target-population prompts such as small businesses or named borrower,
+  customer, or business-size cohorts, preserve directness metadata as
+  `requested_subject_evidence` when available and mark row/fact
+  `evidence_directness` as `direct` or `proxy` where the distinction is known.
+  If direct subject data was requested but unavailable, preserve the failed
+  source in `source_coverage` or `metadata.fetch_errors` instead of silently
+  substituting national aggregates.
 - For composite predictive indicator prompts, call
   `build_composite_predictive_indicator(...)`. For composite recession-risk
   indicator prompts, use `target_col="USREC"` and `prediction_horizon=1`.

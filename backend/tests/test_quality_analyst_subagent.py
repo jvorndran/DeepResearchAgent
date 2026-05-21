@@ -3433,6 +3433,510 @@ def test_submit_quality_decision_rejects_group_place_weak_proxy(tmp_path):
     assert payload["failure_category"] == "requested_coverage_missing"
 
 
+def test_submit_quality_decision_rejects_untyped_subject_aggregate_evidence(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "statistical_summary": {
+                    "business_loan_delinquency_pct": 1.42,
+                    "consumer_sentiment_index": 74.0,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Are small businesses under pressure?",
+                "title": "Small Business Pressure",
+                "executive_summary": (
+                    "Small businesses are under moderate pressure because broad "
+                    "credit and consumer gauges are mixed."
+                ),
+                "markdown": (
+                    "## Executive Summary\n"
+                    "Small businesses are under moderate pressure because business "
+                    "loan delinquencies are elevated and consumers are cautious."
+                ),
+                "charts": [],
+                "data_sources": [
+                    {"provider": "FRED", "description": "National macro indicators"}
+                ],
+                "metadata": {"word_count": 24},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "requested_coverage_missing"
+    assert payload["required_upstream"] == "quant-developer"
+    assert "neither direct subject evidence" in payload["reason"]
+
+
+def test_submit_quality_decision_honors_declared_subject_proxy_directness(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "numeric_facts": [
+                    {
+                        "id": "fred.business_loan_delinquency",
+                        "label": "Small business loan delinquency proxy",
+                        "subject": "small businesses",
+                        "metric": "business_loan_delinquency_pct",
+                        "raw_value": 1.42,
+                        "display_value": "1.42%",
+                        "directness": "proxy",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Are small businesses under pressure?",
+                "title": "Small Business Pressure",
+                "executive_summary": "Small businesses are under pressure.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "Small businesses are under pressure because small-business "
+                    "loan delinquency is elevated."
+                ),
+                "charts": [],
+                "data_sources": [
+                    {"provider": "FRED", "description": "Business loan delinquency"}
+                ],
+                "metadata": {"word_count": 18},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "requested_coverage_missing"
+    assert payload["required_upstream"] == "technical-writer"
+    assert "requested_subject_evidence=small_businesses" in payload["reason"]
+
+
+def test_submit_quality_decision_routes_subject_proxy_wording_to_writer(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "numeric_facts": [
+                    {
+                        "id": "fred.business_loan_delinquency",
+                        "label": "Small business loan delinquency proxy",
+                        "subject": "small businesses",
+                        "metric": "business_loan_delinquency_pct",
+                        "raw_value": 1.42,
+                        "display_value": "1.42%",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Are small businesses under pressure?",
+                "title": "Small Business Pressure",
+                "executive_summary": "Small businesses are under pressure.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "Small businesses are under pressure because small-business "
+                    "loan delinquency is elevated."
+                ),
+                "charts": [],
+                "data_sources": [
+                    {"provider": "FRED", "description": "Business loan delinquency"}
+                ],
+                "metadata": {"word_count": 18},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "requested_coverage_missing"
+    assert payload["required_upstream"] == "technical-writer"
+    assert "requested_subject_evidence=small_businesses" in payload["reason"]
+
+
+def test_submit_quality_decision_routes_subject_named_composite_proxy_to_writer(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "numeric_facts": [
+                    {
+                        "id": "composite.small_business_pressure_index",
+                        "label": "Composite Small Business Pressure Index",
+                        "subject": "small businesses",
+                        "metric": "pressure_score",
+                        "raw_value": 58.2,
+                        "display_value": "58.2/100",
+                        "source_key": "composite",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Are small businesses under pressure?",
+                "title": "Small Business Pressure",
+                "executive_summary": "Small businesses are under pressure.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "Small businesses are under pressure because the composite "
+                    "pressure index is elevated."
+                ),
+                "charts": [],
+                "data_sources": [
+                    {"provider": "Composite", "description": "Small business pressure index"}
+                ],
+                "metadata": {"word_count": 17},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "requested_coverage_missing"
+    assert payload["required_upstream"] == "technical-writer"
+    assert "requested_subject_evidence=small_businesses" in payload["reason"]
+
+
+def test_submit_quality_decision_routes_contract_only_subject_proxy_to_writer(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "requested_subject_evidence": {
+                    "required": True,
+                    "requested_subjects": ["small_businesses"],
+                    "status": "proxy_only",
+                    "proxy_evidence_keys": ["macro_pressure_dashboard"],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Are small businesses under pressure?",
+                "title": "Small Business Pressure",
+                "executive_summary": "Small businesses are under moderate pressure.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "Small businesses are under moderate pressure."
+                ),
+                "charts": [],
+                "data_sources": [
+                    {"provider": "FRED", "description": "National macro indicators"}
+                ],
+                "metadata": {"word_count": 8},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "requested_coverage_missing"
+    assert payload["required_upstream"] == "technical-writer"
+    assert "macro_pressure_dashboard" in payload["reason"]
+
+
+def test_submit_quality_decision_rejects_unkeyed_direct_subject_contract(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "requested_subject_evidence": {
+                    "required": True,
+                    "requested_subjects": ["small_businesses"],
+                    "status": "direct",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Are small businesses under pressure?",
+                "title": "Small Business Pressure",
+                "executive_summary": (
+                    "Small businesses are under pressure based on direct evidence."
+                ),
+                "markdown": (
+                    "## Executive Summary\n"
+                    "Small businesses are under pressure based on direct evidence."
+                ),
+                "charts": [],
+                "data_sources": [
+                    {"provider": "FRED", "description": "National macro indicators"}
+                ],
+                "metadata": {"word_count": 9},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "requested_coverage_missing"
+    assert payload["required_upstream"] == "quant-developer"
+    assert "neither direct subject evidence" in payload["reason"]
+
+
+def test_submit_quality_decision_routes_unavailable_subject_sources_to_writer(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "source_coverage": {
+                    "nfib_small_business_optimism": {
+                        "source": "NFIB Small Business Optimism Index",
+                        "subject_evidence": "missing",
+                        "reason": "Current release could not be fetched.",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Are small businesses under pressure?",
+                "title": "Small Business Pressure",
+                "executive_summary": "Small businesses are under moderate pressure.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "Small businesses are under moderate pressure."
+                ),
+                "charts": [],
+                "data_sources": [
+                    {"provider": "NFIB", "description": "Small business optimism"}
+                ],
+                "metadata": {"word_count": 8},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "requested_coverage_missing"
+    assert payload["required_upstream"] == "technical-writer"
+    assert "direct subject-evidence limitation" in payload["reason"]
+
+
+def test_submit_quality_decision_accepts_labeled_subject_proxy(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "requested_subject_evidence": {
+                    "required": True,
+                    "requested_subjects": ["small_businesses"],
+                    "status": "proxy_only",
+                    "proxy_evidence_keys": ["macro_pressure_dashboard"],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Are small businesses under pressure?",
+                "title": "Small Business Pressure",
+                "executive_summary": (
+                    "Broad aggregates are proxy evidence for small businesses, "
+                    "so confidence is medium."
+                ),
+                "markdown": (
+                    "## Executive Summary\n"
+                    "Broad aggregate credit and sentiment gauges are proxy and "
+                    "indirect evidence, not direct small-business-specific evidence. "
+                    "They suggest moderate pressure, but the report cannot conclude "
+                    "small-business stress directly without NFIB or comparable small "
+                    "business data. Confidence is medium because the sources are "
+                    "recent but indirect; the conclusion would change if direct small "
+                    "business credit or optimism data deteriorated materially."
+                ),
+                "charts": [],
+                "data_sources": [
+                    {"provider": "FRED", "description": "National macro indicators"}
+                ],
+                "metadata": {"word_count": 55},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "approved"
+
+
+def test_submit_quality_decision_accepts_direct_subject_evidence(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "numeric_facts": [
+                    {
+                        "id": "nfib.small_business_optimism",
+                        "label": "NFIB Small Business Optimism Index",
+                        "subject": "small businesses",
+                        "metric": "optimism_index",
+                        "raw_value": 92.1,
+                        "display_value": "92.1",
+                        "unit": "index",
+                        "precision": 1,
+                        "tolerance": 0.01,
+                        "source_key": "nfib.small_business_optimism",
+                        "as_of_date": "2026-04",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Are small businesses under pressure?",
+                "title": "Small Business Pressure",
+                "executive_summary": (
+                    "NFIB small business optimism is 92.1, consistent with pressure."
+                ),
+                "markdown": (
+                    "## Executive Summary\n"
+                    "NFIB Small Business Optimism Index evidence directly covers "
+                    "small businesses: the optimism index is 92.1 as of 2026-04."
+                ),
+                "charts": [],
+                "data_sources": [
+                    {"provider": "NFIB", "description": "Small business optimism"}
+                ],
+                "metadata": {"word_count": 22},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "approved"
+
+
 def test_submit_quality_decision_rejects_group_place_scope_drift_caveat(tmp_path):
     report_path = tmp_path / "report.json"
     (tmp_path / "execution_summary.json").write_text(

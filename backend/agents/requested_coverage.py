@@ -1,4 +1,4 @@
-"""Shared contracts for requested geography coverage."""
+"""Shared contracts for requested coverage."""
 
 from __future__ import annotations
 
@@ -250,6 +250,180 @@ _DIMENSION_COMPATIBILITY: Mapping[str, tuple[str, ...]] = {
     "city": ("city",),
     "place": ("state", "regional", "county", "metro", "city", "place"),
 }
+_QUERY_SUBJECT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "small_businesses",
+        re.compile(
+            r"\b(?:small[-\s]+business(?:es)?|small[-\s]+firms?|"
+            r"small[-\s]+companies|main[-\s]+street\s+business(?:es)?|"
+            r"independent\s+business(?:es)?)\b",
+            re.I,
+        ),
+    ),
+    (
+        "business_size_cohort",
+        re.compile(
+            r"\b(?:business(?:es)?|firms?|companies)\s+"
+            r"(?:with|under|below|fewer\s+than|less\s+than)\s+"
+            r"\d{1,4}\s+(?:employees?|workers?|staff|locations?|stores?)\b",
+            re.I,
+        ),
+    ),
+    (
+        "borrower_cohorts",
+        re.compile(
+            r"\b(?:subprime|prime|near[-\s]?prime|student[-\s]+loan|"
+            r"auto[-\s]+loan|mortgage|low[-\s]+income|lower[-\s]+income)\s+"
+            r"borrowers?\b",
+            re.I,
+        ),
+    ),
+    (
+        "customer_cohorts",
+        re.compile(
+            r"\b(?:customer|client)\s+segments?\b|"
+            r"\b(?:low[-\s]+income|lower[-\s]+income|younger|older|"
+            r"student|rural|urban)\s+customers?\b",
+            re.I,
+        ),
+    ),
+)
+_STRUCTURED_SUBJECT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "small_businesses",
+        re.compile(
+            r"\b(?:small[-_\s]+business(?:es)?|small[-_\s]+firms?|"
+            r"small[-_\s]+companies|main[-_\s]+street[-_\s]+business(?:es)?|"
+            r"independent[-_\s]+business(?:es)?|nfib|"
+            r"small[-_\s]+business[-_\s]+optimism|"
+            r"small[-_\s]+business[-_\s]+credit[-_\s]+survey|sbcs|"
+            r"small[-_\s]+business[-_\s]+lending|paynet|"
+            r"firm[-_\s]+size)\b",
+            re.I,
+        ),
+    ),
+    (
+        "business_size_cohort",
+        re.compile(
+            r"\b(?:business(?:es)?|firms?|companies|employer[-_\s]+firms?)"
+            r".{0,40}\b(?:employees?|workers?|staff|firm[-_\s]+size)\b|"
+            r"\bfirm[-_\s]+size\b",
+            re.I,
+        ),
+    ),
+    (
+        "borrower_cohorts",
+        re.compile(
+            r"\b(?:subprime|prime|near[-_\s]?prime|student[-_\s]+loan|"
+            r"auto[-_\s]+loan|mortgage|low[-_\s]+income|lower[-_\s]+income)\s+"
+            r"borrowers?\b|"
+            r"\bborrowers?\s+by\s+(?:credit|income|loan|risk)\s+"
+            r"(?:segment|cohort|group)\b",
+            re.I,
+        ),
+    ),
+    (
+        "customer_cohorts",
+        re.compile(
+            r"\b(?:customer|client)\s+segments?\b|"
+            r"\b(?:low[-_\s]+income|lower[-_\s]+income|younger|older|"
+            r"student|rural|urban)\s+customers?\b",
+            re.I,
+        ),
+    ),
+)
+_UNTYPED_SUBJECT_DIRECT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "small_businesses",
+        re.compile(
+            r"\b(?:nfib|small[-_\s]+business[-_\s]+optimism|"
+            r"small[-_\s]+business[-_\s]+credit[-_\s]+survey|sbcs|"
+            r"small[-_\s]+business[-_\s]+lending|paynet|"
+            r"firm[-_\s]+size)\b",
+            re.I,
+        ),
+    ),
+    (
+        "business_size_cohort",
+        re.compile(
+            r"\b(?:business(?:es)?|firms?|companies|employer[-_\s]+firms?)"
+            r".{0,40}\b(?:employees?|workers?|staff|firm[-_\s]+size)\b|"
+            r"\bfirm[-_\s]+size\b",
+            re.I,
+        ),
+    ),
+    (
+        "borrower_cohorts",
+        re.compile(
+            r"\b(?:subprime|prime|near[-_\s]?prime|student[-_\s]+loan|"
+            r"auto[-_\s]+loan|mortgage|low[-_\s]+income|lower[-_\s]+income)\s+"
+            r"borrowers?\b|"
+            r"\bborrowers?\s+by\s+(?:credit|income|loan|risk)\s+"
+            r"(?:segment|cohort|group)\b",
+            re.I,
+        ),
+    ),
+    (
+        "customer_cohorts",
+        re.compile(
+            r"\b(?:customer|client)\s+segments?\b|"
+            r"\b(?:low[-_\s]+income|lower[-_\s]+income|younger|older|"
+            r"student|rural|urban)\s+customers?\b",
+            re.I,
+        ),
+    ),
+)
+_SUBJECT_EVIDENCE_EXCLUDED_TOP_LEVEL_KEYS = {
+    "chart_ids",
+    "charts",
+    "data_sources",
+    "limitations",
+    "metadata",
+    "methods",
+    "methods_used",
+    "requested_geography_coverage",
+    "requested_subject_evidence",
+    "source_context_files",
+    "source_coverage",
+    "source_unit_errors",
+    "source_unit_metadata",
+    "unit_comparisons",
+}
+_SUBJECT_PROXY_LABEL_RE = re.compile(
+    r"\b(?:proxy|proxies|indirect(?:ly)?|macro(?:economic)?\s+proxy|"
+    r"broad(?:er)?\s+(?:macro|national|aggregate|economy[-\s]?wide)|"
+    r"aggregate\s+(?:proxy|indicator)|not\s+(?:a\s+)?direct)\b",
+    re.I,
+)
+_SUBJECT_DERIVED_PROXY_RE = re.compile(
+    r"\b(?:composite|derived|synthetic|model(?:ed|led))\b",
+    re.I,
+)
+_SUBJECT_DIRECT_LIMITATION_RE = re.compile(
+    r"\b(?:direct|subject[-\s]?specific|cohort[-\s]?specific|"
+    r"small[-\s]?business[-\s]?specific|small[-\s]+business)\b"
+    r".{0,100}\b(?:missing|unavailable|not\s+available|not\s+included|"
+    r"limited|lack(?:s|ing)?|absent|not\s+observed|cannot|can't)\b|"
+    r"\b(?:missing|unavailable|not\s+available|limited|lack(?:s|ing)?|"
+    r"without|no)\b.{0,100}\b(?:direct|subject[-\s]?specific|"
+    r"cohort[-\s]?specific|small[-\s]?business[-\s]?specific|"
+    r"small[-\s]+business)\b|"
+    r"\b(?:cannot|can't|does\s+not|do\s+not|don't)\s+"
+    r"(?:conclude|show|prove|measure|observe)\b.{0,120}\b"
+    r"(?:small[-\s]+business|direct|subject[-\s]?specific|"
+    r"cohort[-\s]?specific)\b",
+    re.I | re.S,
+)
+_SUBJECT_CONFIDENCE_RATIONALE_RE = re.compile(
+    r"\bconfidence\b.{0,180}\b(?:directness|source|recency|conflict|"
+    r"mixed|proxy|indirect|trigger|would\s+change|raise|lower|watch|"
+    r"monitor|caveat|limitation)\b|"
+    r"\b(?:would\s+change|raise|lower)\b.{0,100}\b"
+    r"(?:confidence|conclusion|assessment)\b|"
+    r"\b(?:triggers?|watch(?:list)?|monitor)\b.{0,140}\b"
+    r"(?:confidence|conclusion|assessment)\b",
+    re.I | re.S,
+)
 
 
 @dataclass(frozen=True)
@@ -277,6 +451,42 @@ class RequestedCoverageAssessment:
             "requested_entities": list(self.requested_entities),
             "status": self.status,
             "evidence_keys": list(self.evidence_keys),
+            "unavailable_sources": list(self.unavailable_sources),
+        }
+        if self.blocker:
+            payload["blocker"] = self.blocker
+        return payload
+
+
+@dataclass(frozen=True)
+class RequestedSubjectEvidenceAssessment:
+    """Compact direct/proxy evidence result shared by writer and QA."""
+
+    required: bool
+    scope: str
+    requested_subjects: tuple[str, ...]
+    status: str
+    direct_evidence_keys: tuple[str, ...] = ()
+    proxy_evidence_keys: tuple[str, ...] = ()
+    unavailable_sources: tuple[str, ...] = ()
+    blocker: str | None = None
+
+    @property
+    def satisfied(self) -> bool:
+        return not self.required or self.status in {
+            "direct",
+            "proxy_only",
+            "unavailable",
+        }
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "required": self.required,
+            "scope": self.scope,
+            "requested_subjects": list(self.requested_subjects),
+            "status": self.status,
+            "direct_evidence_keys": list(self.direct_evidence_keys),
+            "proxy_evidence_keys": list(self.proxy_evidence_keys),
             "unavailable_sources": list(self.unavailable_sources),
         }
         if self.blocker:
@@ -432,6 +642,176 @@ def compact_requested_geography_coverage(
     return None
 
 
+def requested_subjects(query: object) -> tuple[str, ...]:
+    """Return conservative target-population subjects inferred from the query."""
+
+    text = str(query or "")
+    subjects = [
+        subject
+        for subject, pattern in _QUERY_SUBJECT_PATTERNS
+        if pattern.search(text)
+    ]
+    return _unique(subjects)
+
+
+def query_requests_subject_evidence(query: object) -> bool:
+    """Whether the query asks about a specific non-geographic target subject."""
+
+    return bool(requested_subjects(query))
+
+
+def assess_requested_subject_evidence(
+    query: object,
+    summary: Mapping[str, Any] | None,
+) -> RequestedSubjectEvidenceAssessment:
+    """Assess whether target-subject evidence is direct, proxy-only, or missing."""
+
+    payload: Mapping[str, Any] = summary if isinstance(summary, Mapping) else {}
+    contract = _contract_payload(payload.get("requested_subject_evidence"))
+    subjects = requested_subjects(query)
+    contract_subjects = _contract_items(contract, "requested_subjects")
+    required = bool(subjects) or bool(contract.get("required"))
+    if not subjects and contract_subjects:
+        subjects = tuple(_normalize_token(item) for item in contract_subjects)
+    if not required:
+        return RequestedSubjectEvidenceAssessment(
+            required=False,
+            scope="subject",
+            requested_subjects=(),
+            status="not_required",
+        )
+
+    structured_direct_keys, structured_proxy_keys = _structured_subject_evidence_keys(
+        payload,
+        subjects,
+    )
+    direct_evidence_keys = _unique(
+        (*structured_direct_keys, *_contract_items(contract, "direct_evidence_keys"))
+    )
+    direct_key_set = set(direct_evidence_keys)
+    proxy_evidence_keys = tuple(
+        key
+        for key in _unique(
+            (*structured_proxy_keys, *_contract_items(contract, "proxy_evidence_keys"))
+        )
+        if key not in direct_key_set
+    )
+    unavailable_sources = _unique(
+        (
+            *_structured_subject_unavailable_sources(payload, subjects),
+            *_contract_items(contract, "unavailable_sources"),
+        )
+    )
+    if direct_evidence_keys:
+        status = "direct"
+    elif proxy_evidence_keys:
+        status = "proxy_only"
+    elif unavailable_sources:
+        status = "unavailable"
+    else:
+        status = "missing"
+
+    blocker = None
+    if status == "missing":
+        blocker = (
+            "User query asks about a specific target subject, cohort, or "
+            "business population, but execution_summary.json has neither "
+            "direct subject evidence, reusable proxy evidence, nor structured "
+            "unavailable-source evidence in source_coverage or "
+            "metadata.fetch_errors. Preserve requested_subject_evidence or "
+            "subject-specific numeric_facts before writing a broad aggregate "
+            "substitute."
+        )
+
+    return RequestedSubjectEvidenceAssessment(
+        required=True,
+        scope="subject",
+        requested_subjects=subjects,
+        status=status,
+        direct_evidence_keys=direct_evidence_keys,
+        proxy_evidence_keys=proxy_evidence_keys,
+        unavailable_sources=unavailable_sources,
+        blocker=blocker,
+    )
+
+
+def requested_subject_evidence(
+    query: object,
+    execution_summary: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build a serializable requested-subject evidence contract."""
+
+    return assess_requested_subject_evidence(query, execution_summary).to_dict()
+
+
+def requested_subject_evidence_report_blocker(
+    query: object,
+    summary: Mapping[str, Any] | None,
+    report_text: object,
+) -> str | None:
+    """Return a blocker when subject evidence directness is misstated."""
+
+    assessment = assess_requested_subject_evidence(query, summary)
+    if not assessment.required:
+        return None
+    if assessment.status == "missing":
+        return assessment.blocker
+
+    text = _normalized_text("", report_text)
+    if assessment.status == "direct":
+        return None
+
+    if assessment.status == "unavailable":
+        if _SUBJECT_DIRECT_LIMITATION_RE.search(text):
+            return None
+        return (
+            "User query asks about a specific target subject and "
+            "execution_summary.json preserves unavailable-source evidence, "
+            "but the report does not state the direct subject-evidence "
+            "limitation. Add the artifact-backed limitation or regenerate with "
+            "usable direct subject evidence."
+        )
+
+    if assessment.status != "proxy_only":
+        return None
+
+    missing: list[str] = []
+    if not _SUBJECT_PROXY_LABEL_RE.search(text):
+        missing.append("label the broad aggregate evidence as proxy/indirect")
+    if not _SUBJECT_DIRECT_LIMITATION_RE.search(text):
+        missing.append("state the direct subject-evidence limitation")
+    if not _SUBJECT_CONFIDENCE_RATIONALE_RE.search(text):
+        missing.append(
+            "justify confidence using evidence directness, recency, conflicts, "
+            "or triggers that would change the conclusion"
+        )
+    if not missing:
+        return None
+
+    subjects = ", ".join(assessment.requested_subjects[:4])
+    proxies = ", ".join(assessment.proxy_evidence_keys[:6])
+    return (
+        "User query asks about a specific target subject, but "
+        "execution_summary.json only has proxy evidence"
+        f"{f' ({proxies})' if proxies else ''}. The report must "
+        + "; ".join(missing)
+        + f" before approval for requested_subject_evidence={subjects}."
+    )
+
+
+def compact_requested_subject_evidence(
+    query: object,
+    summary: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Return a compact subject-evidence contract when relevant or present."""
+
+    payload: Mapping[str, Any] = summary if isinstance(summary, Mapping) else {}
+    assessment = assess_requested_subject_evidence(query, payload)
+    if assessment.required or isinstance(payload.get("requested_subject_evidence"), Mapping):
+        return assessment.to_dict()
+    return None
+
+
 def structured_geography_row_metric_values(row: Mapping[str, Any]) -> tuple[Any, ...]:
     """Return numeric metric values from a named geography evidence row."""
 
@@ -495,6 +875,256 @@ def _contract_items(contract: Mapping[str, Any], key: str) -> tuple[str, ...]:
     if not isinstance(value, Iterable) or isinstance(value, Mapping):
         return ()
     return tuple(str(item).strip() for item in value if str(item).strip())
+
+
+def _structured_subject_evidence_keys(
+    summary: Mapping[str, Any],
+    requested_subjects: tuple[str, ...],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    direct_keys: list[str] = []
+    proxy_keys: list[str] = []
+    for top_level_key, value in summary.items():
+        key_text = str(top_level_key)
+        if key_text in _SUBJECT_EVIDENCE_EXCLUDED_TOP_LEVEL_KEYS:
+            continue
+        for record_label, record_value, text in _iter_records(key_text, value):
+            if not _record_has_metric_value(record_value):
+                continue
+            evidence_key = _subject_record_key(record_label)
+            if _record_matches_requested_subject(text, record_value, requested_subjects):
+                direct_keys.append(evidence_key)
+            elif _record_can_be_proxy_evidence(
+                record_label,
+                record_value,
+                text,
+                requested_subjects,
+            ):
+                proxy_keys.append(evidence_key)
+    direct = _unique(direct_keys)
+    proxy = tuple(key for key in _unique(proxy_keys) if key not in set(direct))
+    return direct, proxy
+
+
+def _structured_subject_unavailable_sources(
+    summary: Mapping[str, Any],
+    requested_subjects: tuple[str, ...],
+) -> tuple[str, ...]:
+    sources: list[str] = []
+    sources.extend(
+        _subject_unavailable_records(
+            "source_coverage",
+            summary.get("source_coverage"),
+            requested_subjects,
+        )
+    )
+    metadata = summary.get("metadata")
+    if isinstance(metadata, Mapping):
+        sources.extend(
+            _subject_unavailable_records(
+                "metadata.fetch_errors",
+                metadata.get("fetch_errors"),
+                requested_subjects,
+            )
+        )
+    return _unique(sources)
+
+
+def _subject_unavailable_records(
+    label: str,
+    value: Any,
+    requested_subjects: tuple[str, ...],
+) -> list[str]:
+    records: list[str] = []
+    for record_label, record_value, text in _iter_records(label, value):
+        if not text.strip():
+            continue
+        if not (
+            _record_marks_unavailable(record_label, record_value)
+            or _record_declares_subject_unavailable(record_value)
+        ):
+            continue
+        if _text_mentions_requested_subject(text, requested_subjects):
+            records.append(record_label)
+    return records
+
+
+def _subject_record_key(label: str) -> str:
+    return re.split(r"[.\[]", label, maxsplit=1)[0]
+
+
+def _record_can_be_proxy_evidence(
+    label: str,
+    value: Any,
+    text: str,
+    requested_subjects: tuple[str, ...],
+) -> bool:
+    if _subject_record_key(label) in _SUBJECT_EVIDENCE_EXCLUDED_TOP_LEVEL_KEYS:
+        return False
+    directness = _record_declared_directness(value) if isinstance(value, Mapping) else None
+    has_proxy_signal = _record_has_subject_proxy_signal(value, text)
+    if directness not in {"proxy", "proxy_only"} and not has_proxy_signal:
+        return False
+    return _text_mentions_requested_subject(text, requested_subjects)
+
+
+def _record_declares_subject_unavailable(value: Any) -> bool:
+    return isinstance(value, Mapping) and _record_declared_directness(value) in {
+        "unavailable",
+        "missing",
+    }
+
+
+def _record_matches_requested_subject(
+    text: str,
+    value: Any,
+    requested_subjects: tuple[str, ...],
+) -> bool:
+    if isinstance(value, Mapping):
+        directness = _record_declared_directness(value)
+        if directness in {"proxy", "proxy_only", "unavailable", "missing"}:
+            return False
+        if _record_has_subject_proxy_signal(value, text):
+            return False
+        if directness in {"direct", "subject_direct"} and (
+            not requested_subjects or _text_mentions_requested_subject(text, requested_subjects)
+        ):
+            return True
+        return _record_has_untyped_direct_subject_signal(text, requested_subjects)
+    elif _record_has_subject_proxy_signal(value, text):
+        return False
+    return _record_has_untyped_direct_subject_signal(text, requested_subjects)
+
+
+def _record_has_subject_proxy_signal(value: Any, text: str) -> bool:
+    return _record_has_proxy_directness_signal(text) or _record_has_derived_proxy_signal(
+        value,
+        text,
+    )
+
+
+def _record_has_derived_proxy_signal(value: Any, text: str) -> bool:
+    if _SUBJECT_DERIVED_PROXY_RE.search(text):
+        return True
+    if not isinstance(value, Mapping):
+        return False
+    for key in ("id", "label", "metric", "source", "source_key", "method", "provider"):
+        child = value.get(key)
+        if child is not None and _SUBJECT_DERIVED_PROXY_RE.search(str(child)):
+            return True
+    return False
+
+
+def _record_has_untyped_direct_subject_signal(
+    text: str,
+    requested_subjects: tuple[str, ...],
+) -> bool:
+    if not requested_subjects:
+        return False
+    normalized = re.sub(r"[_-]+", " ", text)
+    pattern_map = dict(_UNTYPED_SUBJECT_DIRECT_PATTERNS)
+    return any(
+        pattern.search(normalized)
+        for subject in requested_subjects
+        for pattern in (pattern_map.get(subject),)
+        if pattern is not None
+    )
+
+
+def _record_has_proxy_directness_signal(text: str) -> bool:
+    if re.search(r"\bnot\s+(?:a\s+)?prox(?:y|ies)\b", text, re.I):
+        return False
+    return bool(_SUBJECT_PROXY_LABEL_RE.search(text))
+
+
+def _text_mentions_requested_subject(
+    text: str,
+    requested_subjects: tuple[str, ...],
+) -> bool:
+    if not requested_subjects:
+        return False
+    normalized = re.sub(r"[_-]+", " ", text)
+    pattern_map = dict(_STRUCTURED_SUBJECT_PATTERNS)
+    for subject in requested_subjects:
+        pattern = pattern_map.get(subject)
+        if pattern is None:
+            pattern = re.compile(re.escape(subject).replace("_", r"[-_\s]+"), re.I)
+        if pattern.search(normalized):
+            return True
+    return False
+
+
+def _record_declared_directness(value: Mapping[str, Any]) -> str | None:
+    for key in (
+        "evidence_directness",
+        "directness",
+        "evidence_type",
+        "subject_evidence",
+    ):
+        child = value.get(key)
+        if child is None:
+            continue
+        normalized = _normalize_token(child)
+        if normalized in {
+            "direct",
+            "subject_direct",
+            "proxy",
+            "proxy_only",
+            "indirect",
+            "unavailable",
+            "missing",
+        }:
+            return "proxy" if normalized == "indirect" else normalized
+    return None
+
+
+def _record_has_metric_value(value: Any) -> bool:
+    if isinstance(value, bool) or value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return True
+    if isinstance(value, str):
+        return bool(_NUMERIC_TOKEN_RE.search(value))
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            normalized_key = _normalize_token(key)
+            if normalized_key in {
+                "as_of",
+                "as_of_date",
+                "available",
+                "availability",
+                "date",
+                "description",
+                "directness",
+                "evidence_directness",
+                "evidence_type",
+                "error",
+                "errors",
+                "error_type",
+                "fetch_error",
+                "fetch_errors",
+                "id",
+                "label",
+                "limitation",
+                "limitations",
+                "metric",
+                "note",
+                "notes",
+                "period",
+                "provider",
+                "reason",
+                "source",
+                "source_key",
+                "status",
+                "subject",
+                "subject_evidence",
+            }:
+                continue
+            if _record_has_metric_value(child):
+                return True
+        return False
+    if isinstance(value, Iterable):
+        return any(_record_has_metric_value(child) for child in value)
+    return False
 
 
 def _structured_geography_evidence_keys(
@@ -793,6 +1423,8 @@ def _mapping_is_record(value: Mapping[str, Any]) -> bool:
         & {
             "available",
             "availability",
+            "current_value",
+            "display_value",
             "dimension",
             "dimensions",
             "error",
@@ -801,11 +1433,18 @@ def _mapping_is_record(value: Mapping[str, Any]) -> bool:
             "fetch_error",
             "fetch_errors",
             "geography",
+            "id",
+            "label",
+            "latest_value",
+            "metric",
             "provider",
             "reason",
+            "raw_value",
             "source",
             "source_key",
             "status",
+            "subject",
+            "value",
         }
     )
 

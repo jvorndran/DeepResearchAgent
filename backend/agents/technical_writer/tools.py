@@ -23,8 +23,11 @@ from ..artifact_fact_consistency import (
     artifact_fact_consistency_dict,
 )
 from ..requested_coverage import (
+    assess_requested_subject_evidence,
     compact_requested_geography_coverage,
+    compact_requested_subject_evidence,
     requested_geography_coverage_blocker,
+    requested_subject_evidence_report_blocker,
 )
 from agents.quant_macro_stats.artifacts.numeric_fact_contracts import (
     normalize_numeric_facts,
@@ -1913,6 +1916,9 @@ def _helper_evidence_for_draft(
     requested_geo = compact_requested_geography_coverage(original_query, parsed)
     if requested_geo:
         evidence["requested_geography_coverage"] = requested_geo
+    requested_subject = compact_requested_subject_evidence(original_query, parsed)
+    if requested_subject:
+        evidence["requested_subject_evidence"] = requested_subject
 
     for key in (
         "source_coverage",
@@ -2010,6 +2016,32 @@ def _compact_helper_evidence_payload(
             fields.append("blocker=" + blocker.strip())
         if fields:
             lines.append("- requested_geography_coverage: " + "; ".join(fields))
+
+    requested_subject = evidence.get("requested_subject_evidence")
+    if isinstance(requested_subject, dict):
+        fields = []
+        for key in ("required", "status", "scope"):
+            if key in requested_subject:
+                fields.append(f"{key}={requested_subject[key]}")
+        subjects = requested_subject.get("requested_subjects")
+        if isinstance(subjects, list) and subjects:
+            fields.append("requested_subjects=" + ", ".join(str(item) for item in subjects[:8]))
+        direct_keys = requested_subject.get("direct_evidence_keys")
+        if isinstance(direct_keys, list) and direct_keys:
+            fields.append("direct_evidence_keys=" + ", ".join(str(item) for item in direct_keys[:8]))
+        proxy_keys = requested_subject.get("proxy_evidence_keys")
+        if isinstance(proxy_keys, list) and proxy_keys:
+            fields.append("proxy_evidence_keys=" + ", ".join(str(item) for item in proxy_keys[:8]))
+        unavailable = requested_subject.get("unavailable_sources")
+        if isinstance(unavailable, list) and unavailable:
+            fields.append(
+                "unavailable_sources=" + ", ".join(str(item) for item in unavailable[:8])
+            )
+        blocker = requested_subject.get("blocker")
+        if isinstance(blocker, str) and blocker.strip():
+            fields.append("blocker=" + blocker.strip())
+        if fields:
+            lines.append("- requested_subject_evidence: " + "; ".join(fields))
 
     methods = evidence.get("methods_used")
     if isinstance(methods, list) and methods:
@@ -3229,6 +3261,7 @@ def write_research_report(
             for key in (
                 "numeric_facts",
                 "requested_geography_coverage",
+                "requested_subject_evidence",
                 "source_coverage",
                 "methods_used",
                 "chart_ids",
@@ -3258,6 +3291,31 @@ def write_research_report(
                 "report_path": report_path,
                 "blockers": [requested_geography_blocker],
                 "message": requested_geography_blocker,
+            }
+        )
+    requested_subject_blocker = requested_subject_evidence_report_blocker(
+        original_query,
+        execution_payload,
+        "\n".join([title, executive_summary, markdown]),
+    )
+    if requested_subject_blocker:
+        subject_assessment = assess_requested_subject_evidence(
+            original_query,
+            execution_payload,
+        )
+        return json.dumps(
+            {
+                "status": "error",
+                "error": "requested_coverage_missing",
+                "failure_category": "requested_coverage_missing",
+                "required_upstream": (
+                    "quant-developer"
+                    if subject_assessment.status == "missing"
+                    else "technical-writer"
+                ),
+                "report_path": report_path,
+                "blockers": [requested_subject_blocker],
+                "message": requested_subject_blocker,
             }
         )
     artifact_fact_consistency = artifact_fact_consistency_dict(

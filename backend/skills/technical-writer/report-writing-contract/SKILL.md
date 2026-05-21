@@ -35,6 +35,13 @@ technical-writer report.
 - If `execution_summary_for_draft` looks truncated, continue with the compact
   fields returned by `plan_report_structure`. Do not call `read_file`, `ls`,
   `glob`, `grep`, `execute`, or `write_file` to recover more context.
+- If the compact handoff includes `requested_subject_evidence`, treat it as a
+  directness contract. When status is `proxy_only`, explicitly label the broad
+  aggregate evidence as proxy/indirect, state the missing direct
+  subject-specific evidence limitation, and explain confidence using source
+  directness, recency, conflicting evidence, or triggers that would change the
+  conclusion. Do not turn proxy-only evidence into direct claims about the
+  requested population.
 
 ## Save Shape
 
