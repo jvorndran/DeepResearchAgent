@@ -2528,6 +2528,174 @@ def test_normalize_quant_summary_rejects_inactive_nonzero_duration_fact():
         )
 
 
+def _ambiguous_inversion_duration_summary():
+    return {
+        "statistical_summary": {
+            "latest_date": "2026-04-01",
+            "spread_10y2y": 0.52,
+        },
+        "numeric_facts": [
+            {
+                "id": "inversion_duration",
+                "label": "Yield curve inversion duration",
+                "raw_value": 26,
+                "display_value": "26 months",
+                "unit": "months",
+                "precision": 0,
+                "tolerance": 1,
+                "source_key": "T10Y2Y",
+                "as_of_date": "2026-04-01",
+                "metric": "yield_curve_inversion_duration",
+            }
+        ],
+    }
+
+
+def test_normalize_quant_summary_rejects_ambiguous_nonzero_episode_duration_fact():
+    with pytest.raises(ValueError, match="episode duration requires") as error:
+        qms.normalize_quant_execution_summary(_ambiguous_inversion_duration_summary())
+
+    assert "inversion_duration" in str(error.value)
+    assert "episode_active=true" in str(error.value)
+    assert "semantic_role=historical_duration" in str(error.value)
+
+
+@pytest.mark.parametrize(
+    ("fact_id", "label", "metric"),
+    [
+        (
+            "months_since_inversion_started",
+            "Months since inversion started",
+            "months_since_inversion_started",
+        ),
+        (
+            "months_since_inversion_began",
+            "Months since inversion began",
+            "months_since_inversion_began",
+        ),
+        (
+            "months_since_current_inversion_started",
+            "Months since current inversion started",
+            "months_since_current_inversion_started",
+        ),
+    ],
+)
+def test_normalize_quant_summary_rejects_since_started_episode_duration_fact(
+    fact_id,
+    label,
+    metric,
+):
+    summary = _ambiguous_inversion_duration_summary()
+    summary["numeric_facts"][0].update(
+        {
+            "id": fact_id,
+            "label": label,
+            "metric": metric,
+        }
+    )
+
+    with pytest.raises(ValueError, match="episode duration requires") as error:
+        qms.normalize_quant_execution_summary(summary)
+
+    assert fact_id in str(error.value)
+
+
+def test_save_quant_outputs_rejects_ambiguous_episode_duration_before_writes(tmp_path):
+    with pytest.raises(ValueError, match="episode duration requires"):
+        qms.save_quant_outputs(
+            tmp_path,
+            {},
+            _ambiguous_inversion_duration_summary(),
+        )
+
+    _assert_no_quant_artifacts(tmp_path)
+
+
+def test_active_current_state_episode_duration_fact_is_allowed():
+    fact = qms.current_state_duration_fact(
+        fact_id="recession_duration",
+        label="Current recession duration",
+        raw_value=3,
+        unit="months",
+        precision=0,
+        tolerance=1,
+        source_key="USREC",
+        episode_active=True,
+        as_of_date="2026-04-01",
+        metric="recession_duration",
+    )
+
+    summary = qms.normalize_quant_execution_summary({"numeric_facts": [fact]})
+
+    assert summary["numeric_facts"][0]["semantic_role"] == "current_state_duration"
+    assert summary["numeric_facts"][0]["episode_active"] is True
+    assert summary["numeric_facts"][0]["raw_value"] == 3.0
+
+
+@pytest.mark.parametrize(
+    "fact",
+    [
+        {
+            "id": "months_since_cycle_peak",
+            "label": "Months since last cycle peak",
+            "raw_value": 14,
+            "display_value": "14 months",
+            "unit": "months",
+            "precision": 0,
+            "tolerance": 1,
+            "source_key": "cycle_calendar",
+            "as_of_date": "2026-04-01",
+            "metric": "months_since_cycle_peak",
+        },
+        {
+            "id": "months_since_last_recession",
+            "label": "Months since last recession",
+            "raw_value": 72,
+            "display_value": "72 months",
+            "unit": "months",
+            "precision": 0,
+            "tolerance": 1,
+            "source_key": "USREC",
+            "as_of_date": "2026-04-01",
+            "metric": "months_since_last_recession",
+        },
+        {
+            "id": "months_since_rec",
+            "label": "Months Since Rec",
+            "raw_value": 72,
+            "display_value": "72 months",
+            "unit": "months",
+            "precision": 0,
+            "tolerance": 1,
+            "source_key": "usrec",
+            "as_of_date": "2026-04-01",
+            "metric": "months_since_rec",
+        },
+        {
+            "id": "recession_forecast_horizon",
+            "label": "Recession forecast horizon",
+            "raw_value": 12,
+            "display_value": "12 months",
+            "unit": "months",
+            "precision": 0,
+            "tolerance": 1,
+            "source_key": "model",
+            "as_of_date": "2026-04-01",
+            "metric": "recession_forecast_horizon",
+        },
+    ],
+)
+def test_elapsed_or_horizon_month_facts_are_not_episode_duration(fact):
+    summary = qms.normalize_quant_execution_summary(
+        {
+            "numeric_facts": [fact],
+        }
+    )
+
+    assert summary["numeric_facts"][0]["id"] == fact["id"]
+    assert "semantic_role" not in summary["numeric_facts"][0]
+
+
 def test_inactive_sahm_state_allows_average_unemployment_duration_fact():
     summary = qms.normalize_quant_execution_summary(
         {

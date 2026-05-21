@@ -257,6 +257,23 @@ _DURATION_TOKEN_STOPWORDS = frozenset(
         "weeks",
     }
 )
+_HORIZON_DURATION_TOKENS = frozenset({"horizon"})
+_ELAPSED_SINCE_REFERENCE_TOKENS = frozenset({"last", "previous", "prior"})
+_ELAPSED_SINCE_CURRENT_DURATION_TOKENS = frozenset(
+    {
+        "active",
+        "began",
+        "begin",
+        "beginning",
+        "begun",
+        "current",
+        "onset",
+        "start",
+        "started",
+        "starts",
+        "still",
+    }
+)
 _EPISODE_STATE_TOKENS = frozenset(
     {
         "invert",
@@ -1145,10 +1162,22 @@ def _inactive_episode_state_flags(summary: dict[str, Any]) -> list[tuple[str, se
 
 def _duration_episode_tokens(*values: Any) -> set[str]:
     tokens = set(_semantic_tokens(*values))
+    if _tokens_describe_elapsed_or_horizon_duration(tokens):
+        return set()
     expanded = _expand_episode_tokens(tokens - _DURATION_TOKEN_STOPWORDS)
     if not expanded & _EPISODE_STATE_TOKENS:
         return set()
     return expanded
+
+
+def _tokens_describe_elapsed_or_horizon_duration(tokens: set[str]) -> bool:
+    if tokens & _HORIZON_DURATION_TOKENS:
+        return True
+    if "since" not in tokens:
+        return False
+    if tokens & _ELAPSED_SINCE_REFERENCE_TOKENS:
+        return True
+    return not bool(tokens & _ELAPSED_SINCE_CURRENT_DURATION_TOKENS)
 
 
 def _duration_tokens_match_inactive_flag(
@@ -1174,7 +1203,8 @@ def _current_state_duration_fact_errors(
         if role == _HISTORICAL_DURATION_ROLE:
             continue
         label = str(fact.get("id") or fact.get("label") or fact.get("source_key"))
-        if role == _CURRENT_STATE_DURATION_ROLE and fact.get("episode_active") is False:
+        episode_active = fact.get("episode_active")
+        if role == _CURRENT_STATE_DURATION_ROLE and episode_active is False:
             errors.append(
                 f"{label}: episode_active=false but raw_value={number} {unit}"
             )
@@ -1185,12 +1215,23 @@ def _current_state_duration_fact_errors(
             fact.get("metric"),
             fact.get("source_key"),
         )
+        matched_inactive_flag = False
         for flag_name, inactive_tokens in inactive_flags:
             if _duration_tokens_match_inactive_flag(fact_tokens, inactive_tokens):
                 errors.append(
                     f"{label}: duration contradicts inactive state flag {flag_name}=false"
                 )
+                matched_inactive_flag = True
                 break
+        if matched_inactive_flag or not fact_tokens:
+            continue
+        if role == _CURRENT_STATE_DURATION_ROLE and episode_active is True:
+            continue
+        errors.append(
+            f"{label}: nonzero episode duration requires "
+            "semantic_role=current_state_duration with episode_active=true "
+            "or semantic_role=historical_duration"
+        )
     return errors
 
 
@@ -1221,11 +1262,9 @@ def _current_state_duration_scalar_errors(
 
 
 def _validate_current_state_episode_durations(summary: dict[str, Any]) -> None:
-    """Reject active-duration facts when the structured episode state is inactive."""
+    """Reject ambiguous episode-duration facts before writer/QA handoff."""
 
     inactive_flags = _inactive_episode_state_flags(summary)
-    if not inactive_flags:
-        return
     facts = summary.get("numeric_facts")
     normalized_facts = facts if isinstance(facts, list) else []
     errors = _current_state_duration_fact_errors(normalized_facts, inactive_flags)
