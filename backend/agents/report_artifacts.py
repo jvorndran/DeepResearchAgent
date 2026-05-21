@@ -18,6 +18,38 @@ AUTO_REPORT_FOOTER_MARKER = "<!-- AUTO_REPORT_DISCLAIMERS -->"
 CHART_MARKER_RE = re.compile(r"<!--\s*CHART:(\S+?)\s*-->")
 
 
+def normalize_query_text(value: Any) -> str:
+    """Canonical query text for artifact identity checks."""
+    if value is None:
+        return ""
+    return " ".join(str(value).split())
+
+
+def original_query_contract_dict(
+    report_query: Any,
+    expected_query: Any,
+) -> dict[str, Any]:
+    """Compare a report query to the immutable runtime/user query."""
+    expected = normalize_query_text(expected_query)
+    actual = normalize_query_text(report_query)
+    required = bool(expected)
+    return {
+        "required": required,
+        "valid": (not required) or actual == expected,
+        "expected_query": expected,
+        "report_query": actual,
+    }
+
+
+def original_query_contract_blocker(contract: dict[str, Any]) -> str | None:
+    if not contract or contract.get("valid", True):
+        return None
+    return (
+        "original_query_mismatch: report.query must preserve the runtime user "
+        "query after whitespace normalization."
+    )
+
+
 def auto_report_footer_markdown() -> str:
     """Canonical disclaimer block appended by the pipeline on save / validate."""
     return (
@@ -91,6 +123,28 @@ def load_sibling_execution_summary_json(
         return None, f"Invalid execution_summary.json: {exc}"
     if not isinstance(parsed, dict):
         return None, "execution_summary.json root must be a JSON object"
+    return parsed, None
+
+
+def load_sibling_runner_status_json(
+    report_json_path: str | Path,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """
+    Load runner_status.json next to report.json.
+
+    A missing sibling is allowed for legacy artifacts and isolated unit tests.
+    """
+    path = Path(report_json_path).with_name("runner_status.json")
+    if not path.is_file():
+        return None, None
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        return None, str(exc)
+    except json.JSONDecodeError as exc:
+        return None, f"Invalid runner_status.json: {exc}"
+    if not isinstance(parsed, dict):
+        return None, "runner_status.json root must be a JSON object"
     return parsed, None
 
 

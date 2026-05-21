@@ -3980,6 +3980,61 @@ def test_submit_quality_decision_rejects_group_place_scope_drift_caveat(tmp_path
     assert payload["failure_category"] == "requested_coverage_missing"
 
 
+def test_submit_quality_decision_rejects_runner_status_query_drift(tmp_path):
+    report_path = tmp_path / "report.json"
+    runtime_query = (
+        "My team says the consumer is fine. Show where national aggregates "
+        "hide stress in specific groups or places."
+    )
+    (tmp_path / "runner_status.json").write_text(
+        json.dumps(
+            {
+                "status": "COMPLETED",
+                "job_id": "job-1",
+                "query": runtime_query,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps({"status": "success", "statistical_summary": {}}),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Evaluate whether national consumer aggregates look healthy.",
+                "title": "Consumer Health",
+                "executive_summary": "National aggregates look stable.",
+                "markdown": (
+                    "## Executive Summary\nNational aggregates look stable.\n\n"
+                    "## Research Query\n"
+                    "Evaluate whether national consumer aggregates look healthy."
+                ),
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": 16},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "original_query_mismatch"
+    assert payload["required_upstream"] == "technical-writer"
+    assert "original_query_mismatch" in payload["reason"]
+
+
 def test_submit_quality_decision_rejects_bare_group_place_unavailable_data_caveat(tmp_path):
     report_path = tmp_path / "report.json"
     (tmp_path / "execution_summary.json").write_text(

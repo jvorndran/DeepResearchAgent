@@ -3211,6 +3211,114 @@ def test_write_research_report_recovers_original_query_from_markdown_section(tmp
     assert report["query"] == query
 
 
+def test_plan_report_structure_prefers_runtime_query_over_supplied_query(tmp_path):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text("{}", encoding="utf-8")
+    runtime_query = (
+        "My team says the consumer is fine. Show where national aggregates "
+        "hide stress in specific groups or places."
+    )
+    narrowed_query = "Evaluate whether national consumer aggregates look healthy."
+    runtime = SimpleNamespace(
+        context=SimpleNamespace(
+            job_id="job-1",
+            output_dir=str(tmp_path),
+            query=runtime_query,
+        )
+    )
+
+    plan = json.loads(
+        plan_report_structure.func(
+            runtime=runtime,
+            query_type="macro_indicator",
+            charts_json_path=str(charts_path),
+            execution_summary="{}",
+            original_query=narrowed_query,
+        )
+    )
+    saved_context = json.loads(
+        (tmp_path / ".technical_writer_plan_context.json").read_text(encoding="utf-8")
+    )
+
+    assert plan["original_query"] == runtime_query
+    assert saved_context["original_query"] == runtime_query
+
+
+def test_write_research_report_rejects_supplied_original_query_drift(tmp_path):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text("{}", encoding="utf-8")
+    runtime_query = (
+        "My team says the consumer is fine. Show where national aggregates "
+        "hide stress in specific groups or places."
+    )
+    narrowed_query = "Evaluate whether national consumer aggregates look healthy."
+    runtime = SimpleNamespace(
+        context=SimpleNamespace(
+            job_id="job-1",
+            output_dir=str(tmp_path),
+            query=runtime_query,
+        )
+    )
+
+    result = json.loads(
+        write_research_report.func(
+            runtime=runtime,
+            markdown=(
+                "## Executive Summary\nNational aggregates look stable.\n\n"
+                "## Research Query\n"
+                f"{runtime_query}"
+            ),
+            charts_json_path=str(charts_path),
+            original_query=narrowed_query,
+            title="Consumer Health",
+            executive_summary="National aggregates look stable.",
+            analysis_type="macro_indicator",
+        )
+    )
+
+    assert result["status"] == "error"
+    assert result["failure_category"] == "original_query_mismatch"
+    assert result["required_upstream"] == "technical-writer"
+    assert not (tmp_path / "report.json").exists()
+
+
+def test_write_research_report_rejects_markdown_research_query_drift(tmp_path):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text("{}", encoding="utf-8")
+    runtime_query = (
+        "My team says the consumer is fine. Show where national aggregates "
+        "hide stress in specific groups or places."
+    )
+    narrowed_query = "Evaluate whether national consumer aggregates look healthy."
+    runtime = SimpleNamespace(
+        context=SimpleNamespace(
+            job_id="job-1",
+            output_dir=str(tmp_path),
+            query=runtime_query,
+        )
+    )
+
+    result = json.loads(
+        write_research_report.func(
+            runtime=runtime,
+            markdown=(
+                "## Executive Summary\nNational aggregates look stable.\n\n"
+                "## Research Query\n"
+                f"{narrowed_query}"
+            ),
+            charts_json_path=str(charts_path),
+            title="Consumer Health",
+            executive_summary="National aggregates look stable.",
+            analysis_type="macro_indicator",
+        )
+    )
+
+    assert result["status"] == "error"
+    assert result["failure_category"] == "original_query_mismatch"
+    assert result["required_upstream"] == "technical-writer"
+    assert not (tmp_path / "report.json").exists()
+
+
 def test_write_research_report_preserves_legacy_dual_axis_line_bar_charts(tmp_path):
     charts_path = tmp_path / "charts.json"
     charts_path.write_text(
@@ -4205,6 +4313,60 @@ def test_validate_research_report_file_allows_generic_scenario_markdown_value_dr
 
     assert gate["passes_gate"] is True
     assert gate["blockers"] == []
+
+
+def test_validate_research_report_file_rejects_runtime_query_drift(tmp_path):
+    report_path = tmp_path / "report.json"
+    runtime_query = (
+        "My team says the consumer is fine. Show where national aggregates "
+        "hide stress in specific groups or places."
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "job_id": "job-1",
+                "created_at": "2026-05-14T00:00:00+00:00",
+                "query": "Evaluate whether national consumer aggregates look healthy.",
+                "title": "Consumer Health",
+                "executive_summary": "National aggregates look stable.",
+                "markdown": (
+                    "## Executive Summary\nNational aggregates look stable.\n\n"
+                    "## Research Query\n"
+                    "Evaluate whether national consumer aggregates look healthy."
+                ),
+                "charts": {},
+                "data_sources": [],
+                "metadata": {
+                    "analysis_type": "macro_indicator",
+                    "chart_count": 0,
+                    "word_count": 16,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    runtime = SimpleNamespace(
+        context=SimpleNamespace(
+            job_id="job-1",
+            output_dir=str(tmp_path),
+            query=runtime_query,
+        )
+    )
+
+    gate = json.loads(
+        validate_research_report_file.func(
+            runtime=runtime,
+            report_json_path=str(report_path),
+        )
+    )
+
+    assert gate["passes_gate"] is False
+    assert gate["original_query_contract"]["valid"] is False
+    assert gate["blockers"] == [
+        "original_query_mismatch: report.query must preserve the runtime user "
+        "query after whitespace normalization."
+    ]
 
 
 def test_validate_research_report_file_rejects_zero_charts_for_chart_query(tmp_path):

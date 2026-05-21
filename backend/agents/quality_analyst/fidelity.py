@@ -52,6 +52,9 @@ from ..report_artifacts import (
     load_sibling_evidence_bundle_json,
     load_report_json,
     load_sibling_execution_summary_json,
+    load_sibling_runner_status_json,
+    original_query_contract_blocker,
+    original_query_contract_dict,
 )
 from ..technical_writer.chart_audit import chart_semantics_dict
 from ..quant_macro_stats.artifacts.source_unit_fidelity import (
@@ -4506,6 +4509,25 @@ def _chart_semantics_approval_blockers(data: dict[str, object]) -> list[str]:
     ]
 
 
+def _runner_status_original_query_blocker(
+    report_path: Path,
+    data: dict[str, object],
+) -> str | None:
+    runner_status, error = load_sibling_runner_status_json(report_path)
+    if error:
+        return (
+            "original_query_mismatch: cannot verify report.query against sibling "
+            f"runner_status.json because it failed to load: {error}"
+        )
+    if not runner_status:
+        return None
+    contract = original_query_contract_dict(
+        data.get("query"),
+        runner_status.get("query"),
+    )
+    return original_query_contract_blocker(contract)
+
+
 def _query_requires_quant_artifacts(query: str) -> bool:
     lowered = query.lower()
     return any(
@@ -4564,6 +4586,7 @@ def _approval_blockers(report_path: str) -> list[str]:
     data, error = load_report_json(report_path)
     if error:
         return [f"Cannot load report artifact: {error}"]
+    path = Path(report_path)
     query = str(data.get("query", ""))
     charts = data.get("charts", [])
     if isinstance(charts, dict):
@@ -4576,6 +4599,9 @@ def _approval_blockers(report_path: str) -> list[str]:
     summary = _load_sibling_execution_summary(Path(report_path))
     full_summary = _load_execution_summary_payload(Path(report_path)) or {}
     blockers: list[str] = []
+    original_query_blocker = _runner_status_original_query_blocker(path, data)
+    if original_query_blocker:
+        blockers.append(original_query_blocker)
     evidence_bundle_blocker = _evidence_bundle_approval_blocker(Path(report_path))
     if evidence_bundle_blocker:
         blockers.append(evidence_bundle_blocker)
@@ -4661,6 +4687,11 @@ def _approval_failure_metadata(report_path: str) -> dict[str, str]:
     data, error = load_report_json(report_path)
     if error:
         return {}
+    if _runner_status_original_query_blocker(Path(report_path), data):
+        return {
+            "failure_category": "original_query_mismatch",
+            "required_upstream": "technical-writer",
+        }
     if _evidence_bundle_approval_blocker(Path(report_path)):
         return {
             "failure_category": "evidence_bundle_invalid",

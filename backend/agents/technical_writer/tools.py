@@ -40,6 +40,8 @@ from ..report_artifacts import (
     chart_handoff_dict,
     chart_marker_ids,
     inject_auto_report_footer,
+    normalize_query_text,
+    original_query_contract_dict,
 )
 
 from .report_validation import run_report_static_gate
@@ -139,7 +141,7 @@ def _load_plan_context(runtime: ToolRuntime[ResearchContext]) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         return {}
     context: dict[str, Any] = {
-        key: value.strip()
+        key: normalize_query_text(value) if key == "original_query" else value.strip()
         for key in ("charts_json_path", "original_query")
         if isinstance((value := parsed.get(key)), str) and value.strip()
     }
@@ -166,6 +168,36 @@ def _extract_research_query_from_markdown(markdown: str) -> str:
                 query_lines.append(next_stripped)
         return " ".join(query_lines).strip()
     return ""
+
+
+def _runtime_original_query(runtime: ToolRuntime[ResearchContext]) -> str:
+    return normalize_query_text(getattr(runtime.context, "query", None))
+
+
+def _original_query_mismatch_response(
+    *,
+    report_path: str,
+    candidate_query: str,
+    expected_query: str,
+    source: str,
+) -> str:
+    contract = original_query_contract_dict(candidate_query, expected_query)
+    message = (
+        "original_query_mismatch: "
+        f"{source} does not match runtime.context.query after whitespace normalization."
+    )
+    return json.dumps(
+        {
+            "status": "error",
+            "error": "original_query_mismatch",
+            "failure_category": "original_query_mismatch",
+            "required_upstream": "technical-writer",
+            "report_path": report_path,
+            "original_query_contract": contract,
+            "blockers": [message],
+            "message": message,
+        }
+    )
 
 
 def _labelize_key(key: str) -> str:
@@ -3030,6 +3062,8 @@ def plan_report_structure(
         - execution_summary_for_draft: Writer-useful computed findings extracted from inline JSON or a job-local summary file
         - original_query: Echo of `original_query` (pass unchanged to `write_research_report`)
     """
+    runtime_query = _runtime_original_query(runtime)
+    original_query = runtime_query or normalize_query_text(original_query)
     charts_json_path = _resolve_charts_json_path(runtime, charts_json_path)
     execution_payload = _execution_summary_payload(runtime, execution_summary)
     helper_evidence_for_draft = _helper_evidence_for_draft(
@@ -3175,6 +3209,25 @@ def write_research_report(
         out_dir = str(OUTPUT_BASE_DIR / canonical_job_id)
     report_path = str((Path(out_dir) / "report.json").resolve())
     plan_context = _load_plan_context(runtime)
+    runtime_query = _runtime_original_query(runtime)
+    supplied_query = normalize_query_text(original_query)
+    markdown_query = normalize_query_text(_extract_research_query_from_markdown(markdown))
+    if runtime_query:
+        if supplied_query and supplied_query != runtime_query:
+            return _original_query_mismatch_response(
+                report_path=report_path,
+                candidate_query=supplied_query,
+                expected_query=runtime_query,
+                source="supplied original_query",
+            )
+        if markdown_query and markdown_query != runtime_query:
+            return _original_query_mismatch_response(
+                report_path=report_path,
+                candidate_query=markdown_query,
+                expected_query=runtime_query,
+                source="markdown Research Query section",
+            )
+        original_query = runtime_query
     if not str(charts_json_path).strip():
         charts_json_path = plan_context.get("charts_json_path", "")
     if not str(charts_json_path).strip():
@@ -3187,10 +3240,11 @@ def write_research_report(
                 ),
             }
         )
-    if not str(original_query).strip():
-        original_query = _extract_research_query_from_markdown(markdown)
+    if not runtime_query and not supplied_query:
+        original_query = markdown_query
     if not str(original_query).strip():
         original_query = plan_context.get("original_query", "")
+    original_query = normalize_query_text(original_query)
     if not str(original_query).strip():
         return json.dumps(
             {
@@ -3474,7 +3528,7 @@ def validate_research_report_file(
 
     `passes_gate` is false for load/schema errors, unresolved broken chart markers,
     charts defined in charts.json that are not referenced by a `<!-- CHART:id -->` marker,
-    or chart render/data semantics blockers.
+    chart render/data semantics blockers, or report.query drift from the runtime user query.
     Check `warnings` for non-blocking hints (e.g. empty executive summary). Prose compliance
     is for quality-analyst review, not static regex.
 
@@ -3517,4 +3571,8 @@ def validate_research_report_file(
                 }
             )
         path = str((Path(out) / "report.json").resolve())
-    return run_report_static_gate(path, auto_patch=auto_patch)
+    return run_report_static_gate(
+        path,
+        auto_patch=auto_patch,
+        original_query=_runtime_original_query(runtime),
+    )

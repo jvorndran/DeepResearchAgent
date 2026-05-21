@@ -40,6 +40,8 @@ from ..report_artifacts import (
     inject_auto_report_footer,
     load_report_json,
     load_sibling_execution_summary_json,
+    original_query_contract_blocker,
+    original_query_contract_dict,
 )
 from .chart_audit import chart_render_dict, chart_semantics_dict, query_requests_charts
 
@@ -98,8 +100,12 @@ def structural_blockers(
     chart_handoff: dict | None = None,
     artifact_fact_consistency: dict | None = None,
     chart_required: bool = False,
+    original_query_contract: dict | None = None,
 ) -> list[str]:
     blockers: list[str] = []
+    query_blocker = original_query_contract_blocker(original_query_contract or {})
+    if query_blocker:
+        blockers.append(query_blocker)
     if chart_required and not charts.get("defined_charts"):
         blockers.append(
             "query requested charts but report.json contains zero chart definitions"
@@ -192,6 +198,7 @@ def _gate_payload(
     blockers: list[str],
     chart_handoff: dict | None = None,
     artifact_fact_consistency: dict | None = None,
+    original_query_contract: dict | None = None,
     load_error: str | None = None,
 ) -> str:
     body: dict = {
@@ -203,6 +210,7 @@ def _gate_payload(
         "chart_semantics": chart_semantics or {},
         "chart_handoff": chart_handoff or {},
         "artifact_fact_consistency": artifact_fact_consistency or {},
+        "original_query_contract": original_query_contract or {},
         "warnings": warnings,
         "auto_patched": auto_patched,
         "patches_applied": patches_applied,
@@ -236,7 +244,11 @@ def _artifact_fact_consistency_for_report(path: Path, report: ResearchReport) ->
     )
 
 
-def run_report_static_gate(report_json_path: str, auto_patch: bool = True) -> str:
+def run_report_static_gate(
+    report_json_path: str,
+    auto_patch: bool = True,
+    original_query: str = "",
+) -> str:
     """
     Run schema validation, optional safe auto-fixes, and chart-marker integrity.
 
@@ -246,6 +258,8 @@ def run_report_static_gate(report_json_path: str, auto_patch: bool = True) -> st
     Args:
         report_json_path: Absolute path to report.json
         auto_patch: If True, re-apply canonical footer (idempotent) / strip broken chart markers
+        original_query: Optional runtime user query; when provided, report.query
+            must match it after whitespace normalization.
 
     Returns:
         JSON string with passes_gate, report_path, format, charts, scenarios,
@@ -295,6 +309,8 @@ def run_report_static_gate(report_json_path: str, auto_patch: bool = True) -> st
     chart_semantics = chart_semantics_dict(report)
     scenarios = scenario_dict(report)
     warnings = content_warnings(report)
+    original_query_contract = original_query_contract_dict(report.query, original_query)
+    query_blocker = original_query_contract_blocker(original_query_contract)
     try:
         chart_handoff = _chart_handoff_for_report(path, report)
         artifact_fact_consistency = _artifact_fact_consistency_for_report(path, report)
@@ -310,10 +326,11 @@ def run_report_static_gate(report_json_path: str, auto_patch: bool = True) -> st
             chart_semantics=chart_semantics,
             chart_handoff={},
             artifact_fact_consistency={},
+            original_query_contract=original_query_contract,
             warnings=warnings,
             auto_patched=False,
             patches_applied=[],
-            blockers=[load_error],
+            blockers=([query_blocker] if query_blocker else []) + [load_error],
             load_error=load_error,
         )
 
@@ -335,10 +352,14 @@ def run_report_static_gate(report_json_path: str, auto_patch: bool = True) -> st
                     scenarios=scenarios,
                     chart_render=chart_render,
                     chart_semantics=chart_semantics,
+                    original_query_contract=original_query_contract,
                     warnings=warnings,
                     auto_patched=False,
                     patches_applied=patches,
-                    blockers=[f"Re-validation failed after patch — not saved: {e}"],
+                    blockers=(
+                        ([query_blocker] if query_blocker else [])
+                        + [f"Re-validation failed after patch — not saved: {e}"]
+                    ),
                 )
 
             try:
@@ -352,10 +373,14 @@ def run_report_static_gate(report_json_path: str, auto_patch: bool = True) -> st
                     scenarios=scenarios,
                     chart_render=chart_render,
                     chart_semantics=chart_semantics,
+                    original_query_contract=original_query_contract,
                     warnings=warnings,
                     auto_patched=False,
                     patches_applied=patches,
-                    blockers=[f"Failed to write patched report: {e}"],
+                    blockers=(
+                        ([query_blocker] if query_blocker else [])
+                        + [f"Failed to write patched report: {e}"]
+                    ),
                 )
 
             raw2 = path.read_text(encoding="utf-8")
@@ -382,10 +407,11 @@ def run_report_static_gate(report_json_path: str, auto_patch: bool = True) -> st
                     scenarios=scenarios,
                     chart_render=chart_render,
                     chart_semantics=chart_semantics,
+                    original_query_contract=original_query_contract,
                     warnings=warnings,
                     auto_patched=False,
                     patches_applied=patches,
-                    blockers=[load_error],
+                    blockers=([query_blocker] if query_blocker else []) + [load_error],
                     load_error=load_error,
                 )
             blockers = structural_blockers(
@@ -396,6 +422,7 @@ def run_report_static_gate(report_json_path: str, auto_patch: bool = True) -> st
                 chart_handoff,
                 artifact_fact_consistency,
                 chart_required=query_requests_charts(report.query),
+                original_query_contract=original_query_contract,
             )
             passes = len(blockers) == 0
             return _gate_payload(
@@ -408,6 +435,7 @@ def run_report_static_gate(report_json_path: str, auto_patch: bool = True) -> st
                 chart_semantics=chart_semantics,
                 chart_handoff=chart_handoff,
                 artifact_fact_consistency=artifact_fact_consistency,
+                original_query_contract=original_query_contract,
                 warnings=warnings,
                 auto_patched=True,
                 patches_applied=patches,
@@ -422,6 +450,7 @@ def run_report_static_gate(report_json_path: str, auto_patch: bool = True) -> st
         chart_handoff,
         artifact_fact_consistency,
         chart_required=query_requests_charts(report.query),
+        original_query_contract=original_query_contract,
     )
     passes = len(blockers) == 0
     return _gate_payload(
@@ -434,6 +463,7 @@ def run_report_static_gate(report_json_path: str, auto_patch: bool = True) -> st
         chart_semantics=chart_semantics,
         chart_handoff=chart_handoff,
         artifact_fact_consistency=artifact_fact_consistency,
+        original_query_contract=original_query_contract,
         warnings=warnings,
         auto_patched=False,
         patches_applied=[],

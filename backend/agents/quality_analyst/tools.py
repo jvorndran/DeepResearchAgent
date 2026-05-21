@@ -5,7 +5,11 @@ from pathlib import Path
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tools import tool
 
-from ..report_artifacts import chart_marker_ids, load_report_json
+from ..report_artifacts import (
+    chart_marker_ids,
+    load_report_json,
+    load_sibling_runner_status_json,
+)
 from .fidelity import (
     _approval_failure_metadata,
     _approval_blockers,
@@ -88,8 +92,8 @@ def load_report_for_review(report_path: str) -> str:
     Returns:
         JSON string with title, query, executive_summary, markdown excerpt,
         chart markers, chart ids, data source metadata, compact sibling
-        execution_summary.json metadata, and evidence_bundle.json metadata when
-        present.
+        runner_status.json metadata, execution_summary.json metadata, and
+        evidence_bundle.json metadata when present.
     """
     path = Path(report_path)
     if path.name != "report.json":
@@ -129,6 +133,21 @@ def load_report_for_review(report_path: str) -> str:
     elif isinstance(charts, dict):
         chart_ids = [str(chart_id) for chart_id in charts.keys()]
 
+    runner_status, runner_status_error = load_sibling_runner_status_json(path)
+    if runner_status_error:
+        runner_status_context: dict[str, object] = {
+            "status": "error",
+            "error": runner_status_error,
+        }
+    elif runner_status:
+        runner_status_context = {
+            key: runner_status.get(key)
+            for key in ("status", "query", "query_hash", "job_id")
+            if runner_status.get(key) is not None
+        }
+    else:
+        runner_status_context = {}
+
     return json.dumps(
         {
             "status": "success",
@@ -146,6 +165,7 @@ def load_report_for_review(report_path: str) -> str:
             "chart_ids": chart_ids,
             "data_sources": data.get("data_sources", []),
             "metadata": data.get("metadata", {}),
+            "runner_status": runner_status_context,
             "execution_summary": _load_sibling_execution_summary(path),
             "evidence_bundle": _load_sibling_evidence_bundle(path),
         }
