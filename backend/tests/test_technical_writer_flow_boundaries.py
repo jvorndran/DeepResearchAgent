@@ -2186,6 +2186,41 @@ def test_plan_report_structure_adds_zero_duration_state_guidance(tmp_path):
     assert result["helper_evidence_for_draft"]["numeric_facts"][0]["literal_required"] is False
 
 
+def test_plan_report_structure_adds_inactive_duration_state_guidance_for_days(tmp_path):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text("{}", encoding="utf-8")
+
+    fact = qms.current_state_duration_fact(
+        fact_id="inversion_duration",
+        label="Yield curve inversion duration",
+        raw_value=0,
+        unit="days",
+        precision=0,
+        tolerance=1,
+        source_key="10Y/2Y",
+        episode_active=False,
+        as_of_date="2026-04-01",
+        metric="yield_curve_inversion_duration",
+    )
+
+    result = json.loads(
+        plan_report_structure.func(
+            query_type="macro_indicator",
+            charts_json_path=str(charts_path),
+            execution_summary=json.dumps({"numeric_facts": [fact]}),
+            original_query="Review whether the yield curve is currently inverted.",
+            runtime=_Runtime(),
+        )
+    )
+
+    draft = result["execution_summary_for_draft"]
+    assert "inversion_duration=0 days" in draft
+    assert "semantic_role=current_state_duration" in draft
+    assert "literal_required=false" in draft
+    assert "no active/current episode" in draft
+    assert result["helper_evidence_for_draft"]["numeric_facts"][0]["episode_active"] is False
+
+
 def test_plan_report_structure_surfaces_numeric_fact_metadata(tmp_path):
     charts_path = tmp_path / "charts.json"
     charts_path.write_text("{}", encoding="utf-8")

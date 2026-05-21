@@ -323,6 +323,32 @@ QUANT_HELPER_CATALOG: tuple[QuantHelperCategory, ...] = (
                 ),
             ),
             QuantHelperSpec(
+                name="current_state_duration_fact",
+                import_path="agents.quant_macro_stats",
+                signature=(
+                    "current_state_duration_fact(*, fact_id, label, raw_value, "
+                    "unit, precision, tolerance, source_key, episode_active, "
+                    "as_of_date=None, subject=None, metric=None, operation=None, "
+                    "transform_basis=None, active_state_description=None, "
+                    "inactive_state_description=None)"
+                ),
+                use_when=(
+                    "Record the duration of a current threshold episode such as "
+                    "an inversion, recession, or trigger window; pass "
+                    "episode_active from the structured current-state flag."
+                ),
+                preserves=(
+                    "id",
+                    "raw_value",
+                    "display_value",
+                    "unit",
+                    "semantic_role",
+                    "episode_active",
+                    "literal_required",
+                    "state_description",
+                ),
+            ),
+            QuantHelperSpec(
                 name="latest_numeric_fact",
                 import_path="agents.quant_macro_stats",
                 signature=(

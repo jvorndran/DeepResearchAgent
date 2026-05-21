@@ -5,6 +5,7 @@ from __future__ import annotations
 from ..requested_coverage import requested_geography_coverage
 from .artifacts import (
     chart_provenance,
+    current_state_duration_fact,
     display_value,
     latest_numeric_fact,
     normalize_numeric_fact,
@@ -150,6 +151,7 @@ __all__ = [
     "chart_provenance",
     "classify_recession_regime",
     "compare_analog_windows",
+    "current_state_duration_fact",
     "direct_ols_forecast",
     "display_value",
     "event_signal_backtest",

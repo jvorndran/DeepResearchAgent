@@ -2418,7 +2418,7 @@ def _numeric_fact_validation_blockers(
             "Report treats current-state zero-duration numeric_facts as historical "
             f"durations for {', '.join(semantic_misuse[:8])}. Regenerate the "
             "affected prose from state_description instead of saying an episode "
-            "lasted 0 months."
+            "lasted 0 days/weeks/months."
         ]
     if not missing:
         return []

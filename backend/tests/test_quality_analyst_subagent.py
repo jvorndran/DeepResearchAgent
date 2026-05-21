@@ -6830,6 +6830,65 @@ def test_submit_quality_decision_rejects_zero_duration_as_historical_duration(tm
     assert "zero-duration" in payload["reason"]
 
 
+def test_submit_quality_decision_rejects_zero_day_duration_as_history(tmp_path):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "numeric_facts": [
+                    {
+                        "id": "recession_duration",
+                        "label": "Current recession duration",
+                        "value": 0,
+                        "unit": "days",
+                        "precision": 0,
+                        "semantic_role": "current_state_duration",
+                        "episode_active": False,
+                        "literal_required": True,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "job_id": "qa-zero-day-duration-bad",
+                "created_at": "2026-05-14T12:00:00Z",
+                "query": "Review whether the economy is currently in recession.",
+                "title": "Recession State",
+                "executive_summary": "The economy exited recession after 0 days.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "The economy exited recession after 0 days of recession."
+                ),
+                "charts": {},
+                "data_sources": [],
+                "metadata": {"analysis_type": "macro", "chart_count": 0, "word_count": 10},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "numeric_fact_mismatch"
+    assert payload["required_upstream"] == "technical-writer"
+    assert "zero-duration" in payload["reason"]
+
+
 def test_submit_quality_decision_rejects_static_chart_semantics_blockers(tmp_path):
     report_path = tmp_path / "report.json"
     (tmp_path / "execution_summary.json").write_text(

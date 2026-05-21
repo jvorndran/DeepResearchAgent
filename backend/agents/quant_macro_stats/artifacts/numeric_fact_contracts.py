@@ -17,20 +17,24 @@ _UNIT_ALIASES = {
     "percentage points": "percentage_point",
     "pp": "percentage_point",
     "$": "usd",
+    "day": "days",
     "dollar": "usd",
     "dollars": "usd",
     "month": "months",
+    "week": "weeks",
 }
-_DURATION_UNITS = {"months"}
+_DURATION_UNITS = {"days", "weeks", "months"}
 _CURRENT_STATE_DURATION_ROLE = "current_state_duration"
-_ZERO_DURATION_STATE_DESCRIPTION = (
-    "0 months means no active/current episode; describe the current state "
-    "semantically instead of saying a historical episode lasted 0 months."
+_INACTIVE_DURATION_STATE_DESCRIPTION_TEMPLATE = (
+    "0 {unit} means no active/current episode; describe the current state "
+    "semantically instead of saying a historical episode lasted 0 {unit}."
 )
 _ZERO_DURATION_MISUSE_RE = re.compile(
     r"\b(?:after|for|lasting|lasted|over|through|during|following)\s+"
-    r"(?:about|around|roughly|approximately)?\s*0(?:\.0+)?\s*months?\b|"
-    r"\b0(?:\.0+)?\s*months?\s+(?:of|long|duration|episode|period)\b",
+    r"(?:about|around|roughly|approximately)?\s*0(?:\.0+)?\s*"
+    r"(?:days?|weeks?|months?)\b|"
+    r"\b0(?:\.0+)?\s*(?:days?|weeks?|months?)\s+"
+    r"(?:of|long|duration|episode|period)\b",
     re.IGNORECASE,
 )
 
@@ -63,8 +67,8 @@ def display_value(value: Any, *, unit: str, precision: int) -> str | None:
         return f"{rounded:,.{decimals}f} pp"
     if canonical_unit == "multiple":
         return f"{rounded:,.{decimals}f}x"
-    if canonical_unit == "months":
-        suffix = "month" if abs(rounded) == 1 else "months"
+    if canonical_unit in _DURATION_UNITS:
+        suffix = canonical_unit[:-1] if abs(rounded) == 1 else canonical_unit
         return f"{rounded:,.{decimals}f} {suffix}"
     return f"{rounded:,.{decimals}f}"
 
@@ -96,16 +100,17 @@ def numeric_fact(
     resolved_role = _semantic_role(semantic_role)
     if resolved_role is None and zero_duration_state:
         resolved_role = _CURRENT_STATE_DURATION_ROLE
-    current_state_duration = _is_current_state_duration(number, canonical_unit, resolved_role)
+    current_state_duration = _is_current_state_duration(canonical_unit, resolved_role)
+    inactive_current_state_duration = current_state_duration and zero_duration_state
     resolved_literal_required = _coerce_literal_required(
         literal_required,
         strict=True,
         location="literal_required",
         allow_none=True,
     )
-    if resolved_literal_required is False and not current_state_duration:
+    if resolved_literal_required is False and not inactive_current_state_duration:
         raise ValueError(_non_literal_error("literal_required"))
-    if current_state_duration:
+    if inactive_current_state_duration:
         resolved_literal_required = False
     fact: dict[str, Any] = {
         "id": fact_id,
@@ -123,8 +128,8 @@ def numeric_fact(
         fact["literal_required"] = resolved_literal_required
     if state_description:
         fact["state_description"] = str(state_description)
-    elif current_state_duration:
-        fact["state_description"] = _ZERO_DURATION_STATE_DESCRIPTION
+    elif inactive_current_state_duration:
+        fact["state_description"] = _inactive_duration_state_description(canonical_unit)
     if as_of_date is not None:
         fact["as_of_date"] = str(as_of_date)
     if subject:
@@ -135,6 +140,68 @@ def numeric_fact(
         fact["operation"] = str(operation)
     if transform_basis:
         fact["transform_basis"] = str(transform_basis)
+    return fact
+
+
+def current_state_duration_fact(
+    *,
+    fact_id: str,
+    label: str,
+    raw_value: Any,
+    unit: str,
+    precision: int,
+    tolerance: float,
+    source_key: str,
+    episode_active: bool,
+    as_of_date: Any = None,
+    subject: str | None = None,
+    metric: str | None = None,
+    operation: str | None = None,
+    transform_basis: str | None = None,
+    active_state_description: str | None = None,
+    inactive_state_description: str | None = None,
+) -> dict[str, Any] | None:
+    """Build a duration fact for a currently active or inactive threshold episode."""
+
+    if not isinstance(episode_active, bool):
+        raise ValueError("episode_active must be a boolean")
+    canonical_unit = normalize_unit(unit)
+    number = _finite(raw_value)
+    if number is not None:
+        _validate_current_state_duration_fact(
+            number,
+            canonical_unit,
+            episode_active=episode_active,
+            location="current_state_duration_fact",
+        )
+    state_description = (
+        active_state_description if episode_active else inactive_state_description
+    )
+    if not episode_active and not state_description:
+        state_description = _inactive_duration_state_description(canonical_unit)
+    fact = numeric_fact(
+        fact_id=fact_id,
+        label=label,
+        raw_value=raw_value,
+        unit=canonical_unit,
+        precision=precision,
+        tolerance=tolerance,
+        source_key=source_key,
+        as_of_date=as_of_date,
+        subject=subject,
+        metric=metric,
+        semantic_role=_CURRENT_STATE_DURATION_ROLE,
+        operation=operation,
+        transform_basis=transform_basis,
+        literal_required=False if not episode_active else None,
+        state_description=state_description,
+    )
+    if fact is not None:
+        fact["episode_active"] = episode_active
+        if episode_active:
+            fact.pop("literal_required", None)
+            if not active_state_description:
+                fact.pop("state_description", None)
     return fact
 
 
@@ -239,16 +306,39 @@ def normalize_numeric_fact(
     semantic_role = _semantic_role(item.get("semantic_role"))
     if semantic_role is None and _is_zero_duration_state(number, canonical_unit):
         semantic_role = _CURRENT_STATE_DURATION_ROLE
-    current_state_duration = _is_current_state_duration(number, canonical_unit, semantic_role)
-    if literal_required is False and not current_state_duration:
+    current_state_duration = _is_current_state_duration(canonical_unit, semantic_role)
+    episode_active = _coerce_optional_bool(
+        item.get("episode_active"),
+        strict=strict,
+        location=f"{location}.episode_active",
+    )
+    inactive_current_state_duration = (
+        current_state_duration
+        and episode_active is not True
+        and _is_zero_duration_state(number, canonical_unit)
+    )
+    if current_state_duration and episode_active is not None:
+        try:
+            _validate_current_state_duration_fact(
+                number,
+                canonical_unit,
+                episode_active=episode_active,
+                location=location,
+            )
+        except ValueError:
+            if strict:
+                raise
+    if literal_required is False and not inactive_current_state_duration:
         if strict:
             raise ValueError(_non_literal_error(f"{location}.literal_required"))
         literal_required = None
-    if current_state_duration:
+    if inactive_current_state_duration:
         literal_required = False
-        fact.setdefault("state_description", _ZERO_DURATION_STATE_DESCRIPTION)
+        fact.setdefault("state_description", _inactive_duration_state_description(canonical_unit))
     if semantic_role is not None:
         fact["semantic_role"] = semantic_role
+    if episode_active is not None:
+        fact["episode_active"] = episode_active
     if item.get("operation"):
         fact["operation"] = str(item["operation"])
     if item.get("transform_basis"):
@@ -286,7 +376,7 @@ def numeric_fact_literal_required(fact: dict[str, Any]) -> bool:
 
 
 def numeric_fact_current_state_duration_misuse(text: str, fact: dict[str, Any]) -> bool:
-    """Detect prose that turns a current-state zero duration into history."""
+    """Detect prose that turns an inactive current-state duration into history."""
 
     if not _non_literal_allowed_for_fact(fact):
         return False
@@ -298,11 +388,10 @@ def _is_zero_duration_state(number: float, unit: str) -> bool:
 
 
 def _is_current_state_duration(
-    number: float,
     unit: str,
     semantic_role: str | None,
 ) -> bool:
-    return semantic_role == _CURRENT_STATE_DURATION_ROLE and _is_zero_duration_state(number, unit)
+    return semantic_role == _CURRENT_STATE_DURATION_ROLE and unit in _DURATION_UNITS
 
 
 def _semantic_role(value: Any) -> str | None:
@@ -314,18 +403,42 @@ def _non_literal_allowed_for_fact(fact: dict[str, Any]) -> bool:
     number = _finite(fact.get("raw_value", fact.get("value")))
     if number is None:
         return False
+    unit = normalize_unit(fact.get("unit"))
     return _is_current_state_duration(
-        number,
-        normalize_unit(fact.get("unit")),
+        unit,
         _semantic_role(fact.get("semantic_role")),
+    ) and fact.get("episode_active") is not True and _is_zero_duration_state(
+        number, unit
     )
 
 
 def _non_literal_error(location: str) -> str:
     return (
-        f"{location}=false is only valid for zero-duration "
+        f"{location}=false is only valid for inactive "
         "current_state_duration numeric facts"
     )
+
+
+def _inactive_duration_state_description(unit: str) -> str:
+    return _INACTIVE_DURATION_STATE_DESCRIPTION_TEMPLATE.format(unit=unit)
+
+
+def _validate_current_state_duration_fact(
+    number: float,
+    unit: str,
+    *,
+    episode_active: bool,
+    location: str,
+) -> None:
+    if unit not in _DURATION_UNITS:
+        raise ValueError(
+            f"{location}: current_state_duration unit must be days, weeks, or months"
+        )
+    if not episode_active and not _is_zero_duration_state(number, unit):
+        raise ValueError(
+            f"{location}: inactive current_state_duration facts must use 0 {unit}; "
+            "use semantic_role=historical_duration for completed historical episodes"
+        )
 
 
 def _coerce_int(value: Any, *, default: int) -> int:
@@ -345,6 +458,21 @@ def _coerce_literal_required(
     if value is None:
         if strict and not allow_none:
             raise ValueError(f"{location} must be a boolean when provided")
+        return None
+    if isinstance(value, bool):
+        return value
+    if strict:
+        raise ValueError(f"{location} must be a boolean when provided")
+    return None
+
+
+def _coerce_optional_bool(
+    value: Any,
+    *,
+    strict: bool,
+    location: str,
+) -> bool | None:
+    if value is None:
         return None
     if isinstance(value, bool):
         return value

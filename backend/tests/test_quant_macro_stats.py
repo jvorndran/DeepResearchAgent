@@ -1641,6 +1641,168 @@ def test_current_state_zero_duration_ignores_literal_required_override():
     assert helper_fact["literal_required"] is False
 
 
+def test_current_state_duration_fact_supports_inactive_day_contract():
+    fact = qms.current_state_duration_fact(
+        fact_id="inversion_duration",
+        label="Yield curve inversion duration",
+        raw_value=0,
+        unit="days",
+        precision=0,
+        tolerance=1,
+        source_key="10Y/2Y",
+        episode_active=False,
+        as_of_date="2026-04-01",
+        metric="yield_curve_inversion_duration",
+    )
+
+    assert fact is not None
+    assert fact["display_value"] == "0 days"
+    assert fact["semantic_role"] == "current_state_duration"
+    assert fact["episode_active"] is False
+    assert fact["literal_required"] is False
+    assert "no active/current episode" in fact["state_description"]
+    assert qms.numeric_fact_literal_required(fact) is False
+    assert qms.numeric_fact_current_state_duration_misuse(
+        "The curve normalized after 0 days of inversion.",
+        fact,
+    )
+
+    active_fact = qms.current_state_duration_fact(
+        fact_id="recession_duration",
+        label="Recession duration",
+        raw_value=3,
+        unit="weeks",
+        precision=0,
+        tolerance=1,
+        source_key="USREC",
+        episode_active=True,
+        metric="recession_duration",
+    )
+    assert active_fact is not None
+    assert active_fact["display_value"] == "3 weeks"
+    assert active_fact["episode_active"] is True
+    assert qms.numeric_fact_literal_required(active_fact) is True
+
+    with pytest.raises(ValueError, match="inactive current_state_duration"):
+        qms.current_state_duration_fact(
+            fact_id="inversion_duration",
+            label="Yield curve inversion duration",
+            raw_value=17_409,
+            unit="days",
+            precision=0,
+            tolerance=1,
+            source_key="10Y/2Y",
+            episode_active=False,
+        )
+
+
+def test_normalize_quant_summary_rejects_inactive_nonzero_duration_fact():
+    with pytest.raises(ValueError, match="current-state duration"):
+        qms.normalize_quant_execution_summary(
+            {
+                "statistical_summary": {
+                    "latest_date": "2026-04-01",
+                    "still_inverted": False,
+                    "days_inverted_days": 17_409,
+                },
+                "numeric_facts": [
+                    {
+                        "id": "days_inverted",
+                        "label": "Yield Curve Inversion Duration",
+                        "raw_value": 17_409,
+                        "display_value": "17409 days",
+                        "unit": "days",
+                        "precision": 0,
+                        "tolerance": 1,
+                        "source_key": "10Y/2Y",
+                        "as_of_date": "2026-04-01",
+                        "metric": "days_inverted_duration",
+                    }
+                ],
+            }
+        )
+
+
+def test_inactive_sahm_state_allows_average_unemployment_duration_fact():
+    summary = qms.normalize_quant_execution_summary(
+        {
+            "statistical_summary": {
+                "latest_date": "2026-04-01",
+                "sahm_active": False,
+            },
+            "numeric_facts": [
+                {
+                    "id": "average_unemployment_duration",
+                    "label": "Average unemployment duration",
+                    "raw_value": 22.1,
+                    "display_value": "22.1 weeks",
+                    "unit": "weeks",
+                    "precision": 1,
+                    "tolerance": 0.1,
+                    "source_key": "UEMPM",
+                    "as_of_date": "2026-04-01",
+                    "metric": "average_unemployment_duration",
+                }
+            ],
+        }
+    )
+
+    assert summary["numeric_facts"][0]["id"] == "average_unemployment_duration"
+    assert summary["numeric_facts"][0]["raw_value"] == 22.1
+
+
+def test_inactive_state_allows_explicit_historical_duration_fact():
+    summary = qms.normalize_quant_execution_summary(
+        {
+            "statistical_summary": {"still_inverted": False},
+            "numeric_facts": [
+                {
+                    "id": "completed_inversion_duration",
+                    "label": "Completed inversion duration",
+                    "raw_value": 487,
+                    "display_value": "487 days",
+                    "unit": "days",
+                    "precision": 0,
+                    "tolerance": 1,
+                    "source_key": "10Y/2Y",
+                    "semantic_role": "historical_duration",
+                }
+            ],
+        }
+    )
+
+    assert summary["numeric_facts"][0]["semantic_role"] == "historical_duration"
+    assert qms.numeric_fact_literal_required(summary["numeric_facts"][0]) is True
+
+
+@pytest.mark.parametrize("duration_label", ["historical", "prior", "completed"])
+def test_inactive_state_rejects_labeled_duration_without_historical_role(
+    duration_label,
+):
+    with pytest.raises(ValueError, match="semantic_role=historical_duration"):
+        qms.normalize_quant_execution_summary(
+            {
+                "statistical_summary": {
+                    "still_inverted": False,
+                    f"{duration_label}_inversion_duration_days": 17_409,
+                },
+                "numeric_facts": [
+                    {
+                        "id": f"{duration_label}_inversion_duration",
+                        "label": f"{duration_label.title()} inversion duration",
+                        "raw_value": 17_409,
+                        "display_value": "17409 days",
+                        "unit": "days",
+                        "precision": 0,
+                        "tolerance": 1,
+                        "source_key": "10Y/2Y",
+                        "metric": f"{duration_label}_inversion_duration",
+                    }
+                ],
+            }
+        )
+
+
 @pytest.mark.parametrize("literal_required", [None, 0, ""])
 def test_numeric_fact_literal_required_malformed_values_do_not_opt_out(literal_required):
     fact = {

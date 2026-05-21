@@ -15,7 +15,7 @@ from ..share_count_diagnostics import (
     SHARE_COUNT_TREND_UNCOMPARABLE,
     split_affected_share_count_diagnostics,
 )
-from .numeric_fact_contracts import normalize_numeric_facts
+from .numeric_fact_contracts import normalize_numeric_facts, normalize_unit
 from .source_unit_fidelity import normalize_source_unit_metadata
 
 
@@ -284,6 +284,43 @@ _CURRENT_SIGNAL_REQUIRED_TEXT_FIELDS = (
     "data_key",
 )
 _CURRENT_SIGNAL_FINITE_FIELDS = ("value", "threshold", "threshold_distance")
+_DURATION_FACT_UNITS = {"days", "weeks", "months"}
+_CURRENT_STATE_DURATION_ROLE = "current_state_duration"
+_HISTORICAL_DURATION_ROLE = "historical_duration"
+_DURATION_TOKEN_STOPWORDS = frozenset(
+    {
+        "day",
+        "days",
+        "duration",
+        "episode",
+        "episodes",
+        "month",
+        "months",
+        "period",
+        "periods",
+        "week",
+        "weeks",
+    }
+)
+_EPISODE_STATE_TOKENS = frozenset(
+    {
+        "invert",
+        "inverted",
+        "inversion",
+        "recession",
+        "recessionary",
+        "sahm",
+        "usrec",
+    }
+)
+_EPISODE_TOKEN_ALIASES = {
+    "invert": {"inversion", "inverted"},
+    "inverted": {"invert", "inversion"},
+    "inversion": {"invert", "inverted"},
+    "recession": {"recessionary", "usrec"},
+    "recessionary": {"recession", "usrec"},
+    "usrec": {"recession", "recessionary"},
+}
 
 
 def normalize_quant_execution_summary(execution_summary: dict[str, Any]) -> dict[str, Any]:
@@ -1118,6 +1155,146 @@ def _validate_current_scalar_fact_coverage(
         )
 
 
+def _episode_tokens_from_inactive_flag(field: Any) -> set[str]:
+    tokens = list(_semantic_tokens(field))
+    if len(tokens) < 2:
+        return set()
+    if tokens[0] == "still":
+        episode_tokens = tokens[1:]
+    elif tokens[0] == "active":
+        episode_tokens = tokens[1:]
+    elif tokens[-1] == "active":
+        episode_tokens = tokens[:-1]
+    else:
+        return set()
+    return _expand_episode_tokens(
+        token
+        for token in episode_tokens
+        if token not in {"active", "current", "state", "still"}
+    )
+
+
+def _expand_episode_tokens(tokens: Iterable[str]) -> set[str]:
+    expanded: set[str] = set()
+    for token in tokens:
+        if not token:
+            continue
+        expanded.add(token)
+        expanded.update(_EPISODE_TOKEN_ALIASES.get(token, ()))
+    return expanded
+
+
+def _inactive_episode_state_flags(summary: dict[str, Any]) -> list[tuple[str, set[str]]]:
+    flags: list[tuple[str, set[str]]] = []
+    for payload in _iter_nested_mappings(summary, max_depth=3):
+        for key, value in payload.items():
+            if value is not False:
+                continue
+            episode_tokens = _episode_tokens_from_inactive_flag(key)
+            if episode_tokens:
+                flags.append((str(key), episode_tokens))
+    return flags
+
+
+def _duration_episode_tokens(*values: Any) -> set[str]:
+    tokens = set(_semantic_tokens(*values))
+    expanded = _expand_episode_tokens(tokens - _DURATION_TOKEN_STOPWORDS)
+    if not expanded & _EPISODE_STATE_TOKENS:
+        return set()
+    return expanded
+
+
+def _duration_tokens_match_inactive_flag(
+    fact_tokens: set[str],
+    inactive_tokens: set[str],
+) -> bool:
+    return bool(fact_tokens and inactive_tokens and fact_tokens & inactive_tokens)
+
+
+def _current_state_duration_fact_errors(
+    facts: list[dict[str, Any]],
+    inactive_flags: list[tuple[str, set[str]]],
+) -> list[str]:
+    errors: list[str] = []
+    for fact in facts:
+        unit = normalize_unit(fact.get("unit"))
+        if unit not in _DURATION_FACT_UNITS:
+            continue
+        number = _finite(fact.get("raw_value", fact.get("value")))
+        if number is None or abs(float(number)) <= 1e-12:
+            continue
+        role = str(fact.get("semantic_role") or "").strip()
+        if role == _HISTORICAL_DURATION_ROLE:
+            continue
+        label = str(fact.get("id") or fact.get("label") or fact.get("source_key"))
+        if role == _CURRENT_STATE_DURATION_ROLE and fact.get("episode_active") is False:
+            errors.append(
+                f"{label}: episode_active=false but raw_value={number} {unit}"
+            )
+            continue
+        fact_tokens = _duration_episode_tokens(
+            fact.get("id"),
+            fact.get("label"),
+            fact.get("metric"),
+            fact.get("source_key"),
+        )
+        for flag_name, inactive_tokens in inactive_flags:
+            if _duration_tokens_match_inactive_flag(fact_tokens, inactive_tokens):
+                errors.append(
+                    f"{label}: duration contradicts inactive state flag {flag_name}=false"
+                )
+                break
+    return errors
+
+
+def _current_state_duration_scalar_errors(
+    summary: dict[str, Any],
+    inactive_flags: list[tuple[str, set[str]]],
+) -> list[str]:
+    errors: list[str] = []
+    for container, slots in _current_scalar_fact_slots(summary).items():
+        for field, value in slots.items():
+            number = _finite(value)
+            if number is None or abs(float(number)) <= 1e-12:
+                continue
+            field_tokens = _duration_episode_tokens(field)
+            field_has_duration_unit = bool(
+                set(_semantic_tokens(field)) & _DURATION_TOKEN_STOPWORDS
+            )
+            if not field_tokens or not field_has_duration_unit:
+                continue
+            for flag_name, inactive_tokens in inactive_flags:
+                if _duration_tokens_match_inactive_flag(field_tokens, inactive_tokens):
+                    errors.append(
+                        f"{container}.{field}: duration contradicts inactive "
+                        f"state flag {flag_name}=false"
+                    )
+                    break
+    return errors
+
+
+def _validate_current_state_episode_durations(summary: dict[str, Any]) -> None:
+    """Reject active-duration facts when the structured episode state is inactive."""
+
+    inactive_flags = _inactive_episode_state_flags(summary)
+    if not inactive_flags:
+        return
+    facts = summary.get("numeric_facts")
+    normalized_facts = facts if isinstance(facts, list) else []
+    errors = _current_state_duration_fact_errors(normalized_facts, inactive_flags)
+    errors.extend(_current_state_duration_scalar_errors(summary, inactive_flags))
+    if not errors:
+        return
+    raise ValueError(
+        "Malformed execution_summary current-state duration facts: "
+        + "; ".join(errors[:12])
+        + ". Use current_state_duration_fact(..., episode_active=<flag>) for "
+        "active/current episode durations, emit 0 duration with state_description "
+        "when inactive, or mark completed episodes with "
+        "semantic_role=historical_duration."
+    )
+
+
 def _validate_numeric_facts(summary: dict[str, Any]) -> None:
     _reject_null_current_scalar_slots(summary)
     required_current_containers = _current_scalar_fact_containers(summary)
@@ -1297,6 +1474,7 @@ _SUMMARY_NORMALIZATION_RULES = (
     _sanitize_split_affected_share_trends,
     _validate_no_freeform_statistical_assessment,
     _normalize_numeric_fact_contracts,
+    _validate_current_state_episode_durations,
     _collect_validation_methods,
     _validate_current_signal_facts,
     _validate_numeric_facts,

@@ -3,6 +3,7 @@
 from .chart_provenance import chart_provenance
 from .execution_summary_normalization import normalize_quant_execution_summary
 from .numeric_fact_contracts import (
+    current_state_duration_fact,
     display_value,
     latest_numeric_fact,
     normalize_numeric_fact,
@@ -22,6 +23,7 @@ from .source_unit_fidelity import (
 
 __all__ = [
     "chart_provenance",
+    "current_state_duration_fact",
     "display_value",
     "latest_numeric_fact",
     "normalize_numeric_fact",
