@@ -27,6 +27,7 @@ from ..requested_coverage import (
 )
 from agents.quant_macro_stats.artifacts.numeric_fact_contracts import (
     normalize_numeric_facts,
+    numeric_fact_context_mentions_fact,
     numeric_fact_conflicting_current_value_contexts,
     numeric_fact_current_state_duration_misuse,
     numeric_fact_literal_required,
@@ -473,6 +474,33 @@ _SIGNED_DIRECTION_CLAUSE_BOUNDARY_RE = re.compile(
     r"\s+\b(?:but|while|although|though|whereas|however|yet)\b\s+",
     re.IGNORECASE,
 )
+_SIGNED_DIRECTION_TABLE_CURRENT_HEADER_RE = re.compile(
+    r"\b(?:actual|as\s+of|current|latest|now|reading|today|value)\b",
+    re.IGNORECASE,
+)
+_SIGNED_DIRECTION_TABLE_NON_CURRENT_HEADER_RE = re.compile(
+    r"\b(?:condition|criteria|criterion|implication|scenario|threshold|"
+    r"trigger|watchlist|what\s+would\s+change|would\s+change)\b",
+    re.IGNORECASE,
+)
+_SIGNED_DIRECTION_CONDITIONAL_TRIGGER_RE = re.compile(
+    r"\b(?:could|if|scenario|should|threshold|trigger|watchlist|would)\b|"
+    r"\b(?:cross(?:es)?|breach(?:es)?|exceed(?:s)?|falls?\s+below|"
+    r"go(?:es)?\s+(?:negative|positive)|re[-\s]?invert(?:s)?|"
+    r"rises?\s+above|turn(?:s)?\s+(?:negative|positive))\b",
+    re.IGNORECASE,
+)
+_SIGNED_DIRECTION_CURRENT_ASSERTION_RE = re.compile(
+    r"\b(?:as\s+of|became|becomes|came\s+in|comes\s+in|current(?:ly)?|"
+    r"has|have|is|are|latest|now|prints?|read(?:s)?|remain(?:s|ed|ing)?|"
+    r"stand(?:s)?|still|today|turned|was|were)\b",
+    re.IGNORECASE,
+)
+_SIGNED_DIRECTION_EXPLICIT_CURRENT_RE = re.compile(
+    r"\b(?:actual(?:ly)?|as\s+of|current(?:ly)?|latest|now|present(?:ly)?|"
+    r"today)\b",
+    re.IGNORECASE,
+)
 _SIGNED_DIRECTION_FACT_TOKENS = {
     "chg",
     "change",
@@ -494,6 +522,12 @@ _YIELD_CURVE_NEGATIVE_STATE_RE = re.compile(
 )
 _YIELD_CURVE_POSITIVE_STATE_RE = re.compile(
     r"\b(?:normaliz(?:e|es|ed|ing|ation)|normal\s+shape)\b",
+    re.IGNORECASE,
+)
+_YIELD_CURVE_HISTORICAL_NEGATIVE_STATE_RE = re.compile(
+    r"\b(?:after|began|during|following|for\s+much\s+of|historical(?:ly)?|"
+    r"previous(?:ly)?|prior|since|started|through)\b"
+    r"[^\n.]{0,140}\b(?:invert(?:ed|s|ing)?|inversion)\b",
     re.IGNORECASE,
 )
 _YIELD_CURVE_FACT_MARKER_RE = re.compile(
@@ -1585,7 +1619,16 @@ def _is_signed_directional_fact(fact: dict[str, object]) -> bool:
 
 
 def _line_mentions_fact(line: str, fact: dict[str, object]) -> bool:
+    if _is_chart_linked_numeric_fact(fact):
+        return numeric_fact_context_mentions_fact(line, fact)
     return _text_mentions_fact(line, fact)
+
+
+def _is_chart_linked_numeric_fact(fact: dict[str, object]) -> bool:
+    return bool(
+        str(fact.get("chart_id") or "").strip()
+        and str(fact.get("data_key") or "").strip()
+    )
 
 
 def _numeric_fact_signed_direction_reversal(
@@ -1597,23 +1640,179 @@ def _numeric_fact_signed_direction_reversal(
     value = _finite_number(fact.get("raw_value", fact.get("value")))
     if value is None:
         return False
-    for line in lines:
-        for clause in _SIGNED_DIRECTION_CLAUSE_BOUNDARY_RE.split(line):
-            clause = clause.strip()
-            if not clause or not _line_mentions_fact(clause, fact):
-                continue
-            if _DIRECTION_NEGATION_RE.search(clause) or (
-                _is_yield_curve_fact(fact)
-                and _YIELD_CURVE_STATE_NEGATION_RE.search(clause)
-            ):
-                continue
-            if _yield_curve_state_direction_reversal(fact, clause, value):
-                return True
-            if value < 0 and _SIGNED_POSITIVE_STATE_RE.search(clause):
-                return True
-            if value > 0 and _SIGNED_NEGATIVE_STATE_RE.search(clause):
-                return True
+    for clause, is_non_current_trigger in _signed_direction_review_clauses(lines):
+        clause = clause.strip()
+        if not clause or not _line_mentions_fact(clause, fact):
+            continue
+        if _should_skip_signed_direction_clause(
+            clause,
+            fact,
+            is_non_current_trigger=is_non_current_trigger,
+        ):
+            continue
+        if _DIRECTION_NEGATION_RE.search(clause) or (
+            _is_yield_curve_fact(fact)
+            and _YIELD_CURVE_STATE_NEGATION_RE.search(clause)
+        ):
+            continue
+        if _yield_curve_state_direction_reversal(fact, clause, value):
+            return True
+        if value < 0 and _SIGNED_POSITIVE_STATE_RE.search(clause):
+            return True
+        if value > 0 and _SIGNED_NEGATIVE_STATE_RE.search(clause):
+            return True
     return False
+
+
+def _signed_direction_review_clauses(
+    lines: Iterable[str],
+) -> Iterable[tuple[str, bool]]:
+    line_list = list(lines)
+    index = 0
+    while index < len(line_list):
+        header = _signed_direction_table_cells(line_list[index])
+        separator = (
+            _signed_direction_table_cells(line_list[index + 1])
+            if index + 1 < len(line_list)
+            else None
+        )
+        if header and _is_signed_direction_table_separator(separator):
+            index += 2
+            while index < len(line_list):
+                row = _signed_direction_table_cells(line_list[index])
+                if not row:
+                    break
+                if _is_signed_direction_table_separator(row):
+                    index += 1
+                    continue
+                for position, cell in enumerate(row):
+                    yield from _signed_direction_text_clauses(
+                        cell,
+                        is_non_current_trigger=_signed_direction_table_cell_is_non_current(
+                            header,
+                            position,
+                        ),
+                    )
+                index += 1
+            continue
+
+        yield from _signed_direction_text_clauses(
+            line_list[index],
+            is_non_current_trigger=False,
+        )
+        index += 1
+
+
+def _signed_direction_text_clauses(
+    text: str,
+    *,
+    is_non_current_trigger: bool,
+) -> Iterable[tuple[str, bool]]:
+    for clause in _SIGNED_DIRECTION_CLAUSE_BOUNDARY_RE.split(text):
+        cleaned = clause.strip()
+        if cleaned:
+            yield cleaned, is_non_current_trigger
+
+
+def _signed_direction_table_cells(line: str) -> list[str] | None:
+    if "|" not in line:
+        return None
+    stripped = line.strip()
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    if stripped.endswith("|"):
+        stripped = stripped[:-1]
+    cells = [" ".join(cell.strip().split()) for cell in stripped.split("|")]
+    return cells if len(cells) >= 2 else None
+
+
+def _is_signed_direction_table_separator(cells: list[str] | None) -> bool:
+    if not cells:
+        return False
+    return all(re.fullmatch(r":?-{3,}:?", cell.strip()) for cell in cells)
+
+
+def _signed_direction_table_cell_is_non_current(
+    headers: list[str],
+    position: int,
+) -> bool:
+    header = headers[position] if position < len(headers) else ""
+    if _SIGNED_DIRECTION_TABLE_NON_CURRENT_HEADER_RE.search(header):
+        return True
+    if _SIGNED_DIRECTION_TABLE_CURRENT_HEADER_RE.search(header):
+        return False
+    table_has_current_column = any(
+        _SIGNED_DIRECTION_TABLE_CURRENT_HEADER_RE.search(candidate)
+        for candidate in headers
+    )
+    table_has_non_current_column = any(
+        _SIGNED_DIRECTION_TABLE_NON_CURRENT_HEADER_RE.search(candidate)
+        for candidate in headers
+    )
+    return table_has_non_current_column and not table_has_current_column
+
+
+def _should_skip_signed_direction_clause(
+    clause: str,
+    fact: dict[str, object],
+    *,
+    is_non_current_trigger: bool,
+) -> bool:
+    if _is_conditional_trigger_clause(clause):
+        return not _contains_numeric_fact_value(clause, fact)
+    if not is_non_current_trigger:
+        return False
+    return not _signed_direction_non_current_clause_asserts_current_fact(clause, fact)
+
+
+def _signed_direction_non_current_clause_asserts_current_fact(
+    clause: str,
+    fact: dict[str, object],
+) -> bool:
+    if _signed_direction_clause_has_explicit_current_marker(clause):
+        return True
+    return (
+        _signed_direction_clause_asserts_current_state(clause)
+        and _contains_numeric_fact_value(clause, fact)
+    )
+
+
+def _is_conditional_trigger_clause(clause: str) -> bool:
+    trigger_match = _SIGNED_DIRECTION_CONDITIONAL_TRIGGER_RE.search(clause)
+    if not trigger_match:
+        return False
+    if _signed_direction_state_assertion_precedes_trigger(
+        clause,
+        trigger_match.start(),
+    ):
+        return False
+    return not _signed_direction_clause_has_explicit_current_marker(clause)
+
+
+def _signed_direction_state_assertion_precedes_trigger(
+    clause: str,
+    trigger_start: int,
+) -> bool:
+    prefix = clause[:trigger_start]
+    if not _SIGNED_DIRECTION_CURRENT_ASSERTION_RE.search(prefix):
+        return False
+    return any(
+        pattern.search(prefix) is not None
+        for pattern in (
+            _SIGNED_POSITIVE_STATE_RE,
+            _SIGNED_NEGATIVE_STATE_RE,
+            _YIELD_CURVE_NEGATIVE_STATE_RE,
+            _YIELD_CURVE_POSITIVE_STATE_RE,
+        )
+    )
+
+
+def _signed_direction_clause_asserts_current_state(clause: str) -> bool:
+    return _SIGNED_DIRECTION_CURRENT_ASSERTION_RE.search(clause) is not None
+
+
+def _signed_direction_clause_has_explicit_current_marker(clause: str) -> bool:
+    return _SIGNED_DIRECTION_EXPLICIT_CURRENT_RE.search(clause) is not None
 
 
 def _is_yield_curve_fact(fact: dict[str, object]) -> bool:
@@ -1629,6 +1828,13 @@ def _yield_curve_state_direction_reversal(
     value: float,
 ) -> bool:
     if not _is_yield_curve_fact(fact):
+        return False
+    if (
+        value > 0
+        and _YIELD_CURVE_NEGATIVE_STATE_RE.search(clause)
+        and _YIELD_CURVE_POSITIVE_STATE_RE.search(clause)
+        and _YIELD_CURVE_HISTORICAL_NEGATIVE_STATE_RE.search(clause)
+    ):
         return False
     if (
         value > 0

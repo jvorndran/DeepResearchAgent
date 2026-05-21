@@ -5358,6 +5358,278 @@ def test_submit_quality_decision_accepts_negated_positive_signed_direction(tmp_p
     assert payload["status"] == "approved"
 
 
+def _submit_labor_chart_direction_review(tmp_path, *, markdown: str):
+    report_path = tmp_path / "report.json"
+    chart = {
+        "id": "unemployment_payrolls",
+        "type": "line",
+        "title": "Unemployment vs Payroll Growth",
+        "description": "Unemployment and payroll growth over time.",
+        "xAxisKey": "date",
+        "series": [
+            {
+                "dataKey": "unrate",
+                "label": "UNRATE (%)",
+                "color": "#2563eb",
+            },
+            {
+                "dataKey": "payems_yoy",
+                "label": "Payrolls YoY%",
+                "color": "#16a34a",
+            },
+        ],
+        "data": [{"date": "2026-04", "unrate": 4.3, "payems_yoy": 0.16}],
+    }
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "chart_ids": ["unemployment_payrolls"],
+                "numeric_facts": [
+                    {
+                        "id": "chart_latest.unemployment_payrolls.unrate",
+                        "label": (
+                            "Latest UNRATE (%) from Unemployment vs Payroll Growth"
+                        ),
+                        "raw_value": 4.3,
+                        "display_value": "4.30%",
+                        "unit": "percent",
+                        "precision": 2,
+                        "tolerance": 0.005,
+                        "source_key": "UNRATE.unemployment_payrolls.unrate",
+                        "as_of_date": "2026-04",
+                        "metric": "unrate",
+                        "operation": "latest finite chart endpoint",
+                        "fact_origin": "chart_latest_point",
+                        "chart_id": "unemployment_payrolls",
+                        "chart_title": "Unemployment vs Payroll Growth",
+                        "data_key": "unrate",
+                        "series_label": "UNRATE (%)",
+                    },
+                    {
+                        "id": "chart_latest.unemployment_payrolls.payems_yoy",
+                        "label": (
+                            "Latest Payrolls YoY% from Unemployment vs Payroll Growth"
+                        ),
+                        "raw_value": 0.16,
+                        "display_value": "0.16%",
+                        "unit": "percent",
+                        "precision": 2,
+                        "tolerance": 0.005,
+                        "source_key": "PAYEMS.unemployment_payrolls.payems_yoy",
+                        "as_of_date": "2026-04",
+                        "metric": "payems_yoy",
+                        "operation": "latest finite chart endpoint",
+                        "fact_origin": "chart_latest_point",
+                        "chart_id": "unemployment_payrolls",
+                        "chart_title": "Unemployment vs Payroll Growth",
+                        "data_key": "payems_yoy",
+                        "series_label": "Payrolls YoY%",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Explain whether the labor market is weakening.",
+                "title": "Labor Market Check",
+                "executive_summary": "Payroll growth is weak but positive.",
+                "markdown": markdown,
+                "charts": {"unemployment_payrolls": chart},
+                "data_sources": [],
+                "metadata": {"word_count": len(markdown.split())},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    return json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+
+def test_submit_quality_decision_accepts_positive_payroll_growth_trigger_table(
+    tmp_path,
+):
+    payload = _submit_labor_chart_direction_review(
+        tmp_path,
+        markdown=(
+            "## Executive Summary\n"
+            "The unemployment rate is 4.30%, and payrolls year-over-year "
+            "growth is 0.16%.\n\n"
+            "| Condition | Trigger | Implication |\n"
+            "| --- | --- | --- |\n"
+            "| Payrolls turn negative | Job losses | Recession entry |\n\n"
+            "<!-- CHART:unemployment_payrolls -->"
+        ),
+    )
+
+    assert payload["status"] == "approved"
+
+
+def test_submit_quality_decision_accepts_conditional_payroll_trigger_table(
+    tmp_path,
+):
+    payload = _submit_labor_chart_direction_review(
+        tmp_path,
+        markdown=(
+            "## Executive Summary\n"
+            "The unemployment rate is 4.30%, and payrolls year-over-year "
+            "growth is 0.16%.\n\n"
+            "| Condition | Trigger | Implication |\n"
+            "| --- | --- | --- |\n"
+            "| Labor downside | If Payrolls YoY are negative | Recession entry |\n\n"
+            "<!-- CHART:unemployment_payrolls -->"
+        ),
+    )
+
+    assert payload["status"] == "approved"
+
+
+def test_submit_quality_decision_accepts_threshold_value_payroll_trigger_table(
+    tmp_path,
+):
+    payload = _submit_labor_chart_direction_review(
+        tmp_path,
+        markdown=(
+            "## Executive Summary\n"
+            "The unemployment rate is 4.30%, and payrolls year-over-year "
+            "growth is 0.16%.\n\n"
+            "| Signal | Threshold value | Implication |\n"
+            "| --- | --- | --- |\n"
+            "| Labor downside | Payrolls YoY are negative | Recession entry |\n\n"
+            "<!-- CHART:unemployment_payrolls -->"
+        ),
+    )
+
+    assert payload["status"] == "approved"
+
+
+def test_submit_quality_decision_accepts_conditional_payroll_trigger_sentence(
+    tmp_path,
+):
+    payload = _submit_labor_chart_direction_review(
+        tmp_path,
+        markdown=(
+            "## Executive Summary\n"
+            "The unemployment rate is 4.30%, and payrolls year-over-year "
+            "growth is 0.16%.\n\n"
+            "If Payrolls YoY are negative, recession risk would rise.\n\n"
+            "<!-- CHART:unemployment_payrolls -->"
+        ),
+    )
+
+    assert payload["status"] == "approved"
+
+
+def test_submit_quality_decision_rejects_current_positive_payroll_called_negative(
+    tmp_path,
+):
+    payload = _submit_labor_chart_direction_review(
+        tmp_path,
+        markdown=(
+            "## Executive Summary\n"
+            "The unemployment rate is 4.30%. Payrolls YoY are negative at "
+            "0.16%, implying job losses.\n\n"
+            "<!-- CHART:unemployment_payrolls -->"
+        ),
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "numeric_fact_mismatch"
+    assert "signed numeric_facts direction" in payload["reason"]
+    assert "payems_yoy" in payload["reason"]
+
+
+def test_submit_quality_decision_rejects_current_payroll_turns_negative_at_value(
+    tmp_path,
+):
+    payload = _submit_labor_chart_direction_review(
+        tmp_path,
+        markdown=(
+            "## Executive Summary\n"
+            "The unemployment rate is 4.30%. Payrolls YoY turns negative at "
+            "0.16%, implying job losses.\n\n"
+            "<!-- CHART:unemployment_payrolls -->"
+        ),
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "numeric_fact_mismatch"
+    assert "signed numeric_facts direction" in payload["reason"]
+    assert "payems_yoy" in payload["reason"]
+
+
+def test_submit_quality_decision_rejects_current_reversal_with_modal_consequence(
+    tmp_path,
+):
+    for modal in ("would", "could", "should"):
+        payload = _submit_labor_chart_direction_review(
+            tmp_path,
+            markdown=(
+                "## Executive Summary\n"
+                "The unemployment rate is 4.30%. Payrolls YoY are negative at "
+                f"0.16%, which {modal} signal job losses.\n\n"
+                "<!-- CHART:unemployment_payrolls -->"
+            ),
+        )
+
+        assert payload["status"] == "rejected"
+        assert payload["failure_category"] == "numeric_fact_mismatch"
+        assert "signed numeric_facts direction" in payload["reason"]
+        assert "payems_yoy" in payload["reason"]
+
+
+def test_submit_quality_decision_rejects_explicit_current_conditional_reversal(
+    tmp_path,
+):
+    payload = _submit_labor_chart_direction_review(
+        tmp_path,
+        markdown=(
+            "## Executive Summary\n"
+            "The unemployment rate is 4.30%, and payrolls year-over-year "
+            "growth is 0.16%.\n\n"
+            "If current Payrolls YoY are negative, recession risk is already high.\n\n"
+            "<!-- CHART:unemployment_payrolls -->"
+        ),
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "numeric_fact_mismatch"
+    assert "signed numeric_facts direction" in payload["reason"]
+    assert "payems_yoy" in payload["reason"]
+
+
+def test_submit_quality_decision_rejects_current_payroll_reversal_in_trigger_table(
+    tmp_path,
+):
+    payload = _submit_labor_chart_direction_review(
+        tmp_path,
+        markdown=(
+            "## Executive Summary\n"
+            "Payrolls year-over-year growth is 0.16%.\n\n"
+            "| Condition | Trigger | Implication |\n"
+            "| --- | --- | --- |\n"
+            "| Labor downside | Payrolls YoY are negative at 0.16% | Recession entry |\n\n"
+            "<!-- CHART:unemployment_payrolls -->"
+        ),
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "numeric_fact_mismatch"
+    assert "signed numeric_facts direction" in payload["reason"]
+    assert "payems_yoy" in payload["reason"]
+
+
 def _submit_yield_curve_slope_review(
     tmp_path,
     *,
@@ -5440,6 +5712,21 @@ def test_submit_quality_decision_accepts_historical_yield_curve_inversion_contex
             "and no longer inverted.\n\n"
             "For much of 2023 and 2024, an inverted yield curve was a classic "
             "recession warning signal."
+        ),
+    )
+
+    assert payload["status"] == "approved"
+
+
+def test_submit_quality_decision_accepts_historical_inversion_then_normalized_clause(
+    tmp_path,
+):
+    payload = _submit_yield_curve_slope_review(
+        tmp_path,
+        markdown=(
+            "## Executive Summary\n"
+            "After a historically long inversion that began in 2022, the "
+            "spread between 10-year and 2-year Treasury yields has normalized."
         ),
     )
 

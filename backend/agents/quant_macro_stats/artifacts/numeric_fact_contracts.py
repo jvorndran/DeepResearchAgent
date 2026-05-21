@@ -495,6 +495,12 @@ def numeric_fact_current_state_duration_misuse(text: str, fact: dict[str, Any]) 
     return bool(_ZERO_DURATION_MISUSE_RE.search(text))
 
 
+def numeric_fact_context_mentions_fact(context: str, fact: dict[str, Any]) -> bool:
+    """Return whether text references a numeric fact using chart-aware markers."""
+
+    return _context_mentions_numeric_fact(str(context or ""), fact)
+
+
 def numeric_fact_conflicting_current_value_contexts(
     text: str,
     fact: dict[str, Any],

@@ -10,6 +10,7 @@ from .numeric_fact_contracts import (
     normalize_numeric_facts,
     normalize_unit,
     numeric_fact,
+    numeric_fact_context_mentions_fact,
     numeric_fact_current_state_duration_misuse,
     numeric_fact_literal_required,
 )
@@ -33,6 +34,7 @@ __all__ = [
     "normalize_quant_report_charts",
     "normalize_unit",
     "numeric_fact",
+    "numeric_fact_context_mentions_fact",
     "numeric_fact_current_state_duration_misuse",
     "numeric_fact_literal_required",
     "save_quant_outputs",

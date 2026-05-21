@@ -2213,6 +2213,62 @@ def test_chart_latest_current_value_context_matches_inflation_alias():
     )
 
 
+def test_numeric_fact_context_mentions_fact_uses_chart_local_series_markers():
+    unrate_fact = qms.numeric_fact(
+        fact_id="chart_latest.unemployment_payrolls.unrate",
+        label="Latest UNRATE (%) from Unemployment vs Payroll Growth",
+        raw_value=4.3,
+        unit="percent",
+        precision=2,
+        tolerance=0.005,
+        source_key="UNRATE.unemployment_payrolls.unrate",
+        as_of_date="2026-04",
+        metric="unrate",
+    )
+    assert unrate_fact is not None
+    unrate_fact.update(
+        {
+            "chart_id": "unemployment_payrolls",
+            "chart_title": "Unemployment vs Payroll Growth",
+            "data_key": "unrate",
+            "series_label": "UNRATE (%)",
+        }
+    )
+    payrolls_fact = qms.numeric_fact(
+        fact_id="chart_latest.unemployment_payrolls.payems_yoy",
+        label="Latest Payrolls YoY% from Unemployment vs Payroll Growth",
+        raw_value=0.16,
+        unit="percent",
+        precision=2,
+        tolerance=0.005,
+        source_key="PAYEMS.unemployment_payrolls.payems_yoy",
+        as_of_date="2026-04",
+        metric="payems_yoy",
+    )
+    assert payrolls_fact is not None
+    payrolls_fact.update(
+        {
+            "chart_id": "unemployment_payrolls",
+            "chart_title": "Unemployment vs Payroll Growth",
+            "data_key": "payems_yoy",
+            "series_label": "Payrolls YoY%",
+        }
+    )
+
+    assert qms.numeric_fact_context_mentions_fact(
+        "The unemployment rate is 4.30%.",
+        unrate_fact,
+    )
+    assert not qms.numeric_fact_context_mentions_fact(
+        "Payrolls turn negative.",
+        unrate_fact,
+    )
+    assert qms.numeric_fact_context_mentions_fact(
+        "Payrolls turn negative.",
+        payrolls_fact,
+    )
+
+
 def test_chart_latest_current_value_context_is_metric_local_for_multi_metric_sentence():
     cpi_fact = qms.numeric_fact(
         fact_id="chart_latest.cpi_yoy.cpi_yoy",
