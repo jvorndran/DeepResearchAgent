@@ -3833,6 +3833,111 @@ def test_submit_quality_decision_accepts_negated_positive_signed_direction(tmp_p
     assert payload["status"] == "approved"
 
 
+def _submit_yield_curve_slope_review(
+    tmp_path,
+    *,
+    markdown: str,
+    raw_value: float = 0.70,
+):
+    report_path = tmp_path / "report.json"
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "numeric_facts": [
+                    {
+                        "id": "latest_yc_spread",
+                        "label": "10Y-Fed Spread",
+                        "raw_value": raw_value,
+                        "display_value": f"{raw_value:.2f}",
+                        "unit": "pct pts",
+                        "precision": 2,
+                        "tolerance": 0.05,
+                        "source_key": "DGS10-FEDFUNDS",
+                        "as_of_date": "2026-05-01",
+                        "metric": "yield_curve_slope",
+                        "operation": "subtraction",
+                        "transform_basis": "DGS10 minus FEDFUNDS",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": "Review whether the yield curve is currently inverted.",
+                "title": "Yield Curve Check",
+                "executive_summary": "The yield curve is positively sloped.",
+                "markdown": markdown,
+                "charts": [],
+                "data_sources": [],
+                "metadata": {"word_count": len(markdown.split())},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    return json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+
+def test_submit_quality_decision_accepts_positive_yield_curve_no_longer_inverted(
+    tmp_path,
+):
+    payload = _submit_yield_curve_slope_review(
+        tmp_path,
+        markdown=(
+            "## Executive Summary\n"
+            "The 10Y-Fed spread is +0.70 percentage points, positively sloped "
+            "and no longer inverted."
+        ),
+    )
+
+    assert payload["status"] == "approved"
+
+
+def test_submit_quality_decision_accepts_historical_yield_curve_inversion_context(
+    tmp_path,
+):
+    payload = _submit_yield_curve_slope_review(
+        tmp_path,
+        markdown=(
+            "## Executive Summary\n"
+            "The 10Y-Fed spread is +0.70 percentage points, positively sloped "
+            "and no longer inverted.\n\n"
+            "For much of 2023 and 2024, an inverted yield curve was a classic "
+            "recession warning signal."
+        ),
+    )
+
+    assert payload["status"] == "approved"
+
+
+def test_submit_quality_decision_accepts_inverted_curve_signal_background(
+    tmp_path,
+):
+    payload = _submit_yield_curve_slope_review(
+        tmp_path,
+        markdown=(
+            "## Executive Summary\n"
+            "The 10Y-Fed spread is +0.70 percentage points, positively sloped "
+            "and no longer inverted.\n\n"
+            "The yield curve's positive slope reduces the urgency typically "
+            "associated with an inverted-curve recession signal."
+        ),
+    )
+
+    assert payload["status"] == "approved"
+
+
 def test_submit_quality_decision_rejects_positive_yield_curve_called_inverted(tmp_path):
     report_path = tmp_path / "report.json"
     (tmp_path / "execution_summary.json").write_text(

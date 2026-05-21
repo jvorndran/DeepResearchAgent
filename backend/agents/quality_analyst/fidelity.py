@@ -473,6 +473,36 @@ _YIELD_CURVE_POSITIVE_STATE_RE = re.compile(
     r"\b(?:normaliz(?:e|es|ed|ing|ation)|normal\s+shape)\b",
     re.IGNORECASE,
 )
+_YIELD_CURVE_FACT_MARKER_RE = re.compile(
+    r"\b(?:yield\s+curve|yield\s+spread|spread|curve|10y[\s-]*(?:fed|2y))\b",
+    re.IGNORECASE,
+)
+_YIELD_CURVE_STATE_TERM = (
+    r"(?:invert(?:ed|s|ing)?|inversion|"
+    r"normaliz(?:e|es|ed|ing|ation)|normal\s+shape)"
+)
+_YIELD_CURVE_CURRENT_STATE_ASSERTION_RE = re.compile(
+    rf"\b(?:yield\s+curve|yield\s+spread|spread|curve|10y[\s-]*(?:fed|2y))\b"
+    rf"[^\n.]{{0,80}}\b(?:is|are|has|have|remain(?:s|ed|ing)?|"
+    rf"stays?|stay(?:ed|ing)?|continues?\s+to|continued\s+to|"
+    rf"currently|current|latest|now|today|still)\b"
+    rf"[^\n.]{{0,80}}\b{_YIELD_CURVE_STATE_TERM}\b|"
+    rf"\b(?:currently|current|latest|now|today|still|"
+    rf"remain(?:s|ed|ing)?|has|have)\b"
+    rf"[^\n.]{{0,80}}\b{_YIELD_CURVE_STATE_TERM}\b"
+    rf"[^\n.]{{0,80}}\b(?:yield\s+curve|yield\s+spread|spread|curve)\b|"
+    rf"\b{_YIELD_CURVE_STATE_TERM}\b"
+    rf"[^\n.]{{0,80}}\b(?:yield\s+curve|yield\s+spread|spread|curve)\b"
+    rf"[^\n.]{{0,80}}\b(?:persist(?:s|ed|ing)?|remain(?:s|ed|ing)?|"
+    rf"continues?|stays?|still)\b",
+    re.IGNORECASE,
+)
+_YIELD_CURVE_CURRENT_STATE_CONTEXT_RE = re.compile(
+    r"\b(?:current(?:ly)?|latest|now|today|still|remain(?:s|ed|ing)?|"
+    r"has|have|is|are|stays?|stay(?:ed|ing)?|continues?\s+to|"
+    r"continued\s+to)\b",
+    re.IGNORECASE,
+)
 _YIELD_CURVE_STATE_NEGATION_RE = re.compile(
     r"\b(?:not|no|does\s+not|doesn't|did\s+not|didn't|is\s+not|isn't|"
     r"are\s+not|aren't|was\s+not|wasn't|were\s+not|weren't|without)\b"
@@ -1574,11 +1604,32 @@ def _yield_curve_state_direction_reversal(
 ) -> bool:
     if not _is_yield_curve_fact(fact):
         return False
-    if value > 0 and _YIELD_CURVE_NEGATIVE_STATE_RE.search(clause):
+    if (
+        value > 0
+        and _YIELD_CURVE_NEGATIVE_STATE_RE.search(clause)
+        and _yield_curve_state_clause_asserts_current_state(fact, clause)
+    ):
         return True
-    if value < 0 and _YIELD_CURVE_POSITIVE_STATE_RE.search(clause):
+    if (
+        value < 0
+        and _YIELD_CURVE_POSITIVE_STATE_RE.search(clause)
+        and _yield_curve_state_clause_asserts_current_state(fact, clause)
+    ):
         return True
     return False
+
+
+def _yield_curve_state_clause_asserts_current_state(
+    fact: dict[str, object],
+    clause: str,
+) -> bool:
+    if _YIELD_CURVE_CURRENT_STATE_ASSERTION_RE.search(clause):
+        return True
+    return (
+        _YIELD_CURVE_FACT_MARKER_RE.search(clause) is not None
+        and _YIELD_CURVE_CURRENT_STATE_CONTEXT_RE.search(clause) is not None
+        and _contains_numeric_fact_value(clause, fact)
+    )
 
 
 def _numeric_fact_fidelity_blockers(
