@@ -743,6 +743,137 @@ def test_normalize_quant_summary_matches_common_fred_source_id_aliases(
     assert summary["numeric_facts"][0]["source_key"] == source_key
 
 
+def test_normalize_quant_summary_requires_matching_fact_for_nested_current_scalar():
+    with pytest.raises(ValueError) as error:
+        qms.normalize_quant_execution_summary(
+            {
+                "statistical_summary": {
+                    "gdp_and_consumption": {
+                        "latest_pce_yoy": 5.69,
+                    }
+                },
+                "numeric_facts": [
+                    qms.numeric_fact(
+                        fact_id="chart_latest.gdp_vs_spending.pce_yoy",
+                        label="Latest PCE Y/Y from GDP vs spending",
+                        raw_value=5.20,
+                        unit="percent",
+                        precision=2,
+                        tolerance=0.005,
+                        source_key="PCE.gdp_vs_spending.pce_yoy",
+                        as_of_date="2026-01-31",
+                        metric="pce_yoy",
+                        operation="pct_change_yoy",
+                    )
+                ],
+            }
+        )
+
+    message = str(error.value)
+    assert "matching display-ready numeric_facts" in message
+    assert "statistical_summary.gdp_and_consumption.latest_pce_yoy" in message
+
+
+def test_normalize_quant_summary_accepts_nested_current_scalar_with_typed_fact():
+    summary = qms.normalize_quant_execution_summary(
+        {
+            "statistical_summary": {
+                "gdp_and_consumption": {
+                    "latest_pce_yoy": 5.69,
+                }
+            },
+            "numeric_facts": [
+                qms.numeric_fact(
+                    fact_id="bea.PCE.latest_yoy",
+                    label="Latest PCE year-over-year",
+                    raw_value=5.69,
+                    unit="percent",
+                    precision=2,
+                    tolerance=0.005,
+                    source_key="PCE",
+                    as_of_date="2026-03-31",
+                    metric="pce_yoy",
+                    operation="pct_change_yoy",
+                    transform_basis="12-month percent change in BEA PCE.",
+                )
+            ],
+        }
+    )
+
+    assert summary["numeric_facts"][0]["id"] == "bea.PCE.latest_yoy"
+
+
+def test_normalize_quant_summary_accepts_all_values_generic_latest_with_typed_fact():
+    summary = qms.normalize_quant_execution_summary(
+        {
+            "statistical_summary": {
+                "all_values": {
+                    "UNRATE": {
+                        "latest": 4.1,
+                        "latest_date": "2026-04-01",
+                    }
+                }
+            },
+            "numeric_facts": [
+                qms.numeric_fact(
+                    fact_id="fred.UNRATE.latest",
+                    label="Latest unemployment rate",
+                    raw_value=4.1,
+                    unit="percent",
+                    precision=1,
+                    tolerance=0.05,
+                    source_key="UNRATE",
+                    as_of_date="2026-04-01",
+                    metric="UNRATE",
+                    operation="latest_observation",
+                )
+            ],
+        }
+    )
+
+    assert summary["numeric_facts"][0]["source_key"] == "UNRATE"
+
+
+def test_normalize_quant_summary_ignores_nested_historical_baseline_scalars():
+    summary = qms.normalize_quant_execution_summary(
+        {
+            "statistical_summary": {
+                "sentiment": {
+                    "pre_covid_avg": 96.0,
+                    "pandemic_low": 50.0,
+                    "recovery_high": 88.3,
+                },
+                "inflation": {
+                    "cpi_peak_yoy": 8.98,
+                },
+                "saving_rate": {
+                    "2019_avg": 7.3,
+                },
+            }
+        }
+    )
+
+    assert summary["statistical_summary"]["inflation"]["cpi_peak_yoy"] == 8.98
+    assert "numeric_facts" not in summary
+
+
+def test_normalize_quant_summary_rejects_nested_null_current_scalar():
+    with pytest.raises(ValueError) as error:
+        qms.normalize_quant_execution_summary(
+            {
+                "statistical_summary": {
+                    "labor_market": {
+                        "current_jtsjol": None,
+                    }
+                }
+            }
+        )
+
+    message = str(error.value)
+    assert "current/latest scalar snapshots cannot include null scalar fields" in message
+    assert "statistical_summary.labor_market.current_jtsjol" in message
+
+
 def test_normalize_quant_summary_allows_null_current_scalar_with_unavailable_source():
     summary = qms.normalize_quant_execution_summary(
         {
@@ -1165,6 +1296,41 @@ def test_save_quant_outputs_uses_chart_latest_facts_for_current_scalar_coverage(
 
     assert saved_summary["numeric_facts"][0]["id"] == "chart_latest.cpi_yoy.cpi_yoy"
     assert saved_summary["numeric_facts"][0]["display_value"] == "3.78%"
+
+
+def test_save_quant_outputs_rejects_nested_current_scalar_chart_latest_mismatch(
+    tmp_path,
+):
+    charts = {
+        "gdp_vs_spending": {
+            "id": "gdp_vs_spending",
+            "type": "line",
+            "title": "GDP vs Spending",
+            "xAxisKey": "date",
+            "series": [{"dataKey": "pce_yoy", "label": "PCE Y/Y %"}],
+            "data": [{"date": "2026-01-31", "pce_yoy": 5.20}],
+            **_chart_traceability("BEA", "pce_projection"),
+        }
+    }
+
+    with pytest.raises(ValueError) as error:
+        qms.save_quant_outputs(
+            tmp_path,
+            charts,
+            {
+                "statistical_summary": {
+                    "gdp_and_consumption": {
+                        "latest_pce_yoy": 5.69,
+                    }
+                },
+                "methods_used": ["unit_test_method"],
+            },
+        )
+
+    message = str(error.value)
+    assert "matching display-ready numeric_facts" in message
+    assert "statistical_summary.gdp_and_consumption.latest_pce_yoy" in message
+    assert not (tmp_path / "execution_summary.json").exists()
 
 
 def test_save_quant_outputs_rejects_chart_linked_numeric_fact_mismatch(tmp_path):

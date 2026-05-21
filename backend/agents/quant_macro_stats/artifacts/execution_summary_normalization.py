@@ -107,6 +107,7 @@ _NUMERIC_FACT_TEXT_FIELDS = ("id", "label", "display_value", "unit", "source_key
 _NUMERIC_FACT_FINITE_FIELDS = ("raw_value", "tolerance")
 _CURRENT_SCALAR_FACT_CONTAINERS = ("statistical_summary",)
 _CURRENT_SCALAR_DATE_FIELDS = ("latest_date",)
+_CURRENT_SCALAR_NESTED_MAX_DEPTH = 4
 _CURRENT_SCALAR_TEMPORAL_TOKENS = frozenset(
     {
         "current",
@@ -120,6 +121,10 @@ _CURRENT_SCALAR_TEMPORAL_TOKENS = frozenset(
         "of",
     }
 )
+_CURRENT_SCALAR_EXPLICIT_TEMPORAL_TOKENS = _CURRENT_SCALAR_TEMPORAL_TOKENS - {
+    "as",
+    "of",
+}
 _CURRENT_SCALAR_GENERIC_TOKENS = _CURRENT_SCALAR_TEMPORAL_TOKENS | frozenset(
     {
         "value",
@@ -132,6 +137,7 @@ _CURRENT_SCALAR_GENERIC_TOKENS = _CURRENT_SCALAR_TEMPORAL_TOKENS | frozenset(
         "points",
     }
 )
+_CURRENT_SCALAR_STRUCTURAL_PATH_TOKENS = frozenset({"all", "values"})
 _CURRENT_SCALAR_IDENTITY_STOP_TOKENS = _CURRENT_SCALAR_GENERIC_TOKENS | frozenset(
     {
         "avg",
@@ -197,6 +203,28 @@ _UNAVAILABLE_SOURCE_STATUSES = frozenset(
         "not_fetched",
         "unavailable",
         "insufficient",
+    }
+)
+_NESTED_HISTORICAL_SCALAR_TOKENS = frozenset(
+    {
+        "baseline",
+        "covid",
+        "historical",
+        "history",
+        "high",
+        "low",
+        "pandemic",
+        "peak",
+        "pre",
+        "precovid",
+        "recovery",
+        "trough",
+    }
+)
+_NESTED_SHARE_COUNT_DIAGNOSTIC_TOKENS = frozenset(
+    {
+        "comparability",
+        "comparable",
     }
 )
 _CURRENT_SCALAR_SOURCE_DESCRIPTOR_TOKENS = {
@@ -837,8 +865,84 @@ def _is_current_scalar_field_name(field: str, container: dict[str, Any]) -> bool
 
 
 def _is_derived_current_scalar_field(field: str) -> bool:
-    normalized = "_".join(_semantic_tokens(field))
+    normalized = "_".join(_semantic_tokens(_current_scalar_fact_match_field(field)))
     return bool(_DERIVED_CURRENT_SCALAR_FIELD_RE.search(normalized))
+
+
+def _current_scalar_fact_match_field(field: str) -> str:
+    """Return the field identity used to match a current scalar to facts."""
+
+    path_parts = tuple(part for part in str(field).split(".") if part)
+    if not path_parts:
+        return field
+    leaf = path_parts[-1]
+    if _current_scalar_identity_tokens(leaf):
+        return leaf
+    for parent in reversed(path_parts[:-1]):
+        parent_tokens = (
+            _current_scalar_identity_tokens(parent)
+            - _CURRENT_SCALAR_STRUCTURAL_PATH_TOKENS
+        )
+        if parent_tokens:
+            return f"{parent}.{leaf}"
+    return field
+
+
+def _is_historical_nested_current_scalar_path(path_parts: tuple[str, ...]) -> bool:
+    if len(path_parts) <= 1:
+        return False
+    tokens = set(_semantic_tokens(*path_parts))
+    if tokens & _CURRENT_SCALAR_EXPLICIT_TEMPORAL_TOKENS:
+        return False
+    if tokens & _NESTED_HISTORICAL_SCALAR_TOKENS:
+        return True
+    return any(re.fullmatch(r"(?:19|20)\d{2}", token) for token in tokens)
+
+
+def _is_nested_share_count_diagnostic_scalar_path(path_parts: tuple[str, ...]) -> bool:
+    if len(path_parts) <= 1:
+        return False
+    tokens = set(_semantic_tokens(*path_parts))
+    return bool(
+        "shares" in tokens and tokens & _NESTED_SHARE_COUNT_DIAGNOSTIC_TOKENS
+    )
+
+
+def _collect_current_scalar_fact_slots(
+    payload: dict[str, Any],
+    *,
+    path: tuple[str, ...] = (),
+    slots: dict[str, Any],
+    depth: int = 0,
+) -> None:
+    if depth > _CURRENT_SCALAR_NESTED_MAX_DEPTH:
+        return
+
+    has_current_date = any(
+        payload.get(date_field) is not None for date_field in _CURRENT_SCALAR_DATE_FIELDS
+    )
+    for field, field_value in payload.items():
+        field_name = str(field)
+        if field_name in _CURRENT_SCALAR_DATE_FIELDS:
+            continue
+        if isinstance(field_value, dict):
+            _collect_current_scalar_fact_slots(
+                field_value,
+                path=(*path, field_name),
+                slots=slots,
+                depth=depth + 1,
+            )
+            continue
+        if not _is_current_scalar_fact_slot(field_value):
+            continue
+
+        slot_path = (*path, field_name)
+        if _is_historical_nested_current_scalar_path(slot_path):
+            continue
+        if _is_nested_share_count_diagnostic_scalar_path(slot_path):
+            continue
+        if has_current_date or _is_current_scalar_field_name(field_name, payload):
+            slots[".".join(slot_path)] = field_value
 
 
 def _current_scalar_fact_slots(summary: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -847,16 +951,8 @@ def _current_scalar_fact_slots(summary: dict[str, Any]) -> dict[str, dict[str, A
         value = summary.get(key)
         if not isinstance(value, dict):
             continue
-        has_current_date = any(
-            value.get(date_field) is not None for date_field in _CURRENT_SCALAR_DATE_FIELDS
-        )
-        scalar_fact_slots = {
-            field: field_value
-            for field, field_value in value.items()
-            if field not in _CURRENT_SCALAR_DATE_FIELDS
-            and _is_current_scalar_fact_slot(field_value)
-            and (has_current_date or _is_current_scalar_field_name(str(field), value))
-        }
+        scalar_fact_slots: dict[str, Any] = {}
+        _collect_current_scalar_fact_slots(value, slots=scalar_fact_slots)
         if scalar_fact_slots:
             containers[key] = scalar_fact_slots
     return containers
@@ -988,7 +1084,8 @@ def _fact_matches_current_scalar(
     if abs(float(fact_value) - float(number)) > max(float(tolerance), 1e-9):
         return False
 
-    field_tokens = _current_scalar_identity_tokens(field)
+    match_field = _current_scalar_fact_match_field(field)
+    field_tokens = _current_scalar_identity_tokens(match_field)
     fact_tokens = _current_scalar_identity_tokens(
         fact.get("id"),
         fact.get("label"),
@@ -1001,7 +1098,7 @@ def _fact_matches_current_scalar(
         field_tokens,
         fact_tokens,
     ) and _current_scalar_fact_covers_field_modifiers(
-        field=field,
+        field=match_field,
         fact_values=(
             fact.get("id"),
             fact.get("label"),
@@ -1029,7 +1126,8 @@ def _current_signal_fact_matches_current_scalar(
     if abs(float(signal_value) - float(number)) > max(float(tolerance), 1e-9):
         return False
 
-    field_tokens = _current_scalar_identity_tokens(field)
+    match_field = _current_scalar_fact_match_field(field)
+    field_tokens = _current_scalar_identity_tokens(match_field)
     fact_tokens = _current_scalar_identity_tokens(
         fact.get("signal_id"),
         fact.get("label"),
@@ -1043,7 +1141,7 @@ def _current_signal_fact_matches_current_scalar(
         field_tokens,
         fact_tokens,
     ) and _current_scalar_fact_covers_field_modifiers(
-        field=field,
+        field=match_field,
         fact_values=(
             fact.get("signal_id"),
             fact.get("label"),
