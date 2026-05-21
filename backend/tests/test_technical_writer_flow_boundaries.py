@@ -2147,6 +2147,7 @@ def test_write_research_report_rejects_company_fundamental_numeric_drift(tmp_pat
 
     assert result["status"] == "error"
     assert result["failure_category"] == "numeric_fact_mismatch"
+    assert result["report_path"].endswith("report.json")
     assert "NVDA revenue_b" in result["message"]
     assert "NVDA cash_and_securities_b" in result["message"]
 
@@ -5474,6 +5475,66 @@ def test_technical_writer_middleware_rejects_validation_after_failed_write():
     assert handoff["required_upstream"] == "technical-writer"
     assert handoff["failure_category"] == "stale_report_validation"
     assert "write_research_report" in handoff["reason"]
+
+
+def test_technical_writer_middleware_stops_repeated_writer_owned_report_gate_failures():
+    middleware = next(
+        item
+        for item in TECHNICAL_WRITER_SUBAGENT["middleware"]
+        if isinstance(item, TechnicalWriterToolBoundaryMiddleware)
+    )
+
+    def writer_failure(index: int) -> ToolMessage:
+        reason = f"numeric_fact_mismatch: draft {index} omitted exact helper facts"
+        return ToolMessage(
+            content=json.dumps(
+                {
+                    "status": "error",
+                    "error": "numeric_fact_mismatch",
+                    "failure_category": "numeric_fact_mismatch",
+                    "required_upstream": "technical-writer",
+                    "report_path": "/tmp/outputs/job-1/report.json",
+                    "blockers": [reason],
+                    "message": reason,
+                }
+            ),
+            name="write_research_report",
+            tool_call_id=f"call-write-{index}",
+            status="error",
+        )
+
+    tools = [
+        SimpleNamespace(name="write_research_report"),
+        SimpleNamespace(name="validate_research_report_file"),
+    ]
+    not_capped = _Request(tools, messages=[writer_failure(1), writer_failure(2)])
+
+    first_response = middleware.wrap_model_call(
+        not_capped,
+        lambda req: ModelResponse(result=[AIMessage(content="continue repair")]),
+    )
+
+    assert first_response.result[0].content == "continue repair"
+
+    capped = _Request(
+        tools,
+        messages=[writer_failure(1), writer_failure(2), writer_failure(3)],
+    )
+
+    response = middleware.wrap_model_call(
+        capped,
+        lambda req: ModelResponse(result=[AIMessage(content="should not run")]),
+    )
+
+    handoff = json.loads(response.result[0].content)
+    assert handoff["status"] == "failed"
+    assert handoff["report_json"] == "/tmp/outputs/job-1/report.json"
+    assert handoff["required_upstream"] == "technical-writer"
+    assert handoff["failure_category"] == "numeric_fact_mismatch"
+    assert "draft 3" in handoff["reason"]
+    assert handoff["required_fixes"] == [
+        "numeric_fact_mismatch: draft 3 omitted exact helper facts"
+    ]
 
 
 def test_technical_writer_middleware_returns_quant_failure_for_zero_chart_gate():

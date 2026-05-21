@@ -3411,6 +3411,7 @@ def write_research_report(
                 "error": "numeric_fact_mismatch",
                 "failure_category": "numeric_fact_mismatch",
                 "required_upstream": "technical-writer",
+                "report_path": report_path,
                 "blockers": numeric_fact_blockers,
                 "message": numeric_fact_blockers[0],
             }

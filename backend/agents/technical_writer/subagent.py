@@ -24,6 +24,7 @@ _ALLOWED_TOOL_NAMES = {
     "write_research_report",
     "validate_research_report_file",
 }
+_WRITER_REPORT_GATE_FAILURE_LIMIT = 3
 
 
 def _tool_name(tool: Any) -> str | None:
@@ -74,6 +75,8 @@ def _is_error_tool_message(message: Any) -> bool:
 
 def _write_result_is_success(message: Any, parsed: dict[str, Any]) -> bool:
     if _is_error_tool_message(message) or parsed.get("status") == "error":
+        return False
+    if parsed.get("error") or parsed.get("failure_category"):
         return False
     report_path = parsed.get("report_path")
     if not isinstance(report_path, str) or not report_path.strip():
@@ -193,6 +196,73 @@ def _latest_artifact_fact_mismatch(messages: list[Any]) -> dict[str, Any] | None
             return parsed
         return None
     return None
+
+
+def _writer_owned_report_gate_failure(
+    message: Any, parsed: dict[str, Any]
+) -> dict[str, Any] | None:
+    if _message_tool_name(message) != "write_research_report":
+        return None
+    if _write_result_is_success(message, parsed):
+        return None
+    failure_category = parsed.get("failure_category")
+    if not isinstance(failure_category, str) or not failure_category.strip():
+        return None
+    if parsed.get("required_upstream") != "technical-writer":
+        return None
+    status = parsed.get("status")
+    has_failure_status = status in {"error", "failed"} or _is_error_tool_message(message)
+    has_error = isinstance(parsed.get("error"), str) and bool(parsed["error"].strip())
+    if not has_failure_status and not has_error:
+        return None
+    return parsed
+
+
+def _consecutive_writer_owned_report_gate_failures(
+    messages: list[Any],
+) -> list[dict[str, Any]]:
+    failures: list[dict[str, Any]] = []
+    for message in reversed(messages):
+        name = _message_tool_name(message)
+        if name == "write_research_report":
+            parsed = _json_from_message(message)
+            if not isinstance(parsed, dict):
+                break
+            if _write_result_is_success(message, parsed):
+                break
+            failure = _writer_owned_report_gate_failure(message, parsed)
+            if failure is None:
+                break
+            failures.append(failure)
+            continue
+        if name == "validate_research_report_file":
+            break
+    return failures
+
+
+def _latest_repeated_writer_owned_report_gate_failure(
+    messages: list[Any],
+) -> dict[str, Any] | None:
+    failures = _consecutive_writer_owned_report_gate_failures(messages)
+    if len(failures) < _WRITER_REPORT_GATE_FAILURE_LIMIT:
+        return None
+    return failures[0]
+
+
+def _writer_failure_required_fixes(failure: dict[str, Any]) -> list[str]:
+    for key in ("required_fixes", "blockers"):
+        value = failure.get(key)
+        if isinstance(value, list):
+            fixes = [str(item) for item in value if str(item).strip()]
+            if fixes:
+                return fixes
+    message = failure.get("message")
+    if isinstance(message, str) and message.strip():
+        return [message]
+    failure_category = failure.get("failure_category")
+    if isinstance(failure_category, str) and failure_category.strip():
+        return [f"Repair the report gate failure: {failure_category}."]
+    return ["Repair the writer-owned report gate failure and retry write_research_report."]
 
 
 def _success_handoff_content(
@@ -348,6 +418,34 @@ def _artifact_fact_failure_handoff_content(messages: list[Any]) -> str:
     )
 
 
+def _writer_owned_report_gate_failure_handoff_content(messages: list[Any]) -> str:
+    failure = _latest_repeated_writer_owned_report_gate_failure(messages) or {}
+    blockers = failure.get("blockers") if isinstance(failure.get("blockers"), list) else []
+    message = failure.get("message")
+    error = failure.get("error")
+    if blockers:
+        reason = str(blockers[0])
+    elif isinstance(message, str) and message.strip():
+        reason = message
+    elif isinstance(error, str) and error.strip():
+        reason = error
+    else:
+        reason = str(failure.get("failure_category") or "writer-owned report gate failure")
+    report_path = failure.get("report_path") or failure.get("report_json")
+    if not isinstance(report_path, str) or not report_path.strip():
+        report_path = _latest_writer_report_path(messages)
+    return json.dumps(
+        {
+            "status": "failed",
+            "report_json": report_path,
+            "required_upstream": "technical-writer",
+            "failure_category": failure.get("failure_category"),
+            "reason": reason,
+            "required_fixes": _writer_failure_required_fixes(failure),
+        }
+    )
+
+
 class TechnicalWriterToolBoundaryMiddleware(AgentMiddleware):
     """Expose only report-writing tools to prevent context-heavy file reads."""
 
@@ -358,6 +456,8 @@ class TechnicalWriterToolBoundaryMiddleware(AgentMiddleware):
             return _chart_handoff_failure_handoff_content(messages)
         if _terminal_zero_chart_validation(messages):
             return _zero_chart_failure_handoff_content(messages)
+        if _latest_repeated_writer_owned_report_gate_failure(messages):
+            return _writer_owned_report_gate_failure_handoff_content(messages)
         terminal_validation = _terminal_successful_validation(messages)
         if terminal_validation is None:
             return None
