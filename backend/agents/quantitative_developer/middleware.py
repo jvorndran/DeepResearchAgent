@@ -193,6 +193,17 @@ def _execute_written_script_tool_call(script_path: str) -> dict[str, object]:
     }
 
 
+def _analysis_script_path_from_execute_command(command: str) -> Path | None:
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return None
+    for part in parts:
+        if part.endswith(".py") and _is_allowed_analysis_script_path(part):
+            return Path(part)
+    return None
+
+
 def _response_has_tool_calls(response: ModelResponse) -> bool:
     for message in getattr(response, "result", []) or []:
         if getattr(message, "tool_calls", None):
@@ -562,6 +573,22 @@ def _has_sec_company_facts_evidence_handoff(tree: ast.Module) -> bool:
     return found
 
 
+def _has_manual_quant_artifact_serialization(tree: ast.Module, content: str) -> bool:
+    writes_quant_artifacts = (
+        "charts.json" in content
+        or "execution_summary.json" in content
+        or "evidence_bundle.json" in content
+    )
+    if not writes_quant_artifacts:
+        return False
+    return (
+        bool(_calls_named(tree, "dump"))
+        or bool(_calls_named(tree, "dumps"))
+        or ".write_text(" in content
+        or "open(" in content
+    )
+
+
 @dataclass(frozen=True)
 class TransformBasisViolation:
     transform_id: str
@@ -727,6 +754,15 @@ def _static_value(
     if _is_call_named(node, "chart_provenance"):
         payload: dict[object, object] = {}
         assert isinstance(node, ast.Call)
+        for keyword in node.keywords:
+            if keyword.arg is not None:
+                payload[keyword.arg] = _static_value(keyword.value, names)
+        return payload
+    if _is_call_named(node, "transform_descriptor"):
+        payload: dict[object, object] = {}
+        assert isinstance(node, ast.Call)
+        if node.args:
+            payload["transform_id"] = _static_value(node.args[0], names)
         for keyword in node.keywords:
             if keyword.arg is not None:
                 payload[keyword.arg] = _static_value(keyword.value, names)
@@ -2406,6 +2442,38 @@ class QuantDeveloperToolBoundaryMiddleware(AgentMiddleware):
     def _quant_output_contract_rule(
         self, context: QuantToolCallContext
     ) -> QuantGuardrailDecision | None:
+        if context.tool_name == "execute":
+            command = str(context.args.get("command") or "")
+            script_path = _analysis_script_path_from_execute_command(command)
+            if script_path is None:
+                return None
+            try:
+                content = script_path.read_text(encoding="utf-8")
+            except OSError:
+                return None
+            tree, syntax_error = _python_tree_for_write(content)
+            if syntax_error is not None or tree is None:
+                return None
+            if not _has_manual_quant_artifact_serialization(tree, content):
+                return None
+            return QuantGuardrailDecision.block(
+                context,
+                ToolMessage(
+                    content=(
+                        "Blocked manual quant artifact serialization before execution. "
+                        "The generated analysis script writes `charts.json`, "
+                        "`execution_summary.json`, or `evidence_bundle.json` directly. "
+                        "Only `save_quant_outputs(output_dir, charts, execution_summary)` "
+                        "may write those core artifacts; patch the script to assign "
+                        "`handoff = save_quant_outputs(...)` and "
+                        "`print(json.dumps(handoff))`."
+                    ),
+                    name="execute",
+                    tool_call_id=context.tool_call_id,
+                    status="error",
+                ),
+            )
+
         draft = context.write
         if draft is None:
             return None
@@ -2421,15 +2489,7 @@ class QuantDeveloperToolBoundaryMiddleware(AgentMiddleware):
         if _calls_named(tree, "save_quant_outputs"):
             return None
 
-        writes_quant_artifacts = "charts.json" in content or "execution_summary.json" in content
-        if not writes_quant_artifacts:
-            return None
-        if not (
-            _calls_named(tree, "json.dump")
-            or _calls_named(tree, "dumps")
-            or ".write_text(" in content
-            or "open(" in content
-        ):
+        if not _has_manual_quant_artifact_serialization(tree, content):
             return None
 
         return QuantGuardrailDecision.block(
@@ -2486,10 +2546,12 @@ class QuantDeveloperToolBoundaryMiddleware(AgentMiddleware):
                     "`methods_used` labels into evidence-bundle transforms that need "
                     f"`transform_basis`: {examples}. Add chart-level "
                     "`transform_basis`, `correlation_basis`, or `calculation_basis` "
-                    "to each affected chart, or declare matching "
-                    '`execution_summary["transforms"]` / '
+                    "to each affected chart, or import `transform_descriptor` from "
+                    "`agents.quant_macro_stats` and set matching "
+                    '`execution_summary["transforms"]` or '
                     '`execution_summary["transform_descriptors"]` entries with '
-                    "`transform_id`, `operation`, `transform_basis`, and source IDs. "
+                    "`transform_descriptor(transform_id, operation=..., "
+                    "transform_basis=..., source_ids=..., chart_ids=...)`. "
                     "Do not remove the derived method labels; make the basis explicit "
                     "before calling `save_quant_outputs`."
                 ),

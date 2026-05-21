@@ -149,6 +149,8 @@ report-specific shortcut tool.
   year-over-year growth, spreads, z-score normalization, or normalized indexes,
   make the transform basis explicit on each affected chart or in matching
   `execution_summary["transforms"]` / `["transform_descriptors"]` records.
+  Prefer `transform_descriptor(...)` from `agents.quant_macro_stats` so the
+  descriptor is schema-validated before `save_quant_outputs(...)`.
 - If you repeatedly write the same runtime code across generated
   `analysis.py` scripts, that pattern belongs in a common helper rather than
   another long script. Keep helpers deterministic, local-data-only, JSON-safe,

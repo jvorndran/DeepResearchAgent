@@ -49,6 +49,7 @@ def test_quant_prompt_requires_analysis_script_not_prebuilt_report_tools():
         QUANT_DEVELOPER_SYSTEM_PROMPT
     )
     assert "transform_descriptors" in QUANT_DEVELOPER_SYSTEM_PROMPT
+    assert "transform_descriptor(transform_id" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert "save_quant_outputs(output_dir, charts, execution_summary)" in QUANT_DEVELOPER_SYSTEM_PROMPT
     assert '"evidence_bundle_json": "outputs/{job_id}/evidence_bundle.json"' in (
         QUANT_DEVELOPER_SYSTEM_PROMPT
@@ -431,6 +432,74 @@ def _allowed_write_response(tmp_path, content):
     )
 
 
+def test_quant_guardrail_blocks_manual_artifact_writes_before_execute(tmp_path):
+    script_path = tmp_path / "outputs" / "job-guardrail" / "code" / "analysis.py"
+    script_path.parent.mkdir(parents=True)
+    content = '''
+import json
+import os
+
+output_dir = "/tmp/out"
+charts = {
+    "macro_signal": {
+        "id": "macro_signal",
+        "type": "line",
+        "xAxisKey": "date",
+        "data": [{"date": "2026-05", "value": 1.0}],
+        "series": [{"dataKey": "value", "label": "Signal"}],
+    }
+}
+execution_summary = {"chart_ids": list(charts.keys())}
+for filename, payload in [
+    ("charts.json", charts),
+    ("execution_summary.json", execution_summary),
+]:
+    with open(os.path.join(output_dir, filename), "w") as handle:
+        json.dump(payload, handle)
+print(json.dumps({
+    "charts_json_path": os.path.join(output_dir, "charts.json"),
+    "execution_summary_json": os.path.join(output_dir, "execution_summary.json"),
+    "evidence_bundle_json": os.path.join(output_dir, "evidence_bundle.json"),
+    "chart_ids": list(charts.keys()),
+}))
+'''
+    script_path.write_text(content, encoding="utf-8")
+    request = SimpleNamespace(
+        tool_call={
+            "name": "execute",
+            "id": "call-execute",
+            "args": {
+                "command": (
+                    f"{shlex.quote(quant_dev.PYTHON_EXECUTABLE)} "
+                    f"{shlex.quote(str(script_path))}"
+                )
+            },
+        },
+        state={
+            "messages": [
+                ToolMessage(
+                    content=f"Updated file {script_path}",
+                    name="write_file",
+                    tool_call_id="call-write",
+                )
+            ]
+        },
+    )
+    middleware = QuantDeveloperToolBoundaryMiddleware()
+
+    response = middleware.wrap_tool_call(
+        request,
+        lambda req: (_ for _ in ()).throw(AssertionError("handler should not run")),
+    )
+
+    assert response.status == "error"
+    assert (
+        "Blocked manual quant artifact serialization before execution"
+        in response.content
+    )
+    assert "save_quant_outputs(output_dir, charts, execution_summary)" in response.content
+
+
 def test_quant_guardrail_blocks_derived_methods_without_transform_basis(tmp_path):
     content = '''
 from agents.quant_macro_stats import chart_provenance, save_quant_outputs
@@ -525,6 +594,79 @@ handoff = save_quant_outputs(output_dir, charts, execution_summary)
 
     assert response.status == "success"
     assert response.content == "write allowed"
+
+
+def test_quant_guardrail_allows_transform_descriptor_helper_for_methods(tmp_path):
+    content = '''
+from agents.quant_macro_stats import chart_provenance, save_quant_outputs, transform_descriptor
+
+output_dir = "/tmp/out"
+charts = {
+    "sentiment_gap": {
+        "type": "line",
+        "xAxisKey": "date",
+        "data": [{"date": "2026 Q1", "gap": 0.2}],
+        "series": [{"dataKey": "gap", "label": "Gap"}],
+        "provenance": chart_provenance(source_series=["UMCSENT", "UNRATE"]),
+    }
+}
+execution_summary = {
+    "chart_ids": ["sentiment_gap"],
+    "methods_used": ["pearson_correlation"],
+    "transforms": [
+        transform_descriptor(
+            "pearson_correlation",
+            operation="correlation",
+            transform_basis="Pearson r on quarterly UMCSENT and UNRATE levels",
+            source_ids=["UMCSENT", "UNRATE"],
+            chart_ids=["sentiment_gap"],
+        )
+    ],
+}
+handoff = save_quant_outputs(output_dir, charts, execution_summary)
+'''
+
+    response = _allowed_write_response(tmp_path, content)
+
+    assert response.status == "success"
+    assert response.content == "write allowed"
+
+
+def test_quant_guardrail_blocks_transform_descriptor_helper_without_basis(tmp_path):
+    content = '''
+from agents.quant_macro_stats import chart_provenance, save_quant_outputs, transform_descriptor
+
+output_dir = "/tmp/out"
+charts = {
+    "sentiment_gap": {
+        "type": "line",
+        "xAxisKey": "date",
+        "data": [{"date": "2026 Q1", "gap": 0.2}],
+        "series": [{"dataKey": "gap", "label": "Gap"}],
+        "provenance": chart_provenance(source_series=["UMCSENT", "UNRATE"]),
+    }
+}
+execution_summary = {
+    "chart_ids": ["sentiment_gap"],
+    "methods_used": ["pearson_correlation"],
+    "transforms": [
+        transform_descriptor(
+            "pearson_correlation",
+            operation="correlation",
+            source_ids=["UMCSENT", "UNRATE"],
+            chart_ids=["sentiment_gap"],
+        )
+    ],
+}
+handoff = save_quant_outputs(output_dir, charts, execution_summary)
+'''
+
+    response = _blocked_write_response(tmp_path, content)
+
+    assert response.status == "error"
+    assert "Blocked derived transform metadata" in response.content
+    assert "`pearson_correlation`" in response.content
+    assert "transform_descriptor" in response.content
 
 
 def test_quant_guardrail_blocks_attach_methods_used_without_transform_basis(tmp_path):

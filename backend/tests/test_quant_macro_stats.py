@@ -205,6 +205,7 @@ def test_quant_helper_catalog_is_compact_agent_context():
     assert "current_signal_facts" in catalog
     assert "sec_company_facts_evidence(data_files" in catalog
     assert "chart_provenance(source_series=..." in catalog
+    assert "transform_descriptor(transform_id" in catalog
     assert "attach_methods_used(charts, methods)" in catalog
     assert "chart transform IDs" in catalog
     assert "source_unit_metadata(source_key, source_file=..." in catalog
@@ -218,6 +219,7 @@ def test_quant_helper_catalog_is_compact_agent_context():
         "direct_ols_forecast",
         "sahm_rule_signal",
         "save_quant_outputs",
+        "transform_descriptor",
     }.issubset(helper_names)
     for name in helper_names:
         assert hasattr(qms, name)
@@ -3580,6 +3582,84 @@ def test_transform_operation_helpers_classify_basis_required_labels():
     assert transform_operation_from_text("z_score_normalization") == "normalized_index"
     assert transform_operation_requires_basis("z_score_normalization") is True
     assert transform_operation_requires_basis("quarterly_resampling") is False
+
+
+def test_transform_descriptor_helper_returns_valid_json_safe_payload():
+    descriptor = qms.transform_descriptor(
+        "pearson_correlation",
+        operation="correlation",
+        transform_basis=(
+            "Pearson r on monthly UMCSENT and UNRATE over common dates"
+        ),
+        source_ids=["UMCSENT", "UNRATE"],
+        source_groups=[["UMCSENT", "UNRATE"]],
+        chart_ids=["sentiment_gap"],
+    )
+
+    assert descriptor == {
+        "transform_id": "pearson_correlation",
+        "operation": "correlation",
+        "transform_basis": (
+            "Pearson r on monthly UMCSENT and UNRATE over common dates"
+        ),
+        "source_ids": ["UMCSENT", "UNRATE"],
+        "source_groups": [["UMCSENT", "UNRATE"]],
+        "chart_ids": ["sentiment_gap"],
+    }
+
+
+def test_transform_descriptor_helper_rejects_derived_transform_without_basis():
+    with pytest.raises(ValueError, match="transform_basis is required"):
+        qms.transform_descriptor(
+            "pearson_correlation",
+            operation="correlation",
+            source_ids=["UMCSENT", "UNRATE"],
+        )
+
+
+def test_save_quant_outputs_accepts_transform_descriptor_helper_payload(tmp_path):
+    descriptor = qms.transform_descriptor(
+        "pearson_correlation",
+        operation="correlation",
+        transform_basis=(
+            "Pearson r on monthly UMCSENT and UNRATE over common dates"
+        ),
+        source_ids=["UMCSENT", "UNRATE"],
+        source_groups=[["UMCSENT", "UNRATE"]],
+        chart_ids=["sentiment_gap"],
+    )
+
+    qms.save_quant_outputs(
+        tmp_path,
+        {
+            "sentiment_gap": {
+                "type": "line",
+                "data": [{"date": "2026-01", "gap": 0.2}],
+                "series": [{"dataKey": "gap", "name": "Gap"}],
+                "xAxis": {"dataKey": "date"},
+                "methods_used": ["pearson_correlation"],
+                "provenance": qms.chart_provenance(
+                    source_series=["UMCSENT", "UNRATE"],
+                ),
+            }
+        },
+        {
+            "chart_ids": ["sentiment_gap"],
+            "methods_used": ["pearson_correlation"],
+            "transforms": [descriptor],
+        },
+    )
+
+    saved_bundle = json.loads((tmp_path / "evidence_bundle.json").read_text())
+    transforms = {
+        transform["transform_id"]: transform for transform in saved_bundle["transforms"]
+    }
+    assert transforms["pearson_correlation"]["transform_basis"] == (
+        "Pearson r on monthly UMCSENT and UNRATE over common dates"
+    )
+    assert transforms["pearson_correlation"]["source_groups"] == [
+        ["UMCSENT", "UNRATE"]
+    ]
 
 
 def test_save_quant_outputs_requires_transform_basis_for_correlation_facts(tmp_path):

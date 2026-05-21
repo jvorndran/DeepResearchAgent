@@ -19,6 +19,7 @@ from .artifacts import (
     save_quant_outputs,
     source_unit_metadata,
     source_unit_metadata_from_csv,
+    transform_descriptor,
     unit_comparison,
 )
 from .catalog import (
@@ -206,6 +207,7 @@ __all__ = [
     "stress_score_series",
     "summarize_sec_company_facts",
     "to_json_safe",
+    "transform_descriptor",
     "unit_comparison",
     "walk_forward_ols_backtest",
     "window_coverage",

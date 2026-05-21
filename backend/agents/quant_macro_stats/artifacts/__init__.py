@@ -20,6 +20,7 @@ from .source_unit_fidelity import (
     source_unit_metadata_from_csv,
     unit_comparison,
 )
+from .transform_metadata import transform_descriptor
 
 __all__ = [
     "chart_provenance",
@@ -37,5 +38,6 @@ __all__ = [
     "save_quant_outputs",
     "source_unit_metadata",
     "source_unit_metadata_from_csv",
+    "transform_descriptor",
     "unit_comparison",
 ]

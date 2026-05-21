@@ -70,7 +70,8 @@ Recharts `charts.json`, and `execution_summary.json` for the writer.
 - Correlation, growth-rate, spread, and normalized-index transform IDs or
   `methods_used` labels must include an explicit `transform_basis` on the
   chart payload or a matching `execution_summary["transforms"]` /
-  `execution_summary["transform_descriptors"]` entry.
+  `execution_summary["transform_descriptors"]` entry. Prefer
+  `transform_descriptor(...)` for declared entries.
 
 # FINAL RESPONSE
 Return ONLY this compact JSON. Do not wrap it in markdown or add prose:

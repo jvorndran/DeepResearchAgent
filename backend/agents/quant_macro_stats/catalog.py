@@ -385,6 +385,26 @@ QUANT_HELPER_CATALOG: tuple[QuantHelperCategory, ...] = (
                 ),
             ),
             QuantHelperSpec(
+                name="transform_descriptor",
+                import_path="agents.quant_macro_stats",
+                signature=(
+                    "transform_descriptor(transform_id, *, operation, "
+                    "transform_basis, source_ids=None, chart_ids=None)"
+                ),
+                use_when=(
+                    "Declare execution_summary['transforms'] entries for "
+                    "derived chart method labels without hand-authoring "
+                    "descriptor dictionaries."
+                ),
+                preserves=(
+                    "transform_id",
+                    "operation",
+                    "transform_basis",
+                    "source_ids",
+                    "chart_ids",
+                ),
+            ),
+            QuantHelperSpec(
                 name="source_unit_metadata",
                 import_path="agents.quant_macro_stats",
                 signature=(
