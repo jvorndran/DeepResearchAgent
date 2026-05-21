@@ -78,6 +78,32 @@ def test_report_chart_audit_accepts_renderable_axis_chart(tmp_path):
     assert audit["chart_semantics"]["valid"] is True
 
 
+def test_report_chart_audit_rejects_reference_line_without_value(tmp_path):
+    report_path = _write_report(
+        tmp_path,
+        {
+            "id": "profitability",
+            "type": "line",
+            "title": "Profitability",
+            "description": "Profitability with a broken reference line.",
+            "xAxisKey": "fiscal_year",
+            "series": [
+                {"dataKey": "gross_margin", "label": "Gross margin", "color": "#2563eb"}
+            ],
+            "data": [{"fiscal_year": "2025", "gross_margin": 75.0}],
+            "referenceLines": [
+                {"x": None, "y": None, "label": "Average", "color": "#888"}
+            ],
+        },
+    )
+
+    audit = json.loads(run_report_chart_audit(str(report_path)))
+
+    assert audit["passes_audit"] is False
+    assert audit["blockers"][0].startswith("Schema validation failed:")
+    assert "referenceLines" in audit["blockers"][0]
+
+
 def test_report_chart_audit_warns_when_macro_chart_lacks_provenance(tmp_path):
     report_path = _write_report(
         tmp_path,

@@ -224,6 +224,7 @@ def _validate_wide_axis_rows(
 ) -> list[ChartSourceValidationIssue]:
     issues: list[ChartSourceValidationIssue] = []
     seen_axis_rows: dict[str, int] = {}
+    finite_counts_by_series = {series_key: 0 for series_key in series_keys}
 
     for row_index, row in enumerate(data):
         if not isinstance(row, Mapping):
@@ -267,14 +268,46 @@ def _validate_wide_axis_rows(
         else:
             seen_axis_rows[x_label] = row_index
 
+        row_has_finite_series = False
         for series_key in series_keys:
-            issues.extend(
-                _required_finite_value_issues(
+            if series_key not in row or row.get(series_key) is None:
+                continue
+            if _finite_float(row.get(series_key)) is None:
+                issues.append(
+                    _issue(
+                        chart_id,
+                        table_id,
+                        series_key,
+                        "non_finite_plotted_value",
+                        f"non-finite plotted value at row {row_index}",
+                        row_index=row_index,
+                    )
+                )
+                continue
+            finite_counts_by_series[series_key] += 1
+            row_has_finite_series = True
+
+        if not row_has_finite_series:
+            issues.append(
+                _issue(
                     chart_id,
                     table_id,
-                    row,
+                    "series.dataKey",
+                    "row_has_no_finite_plotted_values",
+                    f"row {row_index} must contain at least one finite plotted value",
+                    row_index=row_index,
+                )
+            )
+
+    for series_key, finite_count in finite_counts_by_series.items():
+        if finite_count == 0:
+            issues.append(
+                _issue(
+                    chart_id,
+                    table_id,
                     series_key,
-                    row_index,
+                    "series_has_no_finite_values",
+                    f"series {series_key!r} has no finite plotted values",
                 )
             )
 

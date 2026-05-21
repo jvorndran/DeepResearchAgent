@@ -424,6 +424,9 @@ def test_plan_report_structure_surfaces_chart_facts_for_draft(tmp_path):
                         }
                     ],
                     "referenceAreas": [{"label": "Latest year", "x1": "2025-01", "x2": "2026-01"}],
+                    "referenceLines": [
+                        {"axis": "y", "value": 0, "label": "Zero line", "dashed": True}
+                    ],
                     "provenance": {
                         "source_series": ["FEDFUNDS", "T10Y2Y", "PCEPI"],
                         "raw_latest_observation": {"T10Y2Y": "2026-01-15"},
@@ -458,6 +461,7 @@ def test_plan_report_structure_surfaces_chart_facts_for_draft(tmp_path):
     assert "displayed_latest_label=2026-01" in chart_facts
     assert "normalization=PCEPI:year-over-year percent change" in chart_facts
     assert "referenceAreas=Latest year" in chart_facts
+    assert "referenceLines=Zero line (y=0)" in chart_facts
     assert draft.startswith("Chart facts from charts.json")
     assert "Computed macro facts." in draft
     assert "chart_facts_for_draft" in result["general_rules"]
@@ -2725,6 +2729,72 @@ def test_write_research_report_embeds_chart_id_list_shape(tmp_path):
     assert chart["type"] == "line"
     assert chart["xAxisKey"] == "date"
     assert chart["series"][0]["dataKey"] == "spread"
+
+
+def test_write_research_report_preserves_reference_line_values(tmp_path):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text(
+        json.dumps(
+            {
+                "profitability": {
+                    "id": "profitability",
+                    "type": "line",
+                    "title": "Profitability",
+                    "description": "Margin trend with a reference line.",
+                    "xAxisKey": "fiscal_year",
+                    "series": [
+                        {
+                            "dataKey": "gross_margin",
+                            "label": "Gross margin",
+                            "color": "#3b82f6",
+                        }
+                    ],
+                    "data": [
+                        {"fiscal_year": "2024", "gross_margin": 72.7},
+                        {"fiscal_year": "2025", "gross_margin": 75.0},
+                    ],
+                    "referenceLines": [
+                        {
+                            "axis": "y",
+                            "value": 70,
+                            "label": "70% threshold",
+                            "dashed": True,
+                        }
+                    ],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    runtime = SimpleNamespace(context=SimpleNamespace(job_id="job-1", output_dir=str(tmp_path)))
+
+    result = json.loads(
+        write_research_report.func(
+            runtime=runtime,
+            markdown=(
+                "## Executive Summary\nProfitability remained high.\n\n"
+                "Margin remained above the threshold.\n\n<!-- CHART:profitability -->\n\n"
+                "## Research Query\nAnalyze profitability."
+            ),
+            charts_json_path=str(charts_path),
+            original_query="Analyze profitability.",
+            title="Profitability",
+            executive_summary="Profitability remained high.",
+            analysis_type="earnings_analysis",
+        )
+    )
+    report = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
+
+    assert result["validation_issues"] == []
+    assert report["charts"]["profitability"]["referenceLines"] == [
+        {
+            "axis": "y",
+            "value": 70.0,
+            "label": "70% threshold",
+            "color": None,
+            "dashed": True,
+        }
+    ]
 
 
 def test_write_research_report_returns_handoff_error_for_unrenderable_expected_chart(

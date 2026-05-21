@@ -9,7 +9,7 @@ future PDF export pipeline.
 from __future__ import annotations
 
 from typing import Annotated, Any, Literal, Union
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # =============================================================================
 # CHART MODELS
@@ -17,11 +17,36 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class ReferenceLine(BaseModel):
-    y: float | str | None = None
-    x: float | str | None = None
+    axis: Literal["x", "y"]
+    value: float | str
     label: str | None = None
     color: str | None = None
-    strokeDasharray: str | None = None
+    dashed: bool | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_axis_value(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+
+        normalized = dict(value)
+        axis = normalized.get("axis")
+        if not isinstance(axis, str) or axis not in {"x", "y"}:
+            if normalized.get("x") is not None:
+                normalized["axis"] = "x"
+                normalized["value"] = normalized.get("x")
+            elif normalized.get("y") is not None:
+                normalized["axis"] = "y"
+                normalized["value"] = normalized.get("y")
+        elif normalized.get("value") is None:
+            legacy_value = normalized.get(axis)
+            if legacy_value is not None:
+                normalized["value"] = legacy_value
+
+        if "dashed" not in normalized and normalized.get("strokeDasharray"):
+            normalized["dashed"] = True
+
+        return normalized
 
 
 class ReferenceArea(BaseModel):

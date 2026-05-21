@@ -44,6 +44,55 @@ def test_normalizes_quant_legacy_axis_chart_keys_for_report_schema():
     )
 
 
+def test_normalizes_legacy_reference_lines_to_frontend_contract():
+    charts = {
+        "trend": {
+            "id": "trend",
+            "type": "line",
+            "title": "Trend",
+            "description": "Trend with reference lines.",
+            "xAxisKey": "date",
+            "series": [{"dataKey": "value", "label": "Value", "color": "#3b82f6"}],
+            "data": [{"date": "2025", "value": 1.0}],
+            "referenceLines": [
+                {"y": 0.8, "label": "Baseline", "strokeDasharray": "4 4"},
+                {"x": "2025", "label": "Start", "color": "#ef4444"},
+            ],
+        }
+    }
+
+    normalized = _normalize_chart_definitions(charts)
+    report = ResearchReport(
+        schema_version=1,
+        job_id="job-test",
+        created_at="2026-04-28T00:00:00+00:00",
+        query="Compare trend.",
+        title="Trend",
+        executive_summary="The trend was compared.",
+        markdown="## Executive Summary\nSummary.\n\n<!-- CHART:trend -->\n\n## Research Query\nQuery.",
+        charts=normalized,
+        data_sources=[],
+        metadata={"analysis_type": "custom", "chart_count": 1, "word_count": 8},
+    )
+
+    assert report.model_dump()["charts"]["trend"]["referenceLines"] == [
+        {
+            "axis": "y",
+            "value": 0.8,
+            "label": "Baseline",
+            "color": None,
+            "dashed": True,
+        },
+        {
+            "axis": "x",
+            "value": "2025",
+            "label": "Start",
+            "color": "#ef4444",
+            "dashed": None,
+        },
+    ]
+
+
 def test_normalizes_panel_axis_data_dict_for_report_schema():
     charts = {
         "consumer_stress_dashboard": {

@@ -3191,7 +3191,74 @@ def test_save_quant_outputs_rejects_missing_plotted_column_before_writes(tmp_pat
 
     message = str(exc.value)
     assert "chart 'trend' table 'chart_data:trend' column 'value'" in message
-    assert "missing required plotted column in row 0" in message
+    assert "series 'value' has no finite plotted values" in message
+    assert "row 0 must contain at least one finite plotted value" in message
+    _assert_no_quant_artifacts(tmp_path)
+
+
+def test_save_quant_outputs_accepts_sparse_wide_axis_rows_before_writes(tmp_path):
+    charts = {
+        "cash_flow": {
+            "type": "line",
+            "title": "Cash Flow",
+            "xAxisKey": "fiscal_year",
+            "data": [
+                {"fiscal_year": "2022", "ocf": 10.0, "capex": None},
+                {"fiscal_year": "2023", "ocf": 12.0},
+                {"fiscal_year": "2024", "ocf": 15.0, "capex": -2.0},
+            ],
+            "series": [
+                {"dataKey": "ocf", "label": "Operating cash flow"},
+                {"dataKey": "capex", "label": "Capital expenditures"},
+            ],
+            **_chart_traceability("SEC", "unit_test_projection"),
+        }
+    }
+
+    handoff = qms.save_quant_outputs(
+        tmp_path,
+        charts,
+        {"methods_used": ["unit_test_method"]},
+    )
+    saved_summary = json.loads((tmp_path / "execution_summary.json").read_text())
+    saved_charts = json.loads((tmp_path / "charts.json").read_text())
+
+    assert handoff["chart_ids"] == ["cash_flow"]
+    assert saved_charts["cash_flow"]["data"] == charts["cash_flow"]["data"]
+    assert saved_summary["chart_source_table_validation"]["cash_flow"]["series_keys"] == [
+        "ocf",
+        "capex",
+    ]
+
+
+def test_save_quant_outputs_rejects_sparse_wide_axis_row_without_values(tmp_path):
+    charts = {
+        "cash_flow": {
+            "type": "line",
+            "title": "Cash Flow",
+            "xAxisKey": "fiscal_year",
+            "data": [
+                {"fiscal_year": "2022", "ocf": 10.0, "capex": None},
+                {"fiscal_year": "2023", "ocf": None, "capex": None},
+                {"fiscal_year": "2024", "ocf": 15.0, "capex": -2.0},
+            ],
+            "series": [
+                {"dataKey": "ocf", "label": "Operating cash flow"},
+                {"dataKey": "capex", "label": "Capital expenditures"},
+            ],
+            **_chart_traceability("SEC", "unit_test_projection"),
+        }
+    }
+
+    with pytest.raises(ValueError) as exc:
+        qms.save_quant_outputs(
+            tmp_path,
+            charts,
+            {"methods_used": ["unit_test_method"]},
+        )
+
+    message = str(exc.value)
+    assert "row 1 must contain at least one finite plotted value" in message
     _assert_no_quant_artifacts(tmp_path)
 
 

@@ -321,6 +321,43 @@ def _series_from_config_y_axis(config: dict) -> list[dict]:
     return series
 
 
+def _normalize_reference_line(line: Any) -> Any:
+    """Normalize legacy Recharts x/y reference lines to the frontend contract."""
+    if not isinstance(line, dict):
+        return line
+
+    normalized = dict(line)
+    axis = normalized.get("axis")
+    value = normalized.get("value")
+    if axis not in {"x", "y"}:
+        if normalized.get("x") is not None:
+            axis = "x"
+            value = normalized.get("x")
+        elif normalized.get("y") is not None:
+            axis = "y"
+            value = normalized.get("y")
+    elif value is None and normalized.get(axis) is not None:
+        value = normalized.get(axis)
+
+    if axis in {"x", "y"}:
+        normalized["axis"] = axis
+    if value is not None:
+        normalized["value"] = value
+    if "dashed" not in normalized and normalized.get("strokeDasharray"):
+        normalized["dashed"] = True
+
+    normalized.pop("x", None)
+    normalized.pop("y", None)
+    normalized.pop("strokeDasharray", None)
+    return normalized
+
+
+def _normalize_reference_lines(value: Any) -> Any:
+    if not isinstance(value, list):
+        return value
+    return [_normalize_reference_line(item) for item in value]
+
+
 def _coerce_radar_to_bar(chart_copy: dict) -> dict:
     """Represent unsupported radar charts as canonical grouped bar charts."""
     data = chart_copy.get("data")
@@ -545,6 +582,10 @@ def _normalize_chart_definitions(charts_on_disk: dict) -> dict:
             chart_copy["referenceAreas"] = chart_copy["reference_areas"]
         if "referenceLines" not in chart_copy and isinstance(chart_copy.get("reference_lines"), list):
             chart_copy["referenceLines"] = chart_copy["reference_lines"]
+        if "referenceLines" in chart_copy:
+            chart_copy["referenceLines"] = _normalize_reference_lines(
+                chart_copy["referenceLines"]
+            )
         chart_copy.setdefault("description", _infer_chart_description(chart_copy, chart_id))
         if isinstance(chart_copy.get("layout"), dict):
             layout_value = layout.get("layout") or layout.get("chartLayout") or layout.get("orientation")
@@ -837,6 +878,19 @@ def _compact_provenance_value(value: Any, *, key: str) -> str:
     return str(value)
 
 
+def _reference_line_fact(line: Any) -> str | None:
+    normalized = _normalize_reference_line(line)
+    if not isinstance(normalized, dict):
+        return None
+    axis = normalized.get("axis")
+    value = normalized.get("value")
+    if axis not in {"x", "y"} or value is None:
+        return None
+    label = str(normalized.get("label") or "").strip()
+    axis_value = f"{axis}={value}"
+    return f"{label} ({axis_value})" if label else axis_value
+
+
 def _compact_chart_facts_for_draft(charts_map: dict[str, Any]) -> str:
     """Return concise chart facts so prose matches the renderable artifacts."""
 
@@ -884,6 +938,16 @@ def _compact_chart_facts_for_draft(charts_map: dict[str, Any]) -> str:
                     "referenceAreas="
                     + (", ".join(labels) if labels else str(len(reference_areas)))
                 )
+            reference_lines = chart.get("referenceLines")
+            if isinstance(reference_lines, list) and reference_lines:
+                facts = [
+                    fact
+                    for line in reference_lines[:6]
+                    for fact in [_reference_line_fact(line)]
+                    if fact
+                ]
+                if facts:
+                    pieces.append("referenceLines=" + ", ".join(facts))
 
         elif chart_type == "scatter":
             for key in ("xKey", "yKey", "sizeKey", "colorKey"):
