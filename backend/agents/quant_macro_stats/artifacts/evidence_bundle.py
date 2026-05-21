@@ -171,6 +171,18 @@ class EvidenceChart(_EvidenceModel):
             raise ValueError(f"{info.field_name} must cite at least one ID")
         return ids
 
+    @model_validator(mode="after")
+    def _data_rows_require_source_lineage(self):
+        if (self.data_row_count or 0) <= 0:
+            return self
+        if self.source_series or _source_ids_from_chart_provenance(self.provenance):
+            return self
+        raise ValueError(
+            "charts with data rows must include chart provenance source_series "
+            "or source_files; attach chart_provenance(source_series=[...]) or "
+            "chart_provenance(source_files={...}) before saving"
+        )
+
 
 class ConversionDescriptor(_EvidenceModel):
     source_conversions: dict[str, str] = Field(default_factory=dict)
@@ -1133,9 +1145,6 @@ def _source_table_ids_for_chart(
     table_ids: set[str],
 ) -> list[str]:
     candidate_ids: list[str] = []
-    candidate_ids.extend(_text_list(payload.get("source_table_id")))
-    candidate_ids.extend(_text_list(payload.get("source_table_ids")))
-
     source_files = provenance.get("source_files")
     candidate_ids.extend(table_id for table_id, _ in _source_file_items(source_files))
     candidate_ids.extend(
@@ -1147,6 +1156,9 @@ def _source_table_ids_for_chart(
     chart_data_table_id = _chart_data_table_id(chart_id)
     if not candidate_ids and chart_data_table_id in table_ids:
         candidate_ids.append(chart_data_table_id)
+    if not candidate_ids:
+        candidate_ids.extend(_text_list(payload.get("source_table_id")))
+        candidate_ids.extend(_text_list(payload.get("source_table_ids")))
 
     return _unique_texts(candidate_ids)
 

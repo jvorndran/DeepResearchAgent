@@ -2016,6 +2016,40 @@ def test_save_quant_outputs_rejects_chart_without_evidence_bundle_traceability(t
     assert not (tmp_path / "evidence_bundle.json").exists()
 
 
+def test_save_quant_outputs_rejects_generic_chart_source_table_without_provenance(
+    tmp_path,
+):
+    with pytest.raises(ValueError) as exc:
+        qms.save_quant_outputs(
+            tmp_path,
+            {
+                "trend": {
+                    "type": "line",
+                    "title": "Trend",
+                    "data": [{"date": "2024-01", "value": 1.0}],
+                    "series": [{"dataKey": "value", "name": "Value"}],
+                    "xAxis": {"dataKey": "date"},
+                    "source_table_ids": ["s"],
+                }
+            },
+            {
+                "methods_used": ["unit_test_method"],
+                "raw_tables": [
+                    {
+                        "table_id": "s",
+                        "description": "generic stats table",
+                        "data": [{"k": "latest_value", "v": 1.0}],
+                    }
+                ],
+            },
+        )
+
+    message = str(exc.value)
+    assert "charts with data rows must include chart provenance" in message
+    assert "chart_provenance(source_series=[...])" in message
+    _assert_no_quant_artifacts(tmp_path)
+
+
 def test_evidence_bundle_rejects_unresolved_chart_source_table_ids():
     with pytest.raises(ValueError) as exc:
         EvidenceBundle.model_validate(
@@ -2247,6 +2281,42 @@ def test_save_quant_outputs_uses_methods_as_evidence_bundle_chart_transform_ids(
         "columns": ["date", "value"],
         "unique_axis_values": 1,
     }
+
+
+def test_save_quant_outputs_prefers_chart_data_over_stale_source_table_ids(tmp_path):
+    qms.save_quant_outputs(
+        tmp_path,
+        {
+            "trend": {
+                "type": "line",
+                "title": "Trend",
+                "data": [{"date": "2024-01", "value": 1.0}],
+                "series": [{"dataKey": "value", "name": "Value"}],
+                "xAxis": {"dataKey": "date"},
+                "source_table_ids": ["s"],
+                "transform_id": "unit_test_projection",
+                "provenance": qms.chart_provenance(source_series=["FRED"]),
+            }
+        },
+        {
+            "raw_tables": [
+                {
+                    "table_id": "s",
+                    "description": "generic stats table",
+                    "data": [{"k": "latest_value", "v": 1.0}],
+                }
+            ],
+        },
+    )
+
+    saved_bundle = json.loads((tmp_path / "evidence_bundle.json").read_text())
+
+    assert saved_bundle["charts"][0]["source_table_ids"] == ["chart_data:trend"]
+    assert saved_bundle["charts"][0]["provenance"]["source_series"] == ["FRED"]
+    assert saved_bundle["transforms"][0]["source_table_ids"] == ["chart_data:trend"]
+    assert saved_bundle["raw_tables"][0]["table_id"] == "s"
+    assert saved_bundle["normalized_tables"][0]["table_id"] == "chart_data:trend"
+    assert saved_bundle["normalized_tables"][0]["source_id"] == "FRED"
 
 
 def test_save_quant_outputs_rejects_duplicate_evidence_bundle_fact_ids(tmp_path):
