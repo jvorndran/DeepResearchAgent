@@ -539,6 +539,69 @@ def test_report_chart_audit_rejects_chart_linked_numeric_fact_mismatch(tmp_path)
     assert "chart-linked numeric fact" in audit["blockers"][0]
 
 
+def test_report_chart_audit_rejects_scenario_projection_chart_mismatch(tmp_path):
+    report_path = _write_report(
+        tmp_path,
+        {
+            "id": "resilience_scenario",
+            "type": "composed",
+            "title": "Resilience Scenario",
+            "description": "Company scenario projection.",
+            "xAxisKey": "s",
+            "series": [
+                {"dataKey": "rev", "label": "Revenue ($B)", "color": "#2563eb"},
+                {"dataKey": "oi", "label": "Operating Income ($B)", "color": "#f59e0b"},
+            ],
+            "data": [{"s": "Cooling AI", "rev": 156.6, "oi": 101.0}],
+        },
+        analysis_type="earnings_analysis",
+    )
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "chart_ids": ["resilience_scenario"],
+                "scenario_projection_rows": [
+                    {
+                        "scenario": "Cooling AI",
+                        "subject": "NVDA",
+                        "base_period": "FY2026",
+                        "projection_period": "FY2027",
+                        "base_revenue": 215.938,
+                        "base_revenue_unit": "usd_b",
+                        "revenue_growth_pct": 20.0,
+                        "projected_revenue": 259.13,
+                        "projected_revenue_unit": "usd_b",
+                        "gross_margin_pct": 60.0,
+                        "operating_expense": 23.1,
+                        "operating_expense_unit": "usd_b",
+                        "projected_operating_income": 132.38,
+                        "operating_income_unit": "usd_b",
+                        "chart_id": "resilience_scenario",
+                        "chart_label": "Cooling AI",
+                        "chart_label_key": "s",
+                        "revenue_data_key": "rev",
+                        "operating_income_data_key": "oi",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    audit = json.loads(run_report_chart_audit(str(report_path)))
+
+    assert audit["passes_audit"] is False
+    assert audit["artifact_fact_consistency"]["valid"] is False
+    assert (
+        audit["artifact_fact_consistency"]["scenario_projection_mismatches"][0][
+            "reason"
+        ]
+        == "chart_value_mismatch"
+    )
+    assert "scenario projection" in audit["blockers"][0]
+
+
 def test_report_chart_audit_accepts_broad_governed_chart_families(tmp_path):
     charts = {
         "radar_profile": {

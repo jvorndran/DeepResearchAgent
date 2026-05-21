@@ -37,7 +37,7 @@ statistics inside `analysis.py`.
   `sahm_rule_signal`,
   `historical_scenario_replay`, `build_analog_evidence`,
   `build_composite_predictive_indicator`, `normalize_scenario_evidence_rows`,
-  `classify_recession_regime`,
+  `normalize_scenario_projection_rows`, `classify_recession_regime`,
   `forecast_band_rows`,
   `forecast_model_comparison_rows`,
   `forecast_failure_episodes`, `forecast_false_alarm_episodes`,
@@ -48,12 +48,16 @@ statistics inside `analysis.py`.
   selection, recession-window loops, OLS regressions, direct forecast tables,
   walk-forward validation, signal hit/miss tests, historical replay rows,
   Sahm rule current-signal facts, false-alarm episodes, analog distances, composite indicator scoring,
-  scenario evidence row normalization, regime labels, SEC metric extraction, JSON
-  serialization, or chart-ID handoff construction.
+  scenario evidence row normalization, scenario projection formula/unit
+  validation, regime labels, SEC metric extraction, JSON serialization, or
+  chart-ID handoff construction.
 - For company projection or sensitivity prompts, call the SEC company helper for
   reusable fundamentals, trend diagnostics, macro overlays, numeric facts, and
   source coverage, then compose any caller-requested projection or scenario rows
-  inside `analysis.py` from explicit assumptions. Treat
+  inside `analysis.py` from explicit assumptions. Use
+  `normalize_scenario_projection_rows(...)` for revenue, margin, operating
+  expense, and operating-income scenarios that will appear in charts or report
+  tables. Treat
   `company_macro_sensitivity` as numeric/context rows only; do not rely on a
   prebuilt company projection, risk-channel, or macro-link payload.
 
@@ -172,6 +176,17 @@ statistics inside `analysis.py`.
   `normalize_scenario_evidence_rows(rows)`. Preserve reusable rows as top-level
   `scenario_score_rows` or another generic evidence key in
   `execution_summary.json`; do not emit a quant-owned `scenario_table` contract.
+- If the user asks for company resilience, cooling-demand, stress, or projection
+  scenarios, compose typed rows with `scenario`, `subject`, `base_period`,
+  `projection_period`, `base_revenue`, `base_revenue_unit`,
+  `revenue_growth_pct`, `projected_revenue`, `projected_revenue_unit`, and, when
+  operating income is shown, `gross_margin_pct`, `operating_expense`,
+  `operating_expense_unit`, `projected_operating_income`, and
+  `operating_income_unit`. Call `normalize_scenario_projection_rows(rows)` and
+  preserve the result as top-level `scenario_projection_rows`. If those rows
+  drive a chart, include `chart_id`, `chart_label`, `chart_label_key`, and the
+  exact data keys such as `revenue_data_key` and `operating_income_data_key` so
+  `save_quant_outputs(...)` can reject formula/unit/chart mismatches.
 - Scenario rows should carry the relevant metrics, scores, values, drivers,
   notes, or evidence needed for the request. Do not include report narrative
   fields such as `interpretation`; `analysis.py` owns any report-facing

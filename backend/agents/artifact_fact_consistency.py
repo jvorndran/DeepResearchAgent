@@ -8,6 +8,11 @@ from itertools import combinations
 import re
 from typing import Any, Iterable
 
+from .scenario_projection_contract import (
+    normalize_scenario_projection_rows,
+    scenario_projection_formula_mismatches,
+    scenario_projection_metric_tolerance,
+)
 
 _CORRELATION_VALUE_KEYS = ("correlation", "corr", "c", "raw_value", "value")
 _EXPLICIT_TRANSFORM_KEYS = (
@@ -98,12 +103,22 @@ def artifact_fact_consistency_dict(
         )
     chart_numeric_checked_facts: list[str] = []
     chart_numeric_mismatches: list[dict[str, Any]] = []
+    scenario_projection_checked_rows: list[str] = []
+    scenario_projection_mismatches: list[dict[str, Any]] = []
     if isinstance(execution_summary, dict):
         (
             chart_numeric_checked_facts,
             chart_numeric_mismatches,
         ) = _chart_numeric_fact_mismatches(
             execution_summary.get("numeric_facts"),
+            chart_payload,
+            chart_source,
+        )
+        (
+            scenario_projection_checked_rows,
+            scenario_projection_mismatches,
+        ) = _scenario_projection_mismatches(
+            execution_summary.get("scenario_projection_rows"),
             chart_payload,
             chart_source,
         )
@@ -162,7 +177,12 @@ def artifact_fact_consistency_dict(
         if comparable_pair_seen:
             checked_pairs.append("/".join(pair_items[0].pair_display))
 
-    all_mismatches = [*mismatches, *signal_mismatches, *chart_numeric_mismatches]
+    all_mismatches = [
+        *mismatches,
+        *signal_mismatches,
+        *chart_numeric_mismatches,
+        *scenario_projection_mismatches,
+    ]
     return {
         "valid": not all_mismatches,
         "fact_type": "correlation",
@@ -174,6 +194,8 @@ def artifact_fact_consistency_dict(
         "signal_mismatches": signal_mismatches,
         "checked_chart_numeric_facts": chart_numeric_checked_facts,
         "chart_numeric_mismatches": chart_numeric_mismatches,
+        "checked_scenario_projection_rows": scenario_projection_checked_rows,
+        "scenario_projection_mismatches": scenario_projection_mismatches,
     }
 
 
@@ -190,6 +212,8 @@ def artifact_fact_consistency_blocker(consistency: dict[str, Any] | None) -> str
         return _current_signal_blocker(mismatch)
     if isinstance(mismatch, dict) and mismatch.get("fact_type") == "chart_numeric_fact":
         return _chart_numeric_fact_blocker(mismatch)
+    if isinstance(mismatch, dict) and mismatch.get("fact_type") == "scenario_projection":
+        return _scenario_projection_blocker(mismatch)
     pair = mismatch.get("pair") if isinstance(mismatch, dict) else None
     pair_label = "/".join(str(item) for item in pair) if isinstance(pair, list) else "unknown"
     observations = mismatch.get("observations") if isinstance(mismatch, dict) else None
@@ -261,6 +285,33 @@ def _chart_numeric_fact_blocker(mismatch: dict[str, Any]) -> str:
         f"{fact_id} ({reason}: {detail_text}). Regenerate quant artifacts so "
         "execution_summary.json numeric_facts and charts.json latest data points "
         "share one current value."
+    )
+
+
+def _scenario_projection_blocker(mismatch: dict[str, Any]) -> str:
+    scenario = str(mismatch.get("scenario") or "unknown")
+    subject = str(mismatch.get("subject") or "unknown")
+    reason = str(mismatch.get("reason") or "mismatch")
+    metric = str(mismatch.get("metric") or "projection")
+    observations = mismatch.get("observations")
+    details: list[str] = []
+    if isinstance(observations, list):
+        for observation in observations[:4]:
+            if not isinstance(observation, dict):
+                continue
+            source = observation.get("source")
+            value = observation.get("value")
+            unit = observation.get("unit")
+            pieces = [f"{source}={value}"]
+            if unit is not None:
+                pieces.append(f"unit={unit}")
+            details.append(", ".join(str(piece) for piece in pieces if piece))
+    detail_text = "; ".join(details) if details else "conflicting observations"
+    return (
+        "artifact_fact_mismatch: conflicting scenario projection for "
+        f"{subject}/{scenario} {metric} ({reason}: {detail_text}). Regenerate "
+        "quant artifacts so execution_summary.json scenario_projection_rows, "
+        "formula assumptions, units, and scenario chart data share one basis."
     )
 
 
@@ -613,6 +664,284 @@ def _chart_numeric_fact_mismatches(
                 )
             )
     return checked, mismatches
+
+
+def _scenario_projection_mismatches(
+    value: Any,
+    charts: dict[str, Any] | list[Any] | None,
+    chart_source: str,
+) -> tuple[list[str], list[dict[str, Any]]]:
+    if value is None:
+        return [], []
+    checked: list[str] = []
+    mismatches: list[dict[str, Any]] = []
+    try:
+        rows = normalize_scenario_projection_rows(value, validate_formulas=False)
+    except ValueError as exc:
+        return (
+            [str(index) for index, _ in enumerate(value)] if isinstance(value, list) else [],
+            [
+                _scenario_projection_mismatch(
+                    scenario="unknown",
+                    subject="unknown",
+                    metric="scenario_projection_rows",
+                    reason="malformed_scenario_projection_rows",
+                    observations=[
+                        {
+                            "source": "execution_summary.scenario_projection_rows",
+                            "value": str(exc),
+                        }
+                    ],
+                )
+            ],
+        )
+
+    for index, row in enumerate(rows):
+        source = f"execution_summary.scenario_projection_rows[{index}]"
+        scenario = str(row.get("scenario") or f"scenario_projection_rows[{index}]")
+        subject = str(row.get("subject") or "unknown")
+        checked.append(f"{subject}/{scenario}")
+
+        try:
+            formula_mismatches = scenario_projection_formula_mismatches(
+                row,
+                source=source,
+            )
+        except ValueError as exc:
+            mismatches.append(
+                _scenario_projection_mismatch(
+                    scenario=scenario,
+                    subject=subject,
+                    metric="scenario_projection_rows",
+                    reason="malformed_scenario_projection_row",
+                    observations=[
+                        {
+                            "source": source,
+                            "value": str(exc),
+                        }
+                    ],
+                )
+            )
+            continue
+
+        for mismatch in formula_mismatches:
+            mismatches.append(
+                _scenario_projection_mismatch(
+                    scenario=scenario,
+                    subject=subject,
+                    metric=str(mismatch.get("metric") or "projection"),
+                    reason=str(mismatch.get("reason") or "formula_mismatch"),
+                    observations=_observation_list(mismatch.get("observations")),
+                    tolerance=_finite_float(mismatch.get("tolerance")),
+                )
+            )
+
+        if charts is None or not _non_empty_string(row.get("chart_id")):
+            continue
+        chart_id = str(row["chart_id"])
+        chart_label_key = str(row.get("chart_label_key") or "scenario")
+        chart_label = str(row.get("chart_label") or scenario)
+        chart_row = _scenario_chart_row_observation(
+            charts,
+            chart_id=chart_id,
+            label_key=chart_label_key,
+            label=chart_label,
+            source_prefix=chart_source,
+        )
+        if chart_row is None:
+            mismatches.append(
+                _scenario_projection_mismatch(
+                    scenario=scenario,
+                    subject=subject,
+                    metric="chart_row",
+                    reason="chart_reference_missing",
+                    observations=[
+                        _scenario_projection_row_observation(row, source),
+                    ],
+                    tolerance=_finite_float(row.get("tolerance")),
+                )
+            )
+            continue
+
+        for metric, row_key, unit_key in (
+            ("projected_revenue", "revenue_data_key", "projected_revenue_unit"),
+            (
+                "projected_operating_income",
+                "operating_income_data_key",
+                "operating_income_unit",
+            ),
+            (
+                "projected_gross_profit",
+                "gross_profit_data_key",
+                "projected_gross_profit_unit",
+            ),
+            ("gross_margin_pct", "gross_margin_data_key", None),
+        ):
+            data_key = _non_empty_string(row.get(row_key))
+            if not data_key:
+                continue
+            expected = _finite_float(row.get(metric))
+            chart_value = _finite_float(chart_row.get("row", {}).get(data_key))
+            unit = row.get(unit_key) if unit_key else "percent"
+            tolerance = scenario_projection_metric_tolerance(row, metric, unit)
+            if expected is None or chart_value is None:
+                mismatches.append(
+                    _scenario_projection_mismatch(
+                        scenario=scenario,
+                        subject=subject,
+                        metric=metric,
+                        reason="chart_metric_missing",
+                        observations=[
+                            _scenario_projection_row_metric_observation(
+                                row,
+                                source,
+                                metric=metric,
+                                unit=unit,
+                            ),
+                            _chart_row_metric_observation(
+                                chart_row,
+                                data_key=data_key,
+                                metric=metric,
+                                unit=unit,
+                            ),
+                        ],
+                        tolerance=tolerance,
+                    )
+                )
+                continue
+            if abs(chart_value - expected) > max(tolerance or 0.0, 1e-9):
+                mismatches.append(
+                    _scenario_projection_mismatch(
+                        scenario=scenario,
+                        subject=subject,
+                        metric=metric,
+                        reason="chart_value_mismatch",
+                        observations=[
+                            _scenario_projection_row_metric_observation(
+                                row,
+                                source,
+                                metric=metric,
+                                unit=unit,
+                            ),
+                            _chart_row_metric_observation(
+                                chart_row,
+                                data_key=data_key,
+                                metric=metric,
+                                unit=unit,
+                            ),
+                        ],
+                        tolerance=tolerance,
+                    )
+                )
+    return checked, mismatches
+
+
+def _scenario_projection_mismatch(
+    *,
+    scenario: str,
+    subject: str,
+    metric: str,
+    reason: str,
+    observations: list[dict[str, Any]],
+    tolerance: float | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "fact_type": "scenario_projection",
+        "scenario": scenario,
+        "subject": subject,
+        "metric": metric,
+        "reason": reason,
+        "observations": observations,
+    }
+    if tolerance is not None:
+        payload["tolerance"] = tolerance
+    return payload
+
+
+def _scenario_projection_row_observation(
+    row: dict[str, Any],
+    source: str,
+) -> dict[str, Any]:
+    return {
+        "source": source,
+        "value": row.get("chart_label") or row.get("scenario"),
+        "chart_id": row.get("chart_id"),
+        "chart_label_key": row.get("chart_label_key"),
+    }
+
+
+def _scenario_projection_row_metric_observation(
+    row: dict[str, Any],
+    source: str,
+    *,
+    metric: str,
+    unit: Any,
+) -> dict[str, Any]:
+    return {
+        "source": f"{source}.{metric}",
+        "value": _finite_float(row.get(metric)),
+        "unit": unit,
+    }
+
+
+def _chart_row_metric_observation(
+    chart_row: dict[str, Any],
+    *,
+    data_key: str,
+    metric: str,
+    unit: Any,
+) -> dict[str, Any]:
+    row = chart_row.get("row")
+    value = row.get(data_key) if isinstance(row, dict) else None
+    return {
+        "source": f"{chart_row.get('source')}.{data_key}",
+        "metric": metric,
+        "value": _finite_float(value),
+        "unit": unit,
+    }
+
+
+def _scenario_chart_row_observation(
+    charts: dict[str, Any] | list[Any],
+    *,
+    chart_id: str,
+    label_key: str,
+    label: str,
+    source_prefix: str,
+) -> dict[str, Any] | None:
+    for candidate_id, chart in _iter_chart_items(charts):
+        if candidate_id != chart_id:
+            continue
+        chart_data = _as_mapping(chart)
+        if not chart_data:
+            return None
+        data = chart_data.get("data")
+        if not isinstance(data, list):
+            return None
+        for index, row in enumerate(data):
+            if not isinstance(row, dict):
+                continue
+            if _labels_match(row.get(label_key), label):
+                return {
+                    "source": f"{source_prefix}.{chart_id}.data[{index}]",
+                    "row": row,
+                }
+        return None
+    return None
+
+
+def _labels_match(left: Any, right: Any) -> bool:
+    return _compact_label(left) == _compact_label(right)
+
+
+def _compact_label(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip()).casefold()
+
+
+def _observation_list(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
 
 
 def _numeric_fact_chart_observation(

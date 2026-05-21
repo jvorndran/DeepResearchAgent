@@ -917,6 +917,7 @@ def _load_sibling_execution_summary(report_path: Path) -> dict[str, object]:
         "signal_design",
         "lead_time_rows",
         "scenario_score_rows",
+        "scenario_projection_rows",
         "replay_rows",
         "replay_design",
         "latest_fundamentals",
@@ -3965,6 +3966,7 @@ def _has_generic_model_evidence(summary: dict[str, object]) -> bool:
         "model_comparison_by_horizon",
         "model_comparison_rows",
         "forecast_band_rows",
+        "scenario_projection_rows",
         "composite_score_rows",
     ):
         value = summary.get(key)

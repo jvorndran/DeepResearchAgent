@@ -5,6 +5,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from ...scenario_projection_contract import normalize_scenario_projection_rows
 from .._utils import (
     DEFAULT_REGIME_CATEGORIES,
     DEFAULT_REGIME_WEIGHTS,

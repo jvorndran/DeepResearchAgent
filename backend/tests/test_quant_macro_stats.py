@@ -5423,6 +5423,490 @@ def test_artifact_fact_consistency_parses_chart_pair_label_correlation_pair():
     )
 
 
+def test_normalize_scenario_projection_rows_validates_units_and_formulas():
+    rows = qms.normalize_scenario_projection_rows(
+        [
+            {
+                "scenario": "Cooling AI",
+                "subject": "NVDA",
+                "base_period": "FY2026",
+                "projection_period": "FY2027",
+                "base_revenue": 215_938_000_000,
+                "base_revenue_unit": "usd",
+                "revenue_growth_pct": 20.0,
+                "projected_revenue": 259.13,
+                "projected_revenue_unit": "usd_b",
+                "gross_margin_pct": 60.0,
+                "operating_expense": 23.1,
+                "operating_expense_unit": "usd_b",
+                "projected_operating_income": 132.38,
+                "operating_income_unit": "usd_b",
+                "chart_id": "resilience_scenario",
+                "chart_label": "Cooling AI",
+                "chart_label_key": "s",
+                "revenue_data_key": "rev",
+                "operating_income_data_key": "oi",
+            }
+        ]
+    )
+
+    assert rows[0]["projected_revenue"] == pytest.approx(259.13)
+    assert rows[0]["projected_operating_income"] == pytest.approx(132.38)
+    assert rows[0]["chart_label_key"] == "s"
+
+    stale_row = dict(rows[0], projected_revenue=156.6)
+    with pytest.raises(ValueError, match="projected_revenue"):
+        qms.normalize_scenario_projection_rows([stale_row])
+
+
+def test_normalize_scenario_projection_rows_allows_gross_profit_without_operating_income():
+    rows = qms.normalize_scenario_projection_rows(
+        [
+            {
+                "scenario": "Cooling AI",
+                "subject": "NVDA",
+                "base_period": "FY2026",
+                "projection_period": "FY2027",
+                "base_revenue": 100.0,
+                "base_revenue_unit": "usd_b",
+                "revenue_growth_pct": 20.0,
+                "projected_revenue": 120.0,
+                "projected_revenue_unit": "usd_b",
+                "gross_margin_pct": 50.0,
+                "projected_gross_profit": 60.0,
+                "projected_gross_profit_unit": "usd_b",
+                "chart_id": "resilience_scenario",
+                "chart_label": "Cooling AI",
+                "chart_label_key": "scenario",
+                "revenue_data_key": "revenue",
+                "gross_profit_data_key": "gross_profit",
+            }
+        ]
+    )
+
+    assert rows[0]["projected_gross_profit"] == pytest.approx(60.0)
+    assert rows[0]["gross_profit_data_key"] == "gross_profit"
+    assert "projected_operating_income" not in rows[0]
+    assert "operating_expense" not in rows[0]
+
+
+def test_normalize_scenario_projection_rows_rejects_unknown_units():
+    row = {
+        "scenario": "Cooling AI",
+        "subject": "NVDA",
+        "base_period": "FY2026",
+        "projection_period": "FY2027",
+        "base_revenue": 215.938,
+        "base_revenue_unit": "spacebucks",
+        "revenue_growth_pct": 20.0,
+        "projected_revenue": 259.13,
+        "projected_revenue_unit": "spacebucks",
+    }
+
+    with pytest.raises(ValueError, match="unsupported scenario projection unit"):
+        qms.normalize_scenario_projection_rows([row])
+
+
+@pytest.mark.parametrize(
+    "unit_overrides",
+    [
+        {"base_revenue_unit": "percent", "projected_revenue_unit": "percent"},
+        {"projected_revenue_unit": "percent"},
+        {"projected_gross_profit_unit": "percent"},
+        {"operating_expense_unit": "percent"},
+        {"operating_income_unit": "percent"},
+    ],
+)
+def test_normalize_scenario_projection_rows_rejects_percent_monetary_units(
+    unit_overrides,
+):
+    row = {
+        "scenario": "Cooling AI",
+        "subject": "NVDA",
+        "base_period": "FY2026",
+        "projection_period": "FY2027",
+        "base_revenue": 100.0,
+        "base_revenue_unit": "usd_b",
+        "revenue_growth_pct": 20.0,
+        "projected_revenue": 120.0,
+        "projected_revenue_unit": "usd_b",
+        "gross_margin_pct": 50.0,
+        "projected_gross_profit": 60.0,
+        "projected_gross_profit_unit": "usd_b",
+        "operating_expense": 10.0,
+        "operating_expense_unit": "usd_b",
+        "projected_operating_income": 50.0,
+        "operating_income_unit": "usd_b",
+    }
+    row.update(unit_overrides)
+
+    with pytest.raises(ValueError, match="currency unit"):
+        qms.normalize_scenario_projection_rows([row])
+
+
+@pytest.mark.parametrize(
+    ("bad_metric", "bad_value", "expected_reason"),
+    [
+        (
+            "projected_operating_income",
+            1_000_000.0,
+            "projected_operating_income",
+        ),
+        ("projected_gross_profit", 1_000_000.0, "projected_gross_profit"),
+    ],
+)
+def test_normalize_scenario_projection_rows_uses_metric_units_for_formula_tolerance(
+    bad_metric,
+    bad_value,
+    expected_reason,
+):
+    row = {
+        "scenario": "Cooling AI",
+        "subject": "NVDA",
+        "base_period": "FY2026",
+        "projection_period": "FY2027",
+        "base_revenue": 100_000_000_000,
+        "base_revenue_unit": "usd",
+        "revenue_growth_pct": 20.0,
+        "projected_revenue": 120_000_000_000,
+        "projected_revenue_unit": "usd",
+        "gross_margin_pct": 50.0,
+    }
+    if bad_metric == "projected_operating_income":
+        row.update(
+            {
+                "operating_expense": 10.0,
+                "operating_expense_unit": "usd_b",
+                "projected_operating_income": bad_value,
+                "operating_income_unit": "usd_b",
+            }
+        )
+    else:
+        row.update(
+            {
+                "projected_gross_profit": bad_value,
+                "projected_gross_profit_unit": "usd_b",
+                "operating_expense": 10.0,
+                "operating_expense_unit": "usd_b",
+                "projected_operating_income": 50.0,
+                "operating_income_unit": "usd_b",
+            }
+        )
+
+    with pytest.raises(ValueError, match=expected_reason):
+        qms.normalize_scenario_projection_rows([row])
+
+
+def test_artifact_fact_consistency_rejects_scenario_projection_formula_mismatch():
+    consistency = artifact_fact_consistency_dict(
+        execution_summary={
+            "scenario_projection_rows": [
+                {
+                    "scenario": "Cooling AI",
+                    "subject": "NVDA",
+                    "base_period": "FY2026",
+                    "projection_period": "FY2027",
+                    "base_revenue": 215.938,
+                    "base_revenue_unit": "usd_b",
+                    "revenue_growth_pct": 20.0,
+                    "projected_revenue": 156.6,
+                    "projected_revenue_unit": "usd_b",
+                }
+            ]
+        },
+        charts={},
+    )
+
+    assert consistency["valid"] is False
+    assert (
+        consistency["scenario_projection_mismatches"][0]["reason"]
+        == "projected_revenue_formula_mismatch"
+    )
+    assert "scenario projection" in artifact_fact_consistency_blocker(consistency)
+
+
+def test_artifact_fact_consistency_rejects_unknown_scenario_projection_units():
+    consistency = artifact_fact_consistency_dict(
+        execution_summary={
+            "scenario_projection_rows": [
+                {
+                    "scenario": "Cooling AI",
+                    "subject": "NVDA",
+                    "base_period": "FY2026",
+                    "projection_period": "FY2027",
+                    "base_revenue": 215.938,
+                    "base_revenue_unit": "spacebucks",
+                    "revenue_growth_pct": 20.0,
+                    "projected_revenue": 259.13,
+                    "projected_revenue_unit": "spacebucks",
+                    "chart_id": "resilience_scenario",
+                    "chart_label": "Cooling AI",
+                    "chart_label_key": "s",
+                    "revenue_data_key": "rev",
+                }
+            ]
+        },
+        charts={
+            "resilience_scenario": {
+                "type": "bar",
+                "data": [{"s": "Cooling AI", "rev": 259.13}],
+            }
+        },
+    )
+
+    assert consistency["valid"] is False
+    assert (
+        consistency["scenario_projection_mismatches"][0]["reason"]
+        == "malformed_scenario_projection_rows"
+    )
+    assert "unsupported scenario projection unit" in str(
+        consistency["scenario_projection_mismatches"][0]["observations"][0]["value"]
+    )
+
+
+def test_artifact_fact_consistency_rejects_percent_scenario_revenue_units():
+    consistency = artifact_fact_consistency_dict(
+        execution_summary={
+            "scenario_projection_rows": [
+                {
+                    "scenario": "Cooling AI",
+                    "subject": "NVDA",
+                    "base_period": "FY2026",
+                    "projection_period": "FY2027",
+                    "base_revenue": 100.0,
+                    "base_revenue_unit": "percent",
+                    "revenue_growth_pct": 20.0,
+                    "projected_revenue": 120.0,
+                    "projected_revenue_unit": "percent",
+                    "chart_id": "resilience_scenario",
+                    "chart_label": "Cooling AI",
+                    "chart_label_key": "s",
+                    "revenue_data_key": "rev",
+                }
+            ]
+        },
+        charts={
+            "resilience_scenario": {
+                "type": "bar",
+                "data": [{"s": "Cooling AI", "rev": 120.0}],
+            }
+        },
+    )
+
+    assert consistency["valid"] is False
+    assert (
+        consistency["scenario_projection_mismatches"][0]["reason"]
+        == "malformed_scenario_projection_rows"
+    )
+    assert "currency unit" in str(
+        consistency["scenario_projection_mismatches"][0]["observations"][0]["value"]
+    )
+
+
+def test_artifact_fact_consistency_accepts_scenario_margin_percent_chart_values():
+    consistency = artifact_fact_consistency_dict(
+        execution_summary={
+            "scenario_projection_rows": [
+                {
+                    "scenario": "Cooling AI",
+                    "subject": "NVDA",
+                    "base_period": "FY2026",
+                    "projection_period": "FY2027",
+                    "base_revenue": 100.0,
+                    "base_revenue_unit": "usd_b",
+                    "revenue_growth_pct": 20.0,
+                    "projected_revenue": 120.0,
+                    "projected_revenue_unit": "usd_b",
+                    "gross_margin_pct": 66.6667,
+                    "chart_id": "resilience_scenario",
+                    "chart_label": "Cooling AI",
+                    "chart_label_key": "s",
+                    "revenue_data_key": "rev",
+                    "gross_margin_data_key": "gm",
+                }
+            ]
+        },
+        charts={
+            "resilience_scenario": {
+                "type": "composed",
+                "data": [{"s": "Cooling AI", "rev": 120.0, "gm": 66.7}],
+            }
+        },
+    )
+
+    assert consistency["valid"] is True
+    assert consistency["checked_scenario_projection_rows"] == ["NVDA/Cooling AI"]
+
+
+@pytest.mark.parametrize(
+    ("metric", "bad_chart_values"),
+    [
+        ("projected_operating_income", {"oi": 1_000_000.0, "gp": 60.0}),
+        ("projected_gross_profit", {"oi": 50.0, "gp": 1_000_000.0}),
+    ],
+)
+def test_artifact_fact_consistency_uses_metric_units_for_scenario_chart_tolerance(
+    metric,
+    bad_chart_values,
+):
+    consistency = artifact_fact_consistency_dict(
+        execution_summary={
+            "scenario_projection_rows": [
+                {
+                    "scenario": "Cooling AI",
+                    "subject": "NVDA",
+                    "base_period": "FY2026",
+                    "projection_period": "FY2027",
+                    "base_revenue": 100_000_000_000,
+                    "base_revenue_unit": "usd",
+                    "revenue_growth_pct": 20.0,
+                    "projected_revenue": 120_000_000_000,
+                    "projected_revenue_unit": "usd",
+                    "gross_margin_pct": 50.0,
+                    "projected_gross_profit": 60.0,
+                    "projected_gross_profit_unit": "usd_b",
+                    "operating_expense": 10.0,
+                    "operating_expense_unit": "usd_b",
+                    "projected_operating_income": 50.0,
+                    "operating_income_unit": "usd_b",
+                    "chart_id": "mixed_unit_scenario",
+                    "chart_label": "Cooling AI",
+                    "chart_label_key": "s",
+                    "revenue_data_key": "rev",
+                    "operating_income_data_key": "oi",
+                    "gross_profit_data_key": "gp",
+                }
+            ]
+        },
+        charts={
+            "mixed_unit_scenario": {
+                "type": "composed",
+                "data": [
+                    {
+                        "s": "Cooling AI",
+                        "rev": 120_000_000_000,
+                        **bad_chart_values,
+                    }
+                ],
+            }
+        },
+    )
+
+    assert consistency["valid"] is False
+    assert any(
+        mismatch["metric"] == metric
+        and mismatch["reason"] == "chart_value_mismatch"
+        for mismatch in consistency["scenario_projection_mismatches"]
+    )
+
+
+def test_save_quant_outputs_rejects_scenario_projection_chart_mismatch(tmp_path):
+    charts = {
+        "resilience_scenario": {
+            "id": "resilience_scenario",
+            "type": "composed",
+            "title": "Resilience Scenario ($B)",
+            "xAxisKey": "s",
+            "series": [
+                {"dataKey": "rev", "label": "Revenue ($B)", "type": "bar"},
+                {"dataKey": "oi", "label": "Operating Income ($B)", "type": "bar"},
+            ],
+            "data": [
+                {"s": "Cooling AI", "rev": 156.6, "oi": 101.0},
+            ],
+            **_chart_traceability("NVDA SEC EDGAR", "scenario_projection"),
+        }
+    }
+    scenario_rows = qms.normalize_scenario_projection_rows(
+        [
+            {
+                "scenario": "Cooling AI",
+                "subject": "NVDA",
+                "base_period": "FY2026",
+                "projection_period": "FY2027",
+                "base_revenue": 215.938,
+                "base_revenue_unit": "usd_b",
+                "revenue_growth_pct": 20.0,
+                "projected_revenue": 259.13,
+                "projected_revenue_unit": "usd_b",
+                "gross_margin_pct": 60.0,
+                "operating_expense": 23.1,
+                "operating_expense_unit": "usd_b",
+                "projected_operating_income": 132.38,
+                "operating_income_unit": "usd_b",
+                "chart_id": "resilience_scenario",
+                "chart_label": "Cooling AI",
+                "chart_label_key": "s",
+                "revenue_data_key": "rev",
+                "operating_income_data_key": "oi",
+            }
+        ]
+    )
+
+    with pytest.raises(ValueError, match="scenario projection"):
+        qms.save_quant_outputs(
+            tmp_path,
+            charts,
+            {"scenario_projection_rows": scenario_rows},
+        )
+
+    assert not (tmp_path / "execution_summary.json").exists()
+
+
+def test_save_quant_outputs_preserves_scenario_projection_rows(tmp_path):
+    scenario_rows = qms.normalize_scenario_projection_rows(
+        [
+            {
+                "scenario": "Cooling AI",
+                "subject": "NVDA",
+                "base_period": "FY2026",
+                "projection_period": "FY2027",
+                "base_revenue": 215.938,
+                "base_revenue_unit": "usd_b",
+                "revenue_growth_pct": 20.0,
+                "projected_revenue": 259.13,
+                "projected_revenue_unit": "usd_b",
+                "gross_margin_pct": 60.0,
+                "operating_expense": 23.1,
+                "operating_expense_unit": "usd_b",
+                "projected_operating_income": 132.38,
+                "operating_income_unit": "usd_b",
+                "chart_id": "resilience_scenario",
+                "chart_label": "Cooling AI",
+                "chart_label_key": "s",
+                "revenue_data_key": "rev",
+                "operating_income_data_key": "oi",
+            }
+        ]
+    )
+    charts = {
+        "resilience_scenario": {
+            "id": "resilience_scenario",
+            "type": "composed",
+            "title": "Resilience Scenario ($B)",
+            "xAxisKey": "s",
+            "series": [
+                {"dataKey": "rev", "label": "Revenue ($B)", "type": "bar"},
+                {"dataKey": "oi", "label": "Operating Income ($B)", "type": "bar"},
+            ],
+            "data": [
+                {"s": "Cooling AI", "rev": 259.13, "oi": 132.38},
+            ],
+            **_chart_traceability("NVDA SEC EDGAR", "scenario_projection"),
+        }
+    }
+
+    handoff = qms.save_quant_outputs(
+        tmp_path,
+        charts,
+        {"scenario_projection_rows": scenario_rows},
+    )
+    saved_summary = json.loads((tmp_path / "execution_summary.json").read_text())
+
+    assert saved_summary["scenario_projection_rows"] == scenario_rows
+    assert handoff["scenario_projection_rows"] == scenario_rows
+
+
 def test_save_quant_outputs_does_not_shape_scenario_score_rows(tmp_path):
     charts = {
         "scenario_scores": {

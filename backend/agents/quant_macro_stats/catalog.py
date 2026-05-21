@@ -243,6 +243,27 @@ QUANT_HELPER_CATALOG: tuple[QuantHelperCategory, ...] = (
                 use_when="Clean caller-authored base/bull/bear or trigger evidence rows.",
                 preserves=("scenario", "metric", "value", "score", "drivers", "evidence"),
             ),
+            QuantHelperSpec(
+                name="normalize_scenario_projection_rows",
+                import_path="agents.quant_macro_stats",
+                signature="normalize_scenario_projection_rows(rows)",
+                use_when=(
+                    "Normalize company projection or cooling-spend scenario rows "
+                    "with explicit base period, units, growth/margin/opex "
+                    "assumptions, derived outputs, and optional chart mappings."
+                ),
+                preserves=(
+                    "scenario",
+                    "subject",
+                    "base_period",
+                    "projection_period",
+                    "base_revenue",
+                    "revenue_growth_pct",
+                    "projected_revenue",
+                    "projected_operating_income",
+                    "chart_id",
+                ),
+            ),
         ),
     ),
     QuantHelperCategory(

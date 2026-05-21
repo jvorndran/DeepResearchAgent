@@ -123,8 +123,12 @@ report-specific shortcut tool.
 - For company projection or stress questions, compose projection/scenario rows
   in `analysis.py` from `latest_fundamentals`, `history_rows`,
   trend diagnostics, macro overlay rows, and explicit caller assumptions; save
-  the rows as generic top-level evidence with numeric facts, methods,
-  limitations, and source coverage.
+  typed `scenario_projection_rows` via
+  `normalize_scenario_projection_rows(...)` when revenue or operating-income
+  outputs will appear in charts or tables. Include base/output units, growth
+  assumptions, margin/opex assumptions, derived outputs, and chart row/data-key
+  mappings. Save the rows as generic top-level evidence with numeric facts,
+  methods, limitations, and source coverage.
 - FMP remains disabled and unavailable. Do not request paid/keyed provider data
   or invent FMP-backed quote, market-data, estimate, or financial-statement
   fields.

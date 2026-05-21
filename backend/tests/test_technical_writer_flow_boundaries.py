@@ -1616,6 +1616,49 @@ def test_plan_report_structure_surfaces_generic_scenario_score_evidence(tmp_path
     assert result["helper_evidence_for_draft"]["tables"]["scenario_score_rows"]
 
 
+def test_plan_report_structure_surfaces_gross_profit_scenario_projection_fields(tmp_path):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text("{}", encoding="utf-8")
+
+    result = json.loads(
+        plan_report_structure.func(
+            query_type="custom",
+            charts_json_path=str(charts_path),
+            execution_summary=json.dumps(
+                {
+                    "scenario_projection_rows": [
+                        {
+                            "scenario": "Cooling AI",
+                            "subject": "NVDA",
+                            "base_period": "FY2026",
+                            "projection_period": "FY2027",
+                            "base_revenue": 100.0,
+                            "base_revenue_unit": "usd_b",
+                            "revenue_growth_pct": 20.0,
+                            "projected_revenue": 120.0,
+                            "projected_revenue_unit": "usd_b",
+                            "gross_margin_pct": 50.0,
+                            "projected_gross_profit": 60.0,
+                            "projected_gross_profit_unit": "usd_b",
+                            "chart_label": "Cooling AI",
+                            "revenue_data_key": "revenue",
+                            "gross_profit_data_key": "gross_profit",
+                        }
+                    ]
+                }
+            ),
+            original_query="Assess a company resilience scenario.",
+            runtime=_Runtime(),
+        )
+    )
+
+    draft = result["execution_summary_for_draft"]
+    assert "scenario_projection_rows: Cooling AI" in draft
+    assert "projected_gross_profit=60" in draft
+    assert "projected_gross_profit_unit=usd_b" in draft
+    assert "gross_profit_data_key=gross_profit" in draft
+
+
 def test_plan_report_structure_prioritizes_generic_backtest_values(tmp_path):
     charts_path = tmp_path / "charts.json"
     charts_path.write_text("{}", encoding="utf-8")
@@ -2409,6 +2452,79 @@ def test_write_research_report_rejects_conflicting_correlation_artifacts(tmp_pat
     assert result["required_upstream"] == "quant-developer"
     assert result["report_path"] == str((tmp_path / "report.json").resolve())
     assert "UNRATE/CPIAUCSL" in result["message"]
+
+
+def test_write_research_report_rejects_scenario_projection_chart_mismatch(tmp_path):
+    charts_path = tmp_path / "charts.json"
+    charts_path.write_text(
+        json.dumps(
+            {
+                "resilience_scenario": {
+                    "id": "resilience_scenario",
+                    "type": "composed",
+                    "title": "Resilience Scenario",
+                    "description": "Company scenario projection.",
+                    "xAxisKey": "s",
+                    "series": [
+                        {"dataKey": "rev", "label": "Revenue ($B)", "type": "bar"},
+                        {"dataKey": "oi", "label": "Operating Income ($B)", "type": "bar"},
+                    ],
+                    "data": [{"s": "Cooling AI", "rev": 156.6, "oi": 101.0}],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    summary = {
+        "scenario_projection_rows": [
+            {
+                "scenario": "Cooling AI",
+                "subject": "NVDA",
+                "base_period": "FY2026",
+                "projection_period": "FY2027",
+                "base_revenue": 215.938,
+                "base_revenue_unit": "usd_b",
+                "revenue_growth_pct": 20.0,
+                "projected_revenue": 259.13,
+                "projected_revenue_unit": "usd_b",
+                "gross_margin_pct": 60.0,
+                "operating_expense": 23.1,
+                "operating_expense_unit": "usd_b",
+                "projected_operating_income": 132.38,
+                "operating_income_unit": "usd_b",
+                "chart_id": "resilience_scenario",
+                "chart_label": "Cooling AI",
+                "chart_label_key": "s",
+                "revenue_data_key": "rev",
+                "operating_income_data_key": "oi",
+            }
+        ]
+    }
+
+    result = json.loads(
+        write_research_report.func(
+            markdown=(
+                "## Executive Summary\n"
+                "The cooling AI scenario still leaves NVIDIA profitable.\n\n"
+                "<!-- CHART:resilience_scenario -->\n\n"
+                "## Research Query\nReview NVIDIA under cooling AI spending."
+            ),
+            charts_json_path=str(charts_path),
+            original_query="Review NVIDIA under cooling AI spending.",
+            execution_summary=json.dumps(summary),
+            runtime=SimpleNamespace(
+                context=SimpleNamespace(
+                    job_id="job-scenario-projection-mismatch",
+                    output_dir=str(tmp_path),
+                )
+            ),
+        )
+    )
+
+    assert result["status"] == "error"
+    assert result["failure_category"] == "artifact_fact_mismatch"
+    assert result["required_upstream"] == "quant-developer"
+    assert "scenario projection" in result["message"]
 
 
 def test_plan_report_structure_preserves_dict_backtest_model_and_simulation_metrics(tmp_path):

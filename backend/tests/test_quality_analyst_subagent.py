@@ -1629,6 +1629,96 @@ def test_submit_quality_decision_rejects_econometric_report_without_validation(t
     assert any("replay rows" in fix for fix in payload["required_fixes"])
 
 
+def test_submit_quality_decision_rejects_forecast_backtest_with_only_scenario_projection_rows(
+    tmp_path,
+):
+    report_path = tmp_path / "report.json"
+    chart = {
+        "id": "scenario_projection",
+        "type": "composed",
+        "title": "Scenario Projection",
+        "description": "Scenario projection rows.",
+        "xAxisKey": "scenario",
+        "series": [
+            {"dataKey": "revenue", "label": "Revenue ($B)", "color": "#2563eb"},
+            {
+                "dataKey": "operating_income",
+                "label": "Operating Income ($B)",
+                "color": "#f59e0b",
+            },
+        ],
+        "data": [
+            {"scenario": "Cooling AI", "revenue": 110.0, "operating_income": 35.0}
+        ],
+    }
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "chart_ids": ["scenario_projection"],
+                "scenario_projection_rows": [
+                    {
+                        "scenario": "Cooling AI",
+                        "subject": "NVDA",
+                        "base_period": "FY2026",
+                        "projection_period": "FY2027",
+                        "base_revenue": 100.0,
+                        "base_revenue_unit": "usd_b",
+                        "revenue_growth_pct": 10.0,
+                        "projected_revenue": 110.0,
+                        "projected_revenue_unit": "usd_b",
+                        "gross_margin_pct": 50.0,
+                        "operating_expense": 20.0,
+                        "operating_expense_unit": "usd_b",
+                        "projected_operating_income": 35.0,
+                        "operating_income_unit": "usd_b",
+                        "chart_id": "scenario_projection",
+                        "chart_label": "Cooling AI",
+                        "chart_label_key": "scenario",
+                        "revenue_data_key": "revenue",
+                        "operating_income_data_key": "operating_income",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "query": (
+                    "Build an econometric revenue forecast with backtesting and "
+                    "a stress-test scenario."
+                ),
+                "title": "Scenario Projection Report",
+                "executive_summary": "The scenario projection is charted.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "The scenario projection is charted from helper rows.\n"
+                    "<!-- CHART:scenario_projection -->"
+                ),
+                "charts": [chart],
+                "data_sources": [],
+                "metadata": {"word_count": 12},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert "generic helper validation evidence" in payload["reason"]
+
+
 def test_submit_quality_decision_rejects_earlier_downturn_report_without_replay(tmp_path):
     report_path = tmp_path / "report.json"
     (tmp_path / "execution_summary.json").write_text(
@@ -7634,6 +7724,94 @@ def test_submit_quality_decision_rejects_artifact_fact_mismatch(tmp_path):
     assert payload["failure_category"] == "artifact_fact_mismatch"
     assert payload["required_upstream"] == "quant-developer"
     assert "UNRATE/CPIAUCSL" in payload["reason"]
+
+
+def test_submit_quality_decision_rejects_scenario_projection_chart_mismatch(tmp_path):
+    report_path = tmp_path / "report.json"
+    chart = {
+        "id": "resilience_scenario",
+        "type": "composed",
+        "title": "Resilience Scenario",
+        "description": "Company scenario projection.",
+        "xAxisKey": "s",
+        "series": [
+            {"dataKey": "rev", "label": "Revenue ($B)", "color": "#2563eb"},
+            {"dataKey": "oi", "label": "Operating Income ($B)", "color": "#f59e0b"},
+        ],
+        "data": [{"s": "Cooling AI", "rev": 156.6, "oi": 101.0}],
+    }
+    (tmp_path / "execution_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "chart_ids": ["resilience_scenario"],
+                "scenario_projection_rows": [
+                    {
+                        "scenario": "Cooling AI",
+                        "subject": "NVDA",
+                        "base_period": "FY2026",
+                        "projection_period": "FY2027",
+                        "base_revenue": 215.938,
+                        "base_revenue_unit": "usd_b",
+                        "revenue_growth_pct": 20.0,
+                        "projected_revenue": 259.13,
+                        "projected_revenue_unit": "usd_b",
+                        "gross_margin_pct": 60.0,
+                        "operating_expense": 23.1,
+                        "operating_expense_unit": "usd_b",
+                        "projected_operating_income": 132.38,
+                        "operating_income_unit": "usd_b",
+                        "chart_id": "resilience_scenario",
+                        "chart_label": "Cooling AI",
+                        "chart_label_key": "s",
+                        "revenue_data_key": "rev",
+                        "operating_income_data_key": "oi",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "job_id": "qa-scenario-projection",
+                "created_at": "2026-05-14T12:00:00Z",
+                "query": "Review NVIDIA under cooling AI spending with charts.",
+                "title": "Scenario Projection Mismatch",
+                "executive_summary": "The cooling scenario was charted.",
+                "markdown": (
+                    "## Executive Summary\n"
+                    "The cooling AI scenario still leaves NVIDIA profitable.\n"
+                    "<!-- CHART:resilience_scenario -->"
+                ),
+                "charts": {"resilience_scenario": chart},
+                "data_sources": [],
+                "metadata": {
+                    "analysis_type": "earnings_analysis",
+                    "chart_count": 1,
+                    "word_count": 8,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(
+        submit_quality_decision.invoke(
+            {
+                "decision": "approve",
+                "report_path": str(report_path),
+                "notes": "Looks acceptable.",
+            }
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["failure_category"] == "artifact_fact_mismatch"
+    assert payload["required_upstream"] == "quant-developer"
+    assert "scenario projection" in payload["reason"]
 
 
 def test_submit_quality_decision_rejects_current_signal_fact_mismatch(tmp_path):

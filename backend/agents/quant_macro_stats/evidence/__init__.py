@@ -16,7 +16,10 @@ from .forecast_evidence_rows import (
     normalize_forecast_table,
     predictor_contribution_rows,
 )
-from .scenario_evidence_rows import normalize_scenario_evidence_rows
+from .scenario_evidence_rows import (
+    normalize_scenario_evidence_rows,
+    normalize_scenario_projection_rows,
+)
 
 __all__ = [
     "analog_window_profile",
@@ -29,5 +32,6 @@ __all__ = [
     "normalize_analog_ranking",
     "normalize_forecast_table",
     "normalize_scenario_evidence_rows",
+    "normalize_scenario_projection_rows",
     "predictor_contribution_rows",
 ]

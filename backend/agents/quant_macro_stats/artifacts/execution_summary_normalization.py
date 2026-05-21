@@ -10,6 +10,7 @@ from ..company.sec_company_facts_evidence import (
     is_sec_company_facts_file,
     sec_company_facts_evidence,
 )
+from ..evidence.scenario_evidence_rows import normalize_scenario_projection_rows
 from ..share_count_diagnostics import (
     SHARE_COUNT_COMPARABILITY_UNCOMPARABLE,
     SHARE_COUNT_TREND_UNCOMPARABLE,
@@ -56,6 +57,7 @@ _COMPACT_HANDOFF_KEYS = (
     "regime_analog_rows",
     "missing_indicator_rows",
     "scenario_score_rows",
+    "scenario_projection_rows",
     "replay_rows",
     "latest_fundamentals",
     "company_history_rows",
@@ -1537,6 +1539,21 @@ def _normalize_numeric_fact_contracts(summary: dict[str, Any]) -> None:
         raise ValueError(f"Invalid execution_summary.numeric_facts: {exc}") from exc
 
 
+def _normalize_scenario_projection_contracts(summary: dict[str, Any]) -> None:
+    """Canonicalize explicit scenario projection rows before handoff."""
+
+    if "scenario_projection_rows" not in summary:
+        return
+    try:
+        summary["scenario_projection_rows"] = normalize_scenario_projection_rows(
+            summary.get("scenario_projection_rows"),
+        )
+    except ValueError as exc:
+        raise ValueError(
+            f"Invalid execution_summary.scenario_projection_rows: {exc}"
+        ) from exc
+
+
 def _iter_nested_mappings(*values: Any, max_depth: int = 3) -> Iterable[dict[str, Any]]:
     """Yield mapping payloads reachable from helper handoff containers."""
 
@@ -1558,6 +1575,7 @@ _SUMMARY_NORMALIZATION_RULES = (
     _sanitize_split_affected_share_trends,
     _validate_no_freeform_statistical_assessment,
     _normalize_numeric_fact_contracts,
+    _normalize_scenario_projection_contracts,
     _validate_current_state_episode_durations,
     _collect_validation_methods,
     _validate_current_signal_facts,
